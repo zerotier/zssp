@@ -5,39 +5,27 @@
  * (c) ZeroTier, Inc.
  * https://www.zerotier.com/
  */
-use std::marker::PhantomData;
-
 use crate::crypto::aes::AES_256_KEY_SIZE;
 use crate::crypto::secret::Secret;
 use crate::crypto::sha512::HmacSha512;
 
 use crate::proto::NOISE_HASHLEN;
 
-pub(crate) struct SymmetricState<Hmac: HmacSha512> {
+#[derive(Clone)]
+pub(crate) struct SymmetricState {
     chaining_key: Secret<NOISE_HASHLEN>,
     token_counter: u8,
-    p: PhantomData<Hmac>,
 }
 
-impl<Hmac: HmacSha512> Clone for SymmetricState<Hmac> {
-    fn clone(&self) -> Self {
-        Self {
-            chaining_key: self.chaining_key.clone(),
-            token_counter: self.token_counter.clone(),
-            p: PhantomData,
-        }
-    }
-}
-
-impl<Hmac: HmacSha512> SymmetricState<Hmac> {
+impl SymmetricState {
     pub(crate) fn new(h: [u8; NOISE_HASHLEN]) -> Self {
-        Self { chaining_key: Secret(h), token_counter: b'P', p: PhantomData }
+        Self { chaining_key: Secret(h), token_counter: b'P' }
     }
     /// Corresponds to Noise `MixKey`.
-    pub(crate) fn mix_key(&mut self, input_key_material: &[u8]) {
+    pub(crate) fn mix_key(&mut self, hm: &mut impl HmacSha512, input_key_material: &[u8]) {
         let mut next_ck = Secret::new();
 
-        self.kbkdf(input_key_material, self.label(), 2, next_ck.as_mut(), None, None);
+        self.kbkdf(hm, input_key_material, self.label(), 2, next_ck.as_mut(), None, None);
         self.token_counter += 1;
 
         self.chaining_key.overwrite(&next_ck);
@@ -46,34 +34,34 @@ impl<Hmac: HmacSha512> SymmetricState<Hmac> {
     }
     /// Corresponds to Noise `MixKey` followed by `InitializeKey`.
     #[inline(always)]
-    pub(crate) fn mix_key_initialize_key(&mut self, input_key_material: &[u8]) -> Secret<AES_256_KEY_SIZE> {
+    pub(crate) fn mix_key_initialize_key(&mut self, hm: &mut impl HmacSha512, input_key_material: &[u8]) -> Secret<AES_256_KEY_SIZE> {
         let mut next_ck = Secret::new();
         let mut temp_k = [0u8; NOISE_HASHLEN];
 
-        self.kbkdf(input_key_material, self.label(), 2, next_ck.as_mut(), Some(&mut temp_k), None);
+        self.kbkdf(hm, input_key_material, self.label(), 2, next_ck.as_mut(), Some(&mut temp_k), None);
         self.token_counter += 1;
 
         self.chaining_key.overwrite(&next_ck);
         Secret::from_bytes_then_nuke(&mut temp_k[..AES_256_KEY_SIZE])
     }
     /// Corresponds to Noise `MixKeyAndHash`.
-    pub(crate) fn mix_key_and_hash(&mut self, input_key_material: &[u8]) -> [u8; NOISE_HASHLEN] {
+    pub(crate) fn mix_key_and_hash(&mut self, hm: &mut impl HmacSha512, input_key_material: &[u8]) -> [u8; NOISE_HASHLEN] {
         let mut next_ck = Secret::new();
         let mut temp_h = [0u8; NOISE_HASHLEN];
 
-        self.kbkdf(input_key_material, self.label(), 3, next_ck.as_mut(), Some(&mut temp_h), None);
+        self.kbkdf(hm, input_key_material, self.label(), 3, next_ck.as_mut(), Some(&mut temp_h), None);
         self.token_counter += 1;
 
         self.chaining_key.overwrite(&next_ck);
         temp_h
     }
     /// Corresponds to Noise `MixKeyAndHash` followed by `InitializeKey`.
-    pub(crate) fn mix_key_and_hash_initialize_key(&mut self, input_key_material: &[u8]) -> ([u8; NOISE_HASHLEN], Secret<AES_256_KEY_SIZE>) {
+    pub(crate) fn mix_key_and_hash_initialize_key(&mut self, hm: &mut impl HmacSha512, input_key_material: &[u8]) -> ([u8; NOISE_HASHLEN], Secret<AES_256_KEY_SIZE>) {
         let mut next_ck = Secret::new();
         let mut temp_h = [0u8; NOISE_HASHLEN];
         let mut temp_k = [0u8; NOISE_HASHLEN];
 
-        self.kbkdf(
+        self.kbkdf(hm,
             input_key_material,
             self.label(),
             3,
@@ -91,10 +79,10 @@ impl<Hmac: HmacSha512> SymmetricState<Hmac> {
     /// Based on Noise's unstable ASK mechanism, using KBKDF instead of HKDF.
     /// https://github.com/noiseprotocol/noise_wiki/wiki/Additional-Symmetric-Keys.
     #[inline(always)]
-    pub(crate) fn get_ask2(&self, label: u8, noise_h: &[u8; NOISE_HASHLEN]) -> (Secret<AES_256_KEY_SIZE>, Secret<AES_256_KEY_SIZE>) {
+    pub(crate) fn get_ask2(&self, hm: &mut impl HmacSha512, label: u8, noise_h: &[u8; NOISE_HASHLEN]) -> (Secret<AES_256_KEY_SIZE>, Secret<AES_256_KEY_SIZE>) {
         let mut temp_k1 = [0u8; NOISE_HASHLEN];
         let mut temp_k2 = [0u8; NOISE_HASHLEN];
-        self.kbkdf(noise_h, [b'A', b'S', b'K', label], 2, &mut temp_k1, Some(&mut temp_k2), None);
+        self.kbkdf(hm, noise_h, [b'A', b'S', b'K', label], 2, &mut temp_k1, Some(&mut temp_k2), None);
         (
             Secret::from_bytes_then_nuke(&mut temp_k1[..AES_256_KEY_SIZE]),
             Secret::from_bytes_then_nuke(&mut temp_k2[..AES_256_KEY_SIZE]),
@@ -102,10 +90,10 @@ impl<Hmac: HmacSha512> SymmetricState<Hmac> {
     }
     /// Corresponds to Noise `Split`.
     #[inline(always)]
-    pub(crate) fn split(self) -> (Secret<AES_256_KEY_SIZE>, Secret<AES_256_KEY_SIZE>) {
+    pub(crate) fn split(self, hm: &mut impl HmacSha512) -> (Secret<AES_256_KEY_SIZE>, Secret<AES_256_KEY_SIZE>) {
         let mut temp_k1 = [0u8; NOISE_HASHLEN];
         let mut temp_k2 = [0u8; NOISE_HASHLEN];
-        self.kbkdf(&[], self.label(), 2, &mut temp_k1, Some(&mut temp_k2), None);
+        self.kbkdf(hm, &[], self.label(), 2, &mut temp_k1, Some(&mut temp_k2), None);
         // Normally KBKDF would not truncate to derive the correct length of AES keys,
         // but Noise specifies that the AES keys be truncated from NOISE_HASHLEN to AES_256_KEY_SIZE.
         (
@@ -131,6 +119,7 @@ impl<Hmac: HmacSha512> SymmetricState<Hmac> {
     #[inline(always)]
     fn kbkdf(
         &self,
+        hm: &mut impl HmacSha512,
         input_key_material: &[u8],
         label: [u8; 4],
         num_outputs: u16,
@@ -140,7 +129,7 @@ impl<Hmac: HmacSha512> SymmetricState<Hmac> {
     ) {
         let l = &(num_outputs * 512u16).to_be_bytes();
 
-        let mut hm = Hmac::new(input_key_material);
+        hm.reset(input_key_material);
         hm.update(&[1, label[0], label[1], label[2], label[3], 0x00]);
         hm.update(self.chaining_key.as_ref());
         hm.update(l);

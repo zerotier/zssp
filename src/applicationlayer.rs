@@ -86,8 +86,8 @@ pub trait ApplicationLayer: Sized {
 
     type Rng: CryptoRng + RngCore;
 
-    type BlockCipherEnc: AesEnc;
-    type BlockCipherDec: AesDec;
+    type PrpEnc: AesEnc;
+    type PrpDec: AesDec;
 
     type AeadEnc: AesGcmEnc;
     type AeadDec: AesGcmDec;

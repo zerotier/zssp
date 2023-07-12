@@ -21,7 +21,7 @@ use crate::crypto::aes_gcm::{AesGcmDec, AesGcmEnc, AES_GCM_IV_SIZE, AES_GCM_KEY_
 use crate::crypto::p384::{P384KeyPair, P384PublicKey, P384_ECDH_SHARED_SECRET_SIZE, P384_PUBLIC_KEY_SIZE};
 use crate::crypto::pqc_kyber::KYBER_SECRETKEYBYTES;
 use crate::crypto::secret::{secure_eq, Secret};
-use crate::crypto::sha512::Sha512;
+use crate::crypto::sha512::{Sha512, HmacSha512};
 use crate::crypto::rand_core::RngCore;
 
 use crate::applicationlayer::*;
@@ -147,8 +147,8 @@ pub struct Session<Application: ApplicationLayer> {
     state_machine_lock: Mutex<()>,
     state: RwLock<SessionMutableState<Application>>,
     defrag: [Mutex<Fragged<Application::IncomingPacketBuffer, MAX_FRAGMENTS>>; SESSION_MAX_FRAGMENTS_OOO],
-    header_send_cipher: Application::BlockCipherEnc,
-    header_receive_cipher: Application::BlockCipherDec,
+    header_send_cipher: Application::PrpEnc,
+    header_receive_cipher: Application::PrpDec,
     kex_send_cipher: Mutex<Option<Application::AeadEnc>>,
     kex_receive_cipher: Mutex<Option<Application::AeadDec>>,
     /// Pre-computed rekeying values.
@@ -191,7 +191,7 @@ enum OfferStateMachine<Application: ApplicationLayer> {
         new_key_id: NonZeroU32,
         noise_e_secret: Application::KeyPair,
         noise_message: [u8; NoiseKKPattern1or2::SIZE],
-        noise_ck: SymmetricState<Application::HmacHash>,
+        noise_ck: SymmetricState,
         noise_h_pskep: [u8; NOISE_HASHLEN],
     }, // -> NoiseKKPattern2, KeyConfirm
     NoiseKKPattern2 {
@@ -218,7 +218,7 @@ pub(crate) struct NoiseXKBobHandshakeState<Application: ApplicationLayer> {
     ratchet_fingerprint: Option<[u8; RATCHET_FINGERPRINT_SIZE]>,
     noise_h_ee1peekem1pskp: [u8; NOISE_HASHLEN],
     noise_e_secret: Application::KeyPair,
-    noise_ck_eseeekem1psk: SymmetricState<Application::HmacHash>,
+    noise_ck_eseeekem1psk: SymmetricState,
     noise_k_eseeekem1psk: Secret<AES_GCM_KEY_SIZE>,
     noise_pattern3_defrag: Mutex<Fragged<Application::IncomingPacketBuffer, MAX_FRAGMENTS>>,
 }
@@ -238,7 +238,7 @@ enum NoiseXKAliceHandshakeState<Application: ApplicationLayer> {
         noise_h_ee1p: [u8; NOISE_HASHLEN],
         noise_e_secret: Application::KeyPair,
         noise_e1_secret: Secret<KYBER_SECRETKEYBYTES>,
-        noise_ck_es: SymmetricState<Application::HmacHash>,
+        noise_ck_es: SymmetricState,
         /// ZSSP assumes an unreliable, out-of-order physical transport environment, so for that
         /// reason we have to resend key offers.
         noise_message: [u8; NoiseXKPattern1::SIZE],
@@ -392,7 +392,7 @@ impl<Application: ApplicationLayer> Context<Application> {
                                         PACKET_TYPE_NOISE_XK_PATTERN_1,
                                         None,
                                         *message_id,
-                                        None::<&Application::BlockCipherEnc>,
+                                        None::<&Application::PrpEnc>,
                                     );
                                 }
                                 NoiseXKAliceHandshakeState::NoiseXKPattern3 { noise_message, noise_message_len, .. } => {
@@ -538,7 +538,7 @@ impl<Application: ApplicationLayer> Context<Application> {
                 PACKET_TYPE_NOISE_XK_PATTERN_1,
                 None,
                 *message_id,
-                None::<&Application::BlockCipherEnc>,
+                None::<&Application::PrpEnc>,
             );
         }
 
@@ -561,8 +561,8 @@ impl<Application: ApplicationLayer> Context<Application> {
                 current_key: 1,
                 outgoing_offer: OfferStateMachine::NoiseXKPattern1or3(handshake_state),
             }),
-            header_send_cipher: Application::BlockCipherEnc::new(a2b_header_key.as_ref()),
-            header_receive_cipher: Application::BlockCipherDec::new(b2a_header_key.as_ref()),
+            header_send_cipher: Application::PrpEnc::new(a2b_header_key.as_ref()),
+            header_receive_cipher: Application::PrpDec::new(b2a_header_key.as_ref()),
             kex_receive_cipher: Mutex::new(None),
             kex_send_cipher: Mutex::new(None),
             noise_kk_ss: noise_kk_ss.clone(),
@@ -797,7 +797,7 @@ impl<Application: ApplicationLayer> Context<Application> {
                     // Check for and handle PACKET_TYPE_ALICE_NOISE_XK_PATTERN_3
                     incoming = self.0.unassociated_handshake_states.get(local_key_id);
                     if let Some(incoming) = incoming.as_ref() {
-                        Application::BlockCipherDec::new(incoming.header_receive_key.as_ref()).decrypt_in_place(
+                        Application::PrpDec::new(incoming.header_receive_key.as_ref()).decrypt_in_place(
                             (&mut incoming_physical_packet[HEADER_PROTECT_ENC_START..HEADER_PROTECT_ENC_END])
                                 .try_into()
                                 .unwrap(),
@@ -953,7 +953,7 @@ impl<Application: ApplicationLayer> Context<Application> {
                                     PACKET_TYPE_BOB_DOS_CHALLENGE,
                                     None,
                                     self.0.rng.lock().unwrap().next_u64(),
-                                    None::<&Application::BlockCipherEnc>,
+                                    None::<&Application::PrpEnc>,
                                 );
                                 return Ok(ReceiveResult::Unassociated);
                             }
@@ -971,14 +971,15 @@ impl<Application: ApplicationLayer> Context<Application> {
                     let noise_h = mix_hash(sha512, &noise_h, self.0.static_keypair.public_key_bytes());
                     // Noise process pattern1 e token.
                     let mut noise_ck = SymmetricState::new(INITIAL_H);
+                    let hmac = &mut Application::HmacHash::new();
                     let mut noise_es = Secret::new();
                     let noise_e_pattern1 =
                         from_bytes_agreement::<Application>(&noise_pattern1.noise_e, &self.0.static_keypair, noise_es.as_mut())
                             .ok_or(byzantine_fault!(FaultType::FailedAuthentication, false))?;
                     let noise_h_e = mix_hash(sha512, &noise_h, &noise_pattern1.noise_e);
-                    noise_ck.mix_key(&noise_pattern1.noise_e);
+                    noise_ck.mix_key(hmac, &noise_pattern1.noise_e);
                     // Noise process pattern1 es token.
-                    let noise_k_es = noise_ck.mix_key_initialize_key(noise_es.as_ref());
+                    let noise_k_es = noise_ck.mix_key_initialize_key(hmac, noise_es.as_ref());
                     drop(noise_es);
                     // Noise process pattern1 e1 token.
                     let (is_auth, noise_h_ee1) = decrypt_and_hash::<Application>(
@@ -1011,7 +1012,7 @@ impl<Application: ApplicationLayer> Context<Application> {
                     if !is_auth {
                         return Err(byzantine_fault!(FaultType::FailedAuthentication, false));
                     }
-                    let (header_b2a_key, header_a2b_key) = noise_ck.get_ask2(LABEL_HEADER_KEY, &noise_h_ee1p);
+                    let (header_b2a_key, header_a2b_key) = noise_ck.get_ask2(hmac, LABEL_HEADER_KEY, &noise_h_ee1p);
                     // Get ratchet key.
                     let noise_pattern1: &mut NoiseXKPattern1 = byte_array_as_proto_buffer_mut(message);
                     use crate::GetRatchetAction::*;
@@ -1037,13 +1038,13 @@ impl<Application: ApplicationLayer> Context<Application> {
                     let noise_e_pattern2_secret = Application::KeyPair::generate(&mut self.0.rng.lock().unwrap());
                     noise_pattern2.noise_e = noise_e_pattern2_secret.public_key_bytes().clone();
                     let noise_h_ee1pe = mix_hash(sha512, &noise_h_ee1p, &noise_pattern2.noise_e);
-                    noise_ck.mix_key(&noise_pattern2.noise_e);
+                    noise_ck.mix_key(hmac, &noise_pattern2.noise_e);
                     // Noise process pattern2 ee token.
                     let mut noise_ee = Secret::new();
                     if !noise_e_pattern2_secret.agree(&noise_e_pattern1, noise_ee.as_mut()) {
                         return Err(byzantine_fault!(FaultType::FailedAuthentication, false));
                     }
-                    let noise_k_esee = noise_ck.mix_key_initialize_key(noise_ee.as_ref());
+                    let noise_k_esee = noise_ck.mix_key_initialize_key(hmac, noise_ee.as_ref());
                     drop(noise_ee);
                     // Noise process pattern2 ekem1 token.
                     let (noise_ekem1, noise_ekem1_secret) = pqc_kyber::encapsulate(&noise_pattern1.noise_e1, self.0.rng.lock().unwrap().deref_mut())
@@ -1060,10 +1061,10 @@ impl<Application: ApplicationLayer> Context<Application> {
                         &mut message2[NoiseXKPattern2::EKEM1_ENC_START..NoiseXKPattern2::P_ENC_START],
                     );
                     drop(noise_k_esee);
-                    noise_ck.mix_key(noise_ekem1_secret.as_ref());
+                    noise_ck.mix_key(hmac, noise_ekem1_secret.as_ref());
                     drop(noise_ekem1_secret);
                     // Noise process pattern2 psk token.
-                    let (temp_h, noise_k_eseeekem1psk) = noise_ck.mix_key_and_hash_initialize_key(&ratchet_key);
+                    let (temp_h, noise_k_eseeekem1psk) = noise_ck.mix_key_and_hash_initialize_key(hmac, &ratchet_key);
                     let noise_h_ee1peekem1psk = mix_hash(sha512, &noise_h_ee1peekem1, &temp_h);
                     // Noise process pattern2 payload.
                     // We try to prevent the id we generate from colliding with another session but
@@ -1111,7 +1112,7 @@ impl<Application: ApplicationLayer> Context<Application> {
                         PACKET_TYPE_NOISE_XK_PATTERN_2,
                         Some(remote_key_id),
                         u64::from_be_bytes(pattern2_id),
-                        Some(&Application::BlockCipherEnc::new(header_b2a_key.first_n::<AES_GCM_KEY_SIZE>())),
+                        Some(&Application::PrpEnc::new(header_b2a_key.first_n::<AES_GCM_KEY_SIZE>())),
                     );
 
                     return Ok(ReceiveResult::Unassociated);
@@ -1209,11 +1210,12 @@ impl<Application: ApplicationLayer> Context<Application> {
                             from_bytes_agreement::<Application>(&noise_pattern2.noise_e, noise_e_secret, noise_ee.as_mut())
                         {
                             let sha512 = &mut Application::Hash::new();
+                            let hmac = &mut Application::HmacHash::new();
                             let mut noise_ck = noise_ck_es.clone();
                             let noise_h_ee1pe = mix_hash(sha512, noise_h_ee1p, noise_e_pattern2.as_bytes());
-                            noise_ck.mix_key(noise_e_pattern2.as_bytes());
+                            noise_ck.mix_key(hmac, noise_e_pattern2.as_bytes());
                             // Noise process pattern2 ee token.
-                            let noise_k_esee = noise_ck.mix_key_initialize_key(noise_ee.as_ref());
+                            let noise_k_esee = noise_ck.mix_key_initialize_key(hmac, noise_ee.as_ref());
                             drop(noise_ee);
                             // Noise process pattern2 ekem1 token.
                             let (is_auth, noise_h_ee1peekem1) = decrypt_and_hash::<Application>(
@@ -1227,7 +1229,7 @@ impl<Application: ApplicationLayer> Context<Application> {
                             let noise_pattern2: &NoiseXKPattern2 = byte_array_as_proto_buffer(message);
                             let noise_ekem1_secret = pqc_kyber::decapsulate(&noise_pattern2.noise_ekem1, noise_e1_secret.as_ref()).map(|k| Secret(k));
                             if let Some(Ok(noise_ekem1_secret)) = is_auth.then_some(noise_ekem1_secret) {
-                                noise_ck.mix_key(noise_ekem1_secret.as_ref());
+                                noise_ck.mix_key(hmac, noise_ekem1_secret.as_ref());
                                 drop(noise_ekem1_secret);
                                 // We attempt to decrypt the payload at most twice. First time with
                                 // the ratchet key Alice last remembers, and second time with a ratchet
@@ -1241,7 +1243,7 @@ impl<Application: ApplicationLayer> Context<Application> {
                                     let mut payload = [0u8; NoiseXKPattern2::P_AUTH_END - NoiseXKPattern2::P_ENC_START];
                                     payload.copy_from_slice(&message[NoiseXKPattern2::P_ENC_START..NoiseXKPattern2::P_AUTH_END]);
                                     // Noise process pattern2 psk token.
-                                    let (temp_h, noise_k_ratchet) = noise_ck_ratchet.mix_key_and_hash_initialize_key(ratchet_key);
+                                    let (temp_h, noise_k_ratchet) = noise_ck_ratchet.mix_key_and_hash_initialize_key(hmac, ratchet_key);
                                     let noise_h_ee1peekem1psk = mix_hash(sha512, &noise_h_ee1peekem1, &temp_h);
                                     // Noise process pattern2 payload.
                                     let (is_auth, noise_h_ratchet) = decrypt_and_hash::<Application>(
@@ -1299,7 +1301,7 @@ impl<Application: ApplicationLayer> Context<Application> {
                                         );
                                         drop(noise_k_eseeekem1psk);
                                         // Noise process pattern3 se token.
-                                        let noise_k_eseeekem1pskse = noise_ck.mix_key_initialize_key(noise_se.as_ref());
+                                        let noise_k_eseeekem1pskse = noise_ck.mix_key_initialize_key(hmac, noise_se.as_ref());
                                         drop(noise_se);
                                         // Noise process pattern3 payload token.
                                         message3[p_enc_start..p_auth_start].copy_from_slice(payload);
@@ -1316,7 +1318,7 @@ impl<Application: ApplicationLayer> Context<Application> {
                                         // Transition offer state machine to the NoiseXKPattern3 state.
                                         let new_ratchet_number = ratchet_number + 1;
                                         let (new_ratchet_key, new_ratchet_fingerprint) =
-                                            noise_ck.get_ask2(LABEL_RATCHET_STATE, &noise_h_ee1peekem1pskpsp);
+                                            noise_ck.get_ask2(hmac, LABEL_RATCHET_STATE, &noise_h_ee1peekem1pskpsp);
                                         let result = app.save_ratchet_state(
                                             &session.remote_s_public_key,
                                             &session.application_data,
@@ -1329,7 +1331,7 @@ impl<Application: ApplicationLayer> Context<Application> {
                                         if result.is_err() {
                                             return Err(ReceiveError::RatchetIoError);
                                         }
-                                        let (kex_key_b2a, kex_key_a2b) = noise_ck.get_ask2(LABEL_KEX_KEY, &noise_h_ee1peekem1pskpsp);
+                                        let (kex_key_b2a, kex_key_a2b) = noise_ck.get_ask2(hmac, LABEL_KEX_KEY, &noise_h_ee1peekem1pskpsp);
 
                                         let local_key_id = handshake_state.local_key_id;
                                         drop(state);
@@ -1345,7 +1347,7 @@ impl<Application: ApplicationLayer> Context<Application> {
                                             .unwrap()
                                             .replace(Application::AeadDec::new(kex_key_b2a.as_ref()));
 
-                                        state.cipher_states[0].replace(SessionKey::new(noise_ck, local_key_id, remote_key_id, INIT_COUNTER, false));
+                                        state.cipher_states[0].replace(SessionKey::new(hmac, noise_ck, local_key_id, remote_key_id, INIT_COUNTER, false));
                                         debug_assert!(state.cipher_states[1].is_none());
                                         if let NoiseXKPattern1or3(handshake_state) = &mut state.outgoing_offer {
                                             handshake_state.next_retry_time =
@@ -1434,6 +1436,7 @@ impl<Application: ApplicationLayer> Context<Application> {
                 // error is possible.
                 // Noise process pattern3 s token.
                 let sha512 = &mut Application::Hash::new();
+                let hmac = &mut Application::HmacHash::new();
                 let (is_auth, noise_h_ee1peekem1pskps) = decrypt_and_hash::<Application>(
                     sha512,
                     &handshake_state.noise_k_eseeekem1psk,
@@ -1451,7 +1454,7 @@ impl<Application: ApplicationLayer> Context<Application> {
                     from_bytes_agreement::<Application>(&message[s_enc_start..s_auth_start], &handshake_state.noise_e_secret, noise_se.as_mut())
                 {
                     let mut noise_ck = handshake_state.noise_ck_eseeekem1psk.clone();
-                    let noise_k_eseeekem1pskse = noise_ck.mix_key_initialize_key(noise_se.as_ref());
+                    let noise_k_eseeekem1pskse = noise_ck.mix_key_initialize_key(hmac, noise_se.as_ref());
                     drop(noise_se);
                     // Noise process pattern3 payload.
                     let (is_auth, noise_h_ee1peekem1pskpsp) = decrypt_and_hash::<Application>(
@@ -1467,8 +1470,8 @@ impl<Application: ApplicationLayer> Context<Application> {
                         return Err(byzantine_fault!(FaultType::FailedAuthentication, false));
                     }
                     // Bob finished Noise XKhfs+psk2 handshake.
-                    let header_send_cipher = Application::BlockCipherEnc::new(handshake_state.header_send_key.as_ref());
-                    let (kex_key_b2a, kex_key_a2b) = noise_ck.get_ask2(LABEL_KEX_KEY, &noise_h_ee1peekem1pskpsp);
+                    let header_send_cipher = Application::PrpEnc::new(handshake_state.header_send_key.as_ref());
+                    let (kex_key_b2a, kex_key_a2b) = noise_ck.get_ask2(hmac, LABEL_KEX_KEY, &noise_h_ee1peekem1pskpsp);
                     match check_accept_session(
                         &remote_s_public_key,
                         &message[p_enc_start..p_auth_start],
@@ -1484,7 +1487,7 @@ impl<Application: ApplicationLayer> Context<Application> {
                             let noise_kk_remote_init_h = mix_hash(sha512, &INITIAL_H_REKEY, remote_s_public_key.as_bytes());
                             let noise_kk_remote_init_h = mix_hash(sha512, &noise_kk_remote_init_h, self.0.static_keypair.public_key_bytes());
 
-                            let (new_ratchet_key, new_ratchet_fingerprint) = noise_ck.get_ask2(LABEL_RATCHET_STATE, &noise_h_ee1peekem1pskpsp);
+                            let (new_ratchet_key, new_ratchet_fingerprint) = noise_ck.get_ask2(hmac, LABEL_RATCHET_STATE, &noise_h_ee1peekem1pskpsp);
                             // We must make sure the ratchet key is saved before we transition.
                             let new_ratchet_number = handshake_state.ratchet_number + 1;
                             let result = app.save_ratchet_state(
@@ -1517,6 +1520,7 @@ impl<Application: ApplicationLayer> Context<Application> {
                                     ratchet_key: new_ratchet_key.clone(),
                                     cipher_states: [
                                         Some(SessionKey::new(
+                                            hmac,
                                             noise_ck,
                                             handshake_state.local_key_id,
                                             handshake_state.remote_key_id,
@@ -1531,7 +1535,7 @@ impl<Application: ApplicationLayer> Context<Application> {
                                         timeout: current_time.saturating_add(Application::EXPIRATION_TIMEOUT_MS),
                                     },
                                 }),
-                                header_receive_cipher: Application::BlockCipherDec::new(handshake_state.header_receive_key.as_ref()),
+                                header_receive_cipher: Application::PrpDec::new(handshake_state.header_receive_key.as_ref()),
                                 header_send_cipher,
                                 kex_send_cipher: Mutex::new(Some(Application::AeadEnc::new(kex_key_b2a.as_ref()))),
                                 kex_receive_cipher: Mutex::new(Some(Application::AeadDec::new(kex_key_a2b.as_ref()))),
@@ -1709,15 +1713,16 @@ fn initiate_rekey<Application: ApplicationLayer>(
         _ => return Err(()),
     }
     let sha512 = &mut Application::Hash::new();
+    let hmac = &mut Application::HmacHash::new();
     // Start of Noise KKpsk0 pattern1.
     // Noise process pattern1 psk0 token.
     let mut noise_ck = SymmetricState::new(INITIAL_H_REKEY);
-    let noise_temp_h = noise_ck.mix_key_and_hash(state.ratchet_key.as_ref());
+    let noise_temp_h = noise_ck.mix_key_and_hash(hmac, state.ratchet_key.as_ref());
     let noise_h_psk = mix_hash(sha512, &session.noise_kk_local_init_h, &noise_temp_h);
     // Noise process pattern1 e token.
     let noise_e_secret = Application::KeyPair::generate(&mut context.rng.lock().unwrap());
     let noise_h_pske = mix_hash(sha512, &noise_h_psk, noise_e_secret.public_key_bytes());
-    noise_ck.mix_key(noise_e_secret.public_key_bytes());
+    noise_ck.mix_key(hmac, noise_e_secret.public_key_bytes());
 
     let noise_pattern1: &mut NoiseKKPattern1or2 = byte_array_as_proto_buffer_mut(&mut message);
     noise_pattern1.noise_e = *noise_e_secret.public_key_bytes();
@@ -1726,10 +1731,10 @@ fn initiate_rekey<Application: ApplicationLayer>(
     if !noise_e_secret.agree(&session.remote_s_public_key, noise_es.as_mut()) {
         return Err(());
     }
-    noise_ck.mix_key(noise_es.as_ref());
+    noise_ck.mix_key(hmac, noise_es.as_ref());
     drop(noise_es);
     // Noise process pattern1 ss token.
-    let noise_k_pskesss = noise_ck.mix_key_initialize_key(session.noise_kk_ss.as_ref());
+    let noise_k_pskesss = noise_ck.mix_key_initialize_key(hmac, session.noise_kk_ss.as_ref());
     // Noise process pattern1 payload token.
     let mut session_map = context.session_map.write().unwrap();
     let new_key_id = generate_key_id(&session_map, &mut context.rng.lock().unwrap());
@@ -1919,8 +1924,9 @@ fn receive_control_fragment<'a, Application: ApplicationLayer, SendFn: FnMut(&mu
             }
             // Noise process pattern1 psk0 token.
             let sha512 = &mut Application::Hash::new();
+            let hmac = &mut Application::HmacHash::new();
             let mut noise_ck = SymmetricState::new(INITIAL_H_REKEY);
-            let noise_temp_h = noise_ck.mix_key_and_hash(state.ratchet_key.as_ref());
+            let noise_temp_h = noise_ck.mix_key_and_hash(hmac, state.ratchet_key.as_ref());
             let noise_h_psk = mix_hash(sha512, &session.noise_kk_remote_init_h, &noise_temp_h);
             // Noise process pattern1 e token.
             // Get public key validation out of the way early
@@ -1933,12 +1939,12 @@ fn receive_control_fragment<'a, Application: ApplicationLayer, SendFn: FnMut(&mu
                 let bob_e_secret = Application::KeyPair::generate(&mut context.0.rng.lock().unwrap());
                 if bob_e_secret.agree(&alice_e, noise_ee.as_mut()) && bob_e_secret.agree(&session.remote_s_public_key, noise_se.as_mut()) {
                     let noise_h_pske = mix_hash(sha512, &noise_h_psk, alice_e.as_bytes());
-                    noise_ck.mix_key(alice_e.as_bytes());
+                    noise_ck.mix_key(hmac, alice_e.as_bytes());
                     // Noise process pattern1 es token.
-                    noise_ck.mix_key(noise_es.as_ref());
+                    noise_ck.mix_key(hmac, noise_es.as_ref());
                     drop(noise_es);
                     // Noise process pattern1 ss token.
-                    let noise_k_pskesss = noise_ck.mix_key_initialize_key(session.noise_kk_ss.as_ref());
+                    let noise_k_pskesss = noise_ck.mix_key_initialize_key(hmac, session.noise_kk_ss.as_ref());
 
                     // Noise process pattern1 payload.
                     let (is_auth, noise_h_pskep) = decrypt_and_hash::<Application>(
@@ -1955,12 +1961,12 @@ fn receive_control_fragment<'a, Application: ApplicationLayer, SendFn: FnMut(&mu
                         // Start of Noise KKpsk0 pattern2.
                         // Noise process pattern2 e token.
                         let noise_h_pskepe = mix_hash(sha512, &noise_h_pskep, bob_e_secret.public_key_bytes());
-                        noise_ck.mix_key(bob_e_secret.public_key_bytes());
+                        noise_ck.mix_key(hmac, bob_e_secret.public_key_bytes());
                         // Noise process pattern2 ee token.
-                        noise_ck.mix_key(noise_ee.as_ref());
+                        noise_ck.mix_key(hmac, noise_ee.as_ref());
                         drop(noise_ee);
                         // Noise process pattern2 se token.
-                        let noise_k_pskessseese = noise_ck.mix_key_initialize_key(noise_se.as_ref());
+                        let noise_k_pskessseese = noise_ck.mix_key_initialize_key(hmac, noise_se.as_ref());
                         drop(noise_se);
                         // Noise process pattern2 payload.
                         let mut message2 = [0u8; NoiseKKPattern1or2::SIZE];
@@ -1982,7 +1988,7 @@ fn receive_control_fragment<'a, Application: ApplicationLayer, SendFn: FnMut(&mu
                         drop(noise_k_pskessseese);
                         // Bob finished Noise KKpsk0 handshake.
                         let new_ratchet_number = state.ratchet_number + 1;
-                        let (new_ratchet_key, new_ratchet_fingerprint) = noise_ck.get_ask2(LABEL_RATCHET_STATE, &noise_h_pskepep);
+                        let (new_ratchet_key, new_ratchet_fingerprint) = noise_ck.get_ask2(hmac, LABEL_RATCHET_STATE, &noise_h_pskepep);
                         let result = app.save_ratchet_state(
                             &session.remote_s_public_key,
                             &session.application_data,
@@ -1997,7 +2003,7 @@ fn receive_control_fragment<'a, Application: ApplicationLayer, SendFn: FnMut(&mu
                             drop(kex_lock);
                             return Err(ReceiveError::RatchetIoError);
                         }
-                        let (kex_key_b2a, kex_key_a2b) = noise_ck.get_ask2(LABEL_KEX_KEY, &noise_h_pskepep);
+                        let (kex_key_b2a, kex_key_a2b) = noise_ck.get_ask2(hmac, LABEL_KEX_KEY, &noise_h_pskepep);
                         // The new "Bob" doesn't know yet if Alice has received the new key, so the
                         // new key is recorded as the "alt" (key_index ^ 1) but the current key is
                         // not advanced yet.
@@ -2016,7 +2022,7 @@ fn receive_control_fragment<'a, Application: ApplicationLayer, SendFn: FnMut(&mu
                             .unwrap()
                             .replace(Application::AeadDec::new(kex_key_a2b.as_ref()));
 
-                        state.cipher_states[next_key_index].replace(SessionKey::new(noise_ck, new_key_id, remote_key_id, current_counter, true));
+                        state.cipher_states[next_key_index].replace(SessionKey::new(hmac, noise_ck, new_key_id, remote_key_id, current_counter, true));
                         let timer = current_time.saturating_add(Application::RETRY_INTERVAL_MS);
                         state.outgoing_offer = NoiseKKPattern2 {
                             next_retry_time: AtomicI64::new(timer),
@@ -2056,14 +2062,15 @@ fn receive_control_fragment<'a, Application: ApplicationLayer, SendFn: FnMut(&mu
                 if let Some(bob_e) = from_bytes_agreement::<Application>(&noise_pattern2.noise_e, noise_e_secret, noise_ee.as_mut()) {
                     if context.0.static_keypair.agree(&bob_e, noise_se.as_mut()) {
                         let sha512 = &mut Application::Hash::new();
+                        let hmac = &mut Application::HmacHash::new();
                         let mut noise_ck = noise_ck.clone();
                         let noise_h_pskepe = mix_hash(sha512, noise_h_pskep, bob_e.as_bytes());
-                        noise_ck.mix_key(bob_e.as_bytes());
+                        noise_ck.mix_key(hmac, bob_e.as_bytes());
                         // Noise process pattern2 ee token.
-                        noise_ck.mix_key(noise_ee.as_ref());
+                        noise_ck.mix_key(hmac, noise_ee.as_ref());
                         drop(noise_ee);
                         // Noise process pattern2 se token.
-                        let noise_k_pskessseese = noise_ck.mix_key_initialize_key(noise_se.as_ref());
+                        let noise_k_pskessseese = noise_ck.mix_key_initialize_key(hmac, noise_se.as_ref());
                         drop(noise_se);
                         // Noise process pattern2 payload.
                         let (is_auth, noise_h_pskepep) = decrypt_and_hash::<Application>(
@@ -2079,7 +2086,7 @@ fn receive_control_fragment<'a, Application: ApplicationLayer, SendFn: FnMut(&mu
                             // Bob fully authenticated.
                             // Alice finished Noise KKpsk0 handshake.
                             let new_ratchet_number = state.ratchet_number + 1;
-                            let (new_ratchet_key, new_ratchet_fingerprint) = noise_ck.get_ask2(LABEL_RATCHET_STATE, &noise_h_pskepep);
+                            let (new_ratchet_key, new_ratchet_fingerprint) = noise_ck.get_ask2(hmac, LABEL_RATCHET_STATE, &noise_h_pskepep);
 
                             let result = app.save_ratchet_state(
                                 &session.remote_s_public_key,
@@ -2095,7 +2102,7 @@ fn receive_control_fragment<'a, Application: ApplicationLayer, SendFn: FnMut(&mu
                                 drop(kex_lock);
                                 return Err(ReceiveError::RatchetIoError);
                             }
-                            let (kex_key_b2a, kex_key_a2b) = noise_ck.get_ask2(LABEL_KEX_KEY, &noise_h_pskepep);
+                            let (kex_key_b2a, kex_key_a2b) = noise_ck.get_ask2(hmac, LABEL_KEX_KEY, &noise_h_pskepep);
 
                             let new_key_id = *new_key_id;
                             drop(state);
@@ -2121,6 +2128,7 @@ fn receive_control_fragment<'a, Application: ApplicationLayer, SendFn: FnMut(&mu
                             state.ratchet_key.overwrite(&new_ratchet_key);
 
                             state.cipher_states[next_key_index].replace(SessionKey::new(
+                                hmac,
                                 noise_ck,
                                 new_key_id,
                                 remote_key_id,
@@ -2302,6 +2310,7 @@ impl<Application: ApplicationLayer> NoiseXKAliceHandshake<Application> {
     > {
         let mut message = [0u8; NoiseXKPattern1::SIZE];
         let sha512 = &mut Application::Hash::new();
+        let hmac = &mut Application::HmacHash::new();
         // Start of Noise XKhfs+psk2 pattern1.
         let noise_pattern1: &mut NoiseXKPattern1 = byte_array_as_proto_buffer_mut(&mut message);
         let noise_e_secret = Application::KeyPair::generate(rng);
@@ -2320,13 +2329,13 @@ impl<Application: ApplicationLayer> NoiseXKAliceHandshake<Application> {
         // Noise process pattern1 e token.
         let mut noise_ck = SymmetricState::new(INITIAL_H);
         let noise_h_e = mix_hash(sha512, &noise_h, noise_e_secret.public_key_bytes());
-        noise_ck.mix_key(noise_e_secret.public_key_bytes());
+        noise_ck.mix_key(hmac, noise_e_secret.public_key_bytes());
         // Noise process pattern1 es token.
         let mut noise_es = Secret::new();
         if !noise_e_secret.agree(remote_s_public_key, noise_es.as_mut()) {
             return Err(OpenError::InvalidPublicKey);
         }
-        let noise_k_es = noise_ck.mix_key_initialize_key(noise_es.as_ref());
+        let noise_k_es = noise_ck.mix_key_initialize_key(hmac, noise_es.as_ref());
         drop(noise_es);
         // Noise process pattern1 e1 token.
         let noise_h_ee1 = encrypt_and_hash::<Application>(
@@ -2347,7 +2356,7 @@ impl<Application: ApplicationLayer> NoiseXKAliceHandshake<Application> {
             &mut message[NoiseXKPattern1::P_ENC_START..NoiseXKPattern1::P_AUTH_END],
         );
         drop(noise_k_es);
-        let (header_b2a_key, header_a2b_key) = noise_ck.get_ask2(LABEL_HEADER_KEY, &noise_h_ee1p);
+        let (header_b2a_key, header_a2b_key) = noise_ck.get_ask2(hmac, LABEL_HEADER_KEY, &noise_h_ee1p);
         let mut pattern1_id = 0u64.to_ne_bytes();
         pattern1_id.copy_from_slice(&message[NoiseXKPattern1::P_AUTH_START + 8..NoiseXKPattern1::P_AUTH_END]);
         Ok((
@@ -2621,13 +2630,14 @@ fn generate_key_id<Application: ApplicationLayer>(
 impl<Application: ApplicationLayer> SessionKey<Application> {
     #[inline(always)]
     fn new(
-        ck: SymmetricState<Application::HmacHash>,
+        hmac: &mut Application::HmacHash,
+        ck: SymmetricState,
         local_key_id: NonZeroU32,
         remote_key_id: NonZeroU32,
         current_counter: u64,
         is_bob: bool,
     ) -> Self {
-        let (b2a, a2b) = ck.split();
+        let (b2a, a2b) = ck.split(hmac);
         let (receive_key, send_key) = if is_bob {
             (&a2b, &b2a)
         } else {
