@@ -19,10 +19,10 @@ use std::sync::{Arc, Mutex, MutexGuard, RwLock, Weak};
 use crate::crypto::aes::{AesDec, AesEnc};
 use crate::crypto::aes_gcm::{AesGcmDec, AesGcmEnc, AES_GCM_IV_SIZE, AES_GCM_KEY_SIZE, AES_GCM_TAG_SIZE};
 use crate::crypto::p384::{P384KeyPair, P384PublicKey, P384_ECDH_SHARED_SECRET_SIZE, P384_PUBLIC_KEY_SIZE};
-use crate::crypto::pqc_kyber::{RngCore, KYBER_SECRETKEYBYTES};
-use crate::crypto::secret::Secret;
-use crate::crypto::secure_eq;
+use crate::crypto::pqc_kyber::KYBER_SECRETKEYBYTES;
+use crate::crypto::secret::{secure_eq, Secret};
 use crate::crypto::sha512::Sha512;
+use crate::crypto::RngCore;
 
 use crate::applicationlayer::*;
 use crate::error::{FaultType, OpenError, ReceiveError, SendError};

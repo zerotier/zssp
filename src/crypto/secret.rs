@@ -2,6 +2,21 @@
 
 use std::convert::TryInto;
 
+/// Constant time byte slice equality.
+#[inline]
+pub fn secure_eq<A: AsRef<[u8]> + ?Sized, B: AsRef<[u8]> + ?Sized>(a: &A, b: &B) -> bool {
+    let (a, b) = (a.as_ref(), b.as_ref());
+    if a.len() == b.len() {
+        let mut x = 0u8;
+        for (aa, bb) in a.iter().zip(b.iter()) {
+            x |= *aa ^ *bb;
+        }
+        x == 0
+    } else {
+        false
+    }
+}
+
 /// Container for secrets that clears them on drop.
 ///
 /// We can't be totally sure that things like libraries are doing this and it's
@@ -11,7 +26,7 @@ use std::convert::TryInto;
 /// This is generally a low-risk thing since it's process memory that's protected,
 /// but it's still not a bad idea due to things like swap or obscure side channel
 /// attacks that allow memory to be read.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone)]
 #[repr(transparent)]
 pub struct Secret<const L: usize>(pub [u8; L]);
 
@@ -43,6 +58,11 @@ impl<const L: usize> Secret<L> {
     #[inline(always)]
     pub fn as_ptr(&self) -> *const u8 {
         self.0.as_ptr()
+    }
+
+    #[inline(always)]
+    pub fn as_bytes(&self) -> &[u8; L] {
+        &self.0
     }
 
     /// Get the first N bytes of this secret as a fixed length array.
@@ -108,3 +128,10 @@ impl<const L: usize> AsMut<[u8; L]> for Secret<L> {
         &mut self.0
     }
 }
+
+impl<const L: usize> PartialEq for Secret<L> {
+    fn eq(&self, other: &Self) -> bool {
+        secure_eq(&self.0, &other.0)
+    }
+}
+impl<const L: usize> Eq for Secret<L> {}

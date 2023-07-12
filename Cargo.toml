@@ -1,20 +1,14 @@
 [package]
-authors = ["ZeroTier, Inc. <contact@zerotier.com>", "Adam Ierymenko <adam.ierymenko@zerotier.com>"]
+authors = ["ZeroTier, Inc. <contact@zerotier.com>", "Adam Ierymenko <adam.ierymenko@zerotier.com>", "Monica Moniot <monica.moniot@zerotier.com>"]
 edition = "2021"
 license = "MPL-2.0"
 name = "zssp"
 version = "0.1.0"
 
-
 [lib]
 name = "zssp"
 path = "src/lib.rs"
 doc = true
-
-[[bin]]
-name = "zssp_test"
-path = "src/main.rs"
-doc = false
 
 [dependencies]
 pqc_kyber = { version = "0.6.0", default-features = false, features = ["kyber1024", "std"] }
