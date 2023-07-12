@@ -84,6 +84,8 @@ pub trait ApplicationLayer: Sized {
     /// computational work as Bob will when they process Alice's initiation packet.
     const PROOF_OF_WORK_BIT_DIFFICULTY: u32 = 13;
 
+    type Rng: CryptoRng + RngCore;
+
     type BlockCipherEnc: AesEnc;
     type BlockCipherDec: AesDec;
 
@@ -93,10 +95,8 @@ pub trait ApplicationLayer: Sized {
     type Hash: Sha512;
     type HmacHash: HmacSha512;
 
-    type KeyPair: P384KeyPair;
     type PublicKey: P384PublicKey;
-
-    type Rng: CryptoRng + RngCore;
+    type KeyPair: P384KeyPair<Self::PublicKey, Self::Rng>;
 
     /// Type for arbitrary opaque object for use by the application that is attached to
     /// each session.

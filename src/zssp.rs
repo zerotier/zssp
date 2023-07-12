@@ -2045,7 +2045,7 @@ fn receive_control_fragment<'a, Application: ApplicationLayer, SendFn: FnMut(&mu
                 // Noise process pattern2 e token.
                 let mut noise_ee = Secret::new();
                 let mut noise_se = Secret::new();
-                if let Some(bob_e) = from_bytes_agreement::<Application::PublicKey>(&noise_pattern2.noise_e, noise_e_secret, noise_ee.as_mut()) {
+                if let Some(bob_e) = from_bytes_agreement::<Application>(&noise_pattern2.noise_e, noise_e_secret, noise_ee.as_mut()) {
                     if context.0.static_keypair.agree(&bob_e, noise_se.as_mut()) {
                         let sha512 = &mut Application::Hash::new();
                         let mut noise_ck = noise_ck.clone();
@@ -2296,7 +2296,7 @@ impl<Application: ApplicationLayer> NoiseXKAliceHandshake<Application> {
         let sha512 = &mut Application::Hash::new();
         // Start of Noise XKhfs+psk2 pattern1.
         let noise_pattern1: &mut NoiseXKPattern1 = byte_array_as_proto_buffer_mut(&mut message);
-        let noise_e_secret = Application::KeyPair::generate();
+        let noise_e_secret = Application::KeyPair::generate(rng);
         let noise_e1_secret = pqc_kyber::keypair(rng);
         noise_pattern1.alice_key_id = local_key_id.get().to_ne_bytes();
         noise_pattern1.noise_e = noise_e_secret.public_key_bytes().clone();
@@ -2678,10 +2678,10 @@ fn verify_pow<Application: ApplicationLayer>(hasher: &mut Application::Hash, mes
     n.leading_zeros() >= Application::PROOF_OF_WORK_BIT_DIFFICULTY
 }
 #[inline(always)]
-fn from_bytes_agreement<PublicKey: P384PublicKey>(
+fn from_bytes_agreement<Application: ApplicationLayer>(
     public: &[u8],
-    private: &impl P384KeyPair,
+    private: &Application::KeyPair,
     output: &mut [u8; P384_ECDH_SHARED_SECRET_SIZE],
-) -> Option<PublicKey> {
-    PublicKey::from_bytes(public.try_into().unwrap()).and_then(|e| private.agree(&e, output).then_some(e))
+) -> Option<Application::PublicKey> {
+    Application::PublicKey::from_bytes(public.try_into().unwrap()).and_then(|e| private.agree(&e, output).then_some(e))
 }
