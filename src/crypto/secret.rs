@@ -85,6 +85,10 @@ impl<const L: usize> Secret<L> {
         let amount = N.min(L);
         self.0[..amount].copy_from_slice(&src.0[..amount]);
     }
+
+    pub fn eq_bytes(&self, other: &[u8]) -> bool {
+        secure_eq(&self.0, other)
+    }
 }
 
 impl<const L: usize> Drop for Secret<L> {
