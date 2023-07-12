@@ -96,7 +96,7 @@ pub trait ApplicationLayer: Sized {
     type HmacHash: HmacSha512;
 
     type PublicKey: P384PublicKey;
-    type KeyPair: P384KeyPair<Self::PublicKey, Self::Rng>;
+    type KeyPair: P384KeyPair<PublicKey = Self::PublicKey, Rng = Self::Rng>;
 
     /// Type for arbitrary opaque object for use by the application that is attached to
     /// each session.

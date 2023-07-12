@@ -15,15 +15,17 @@ pub trait P384PublicKey: Sized + Send + Sync {
 }
 
 /// A NIST P-384 ECDH/ECDSA public/private key pair.
-pub trait P384KeyPair<PubKey: P384PublicKey, Rng: RngCore + CryptoRng>: Send + Sync {
+pub trait P384KeyPair: Send + Sync {
+    type PublicKey: P384PublicKey;
+    type Rng: RngCore + CryptoRng;
     /// Randomly generate a new p384 keypair.
-    /// This function may use the provided RNG or it's own, so long as the produced keys are
-    /// cryptographically random.
-    fn generate(rng: &mut Rng) -> Self;
+    /// This function may use the provided RNG or it's own,
+    /// so long as the produced keys are cryptographically random.
+    fn generate(rng: &mut Self::Rng) -> Self;
 
     /// Get the raw bytes that uniquely define the public key.
     fn public_key_bytes(&self) -> &[u8; P384_PUBLIC_KEY_SIZE];
 
     /// Perform ECDH key agreement, returning the raw (un-hashed!) ECDH secret.
-    fn agree(&self, other_public: &PubKey, output: &mut [u8; P384_ECDH_SHARED_SECRET_SIZE]) -> bool;
+    fn agree(&self, other_public: &Self::PublicKey, output: &mut [u8; P384_ECDH_SHARED_SECRET_SIZE]) -> bool;
 }
