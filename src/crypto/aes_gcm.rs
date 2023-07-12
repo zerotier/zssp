@@ -2,7 +2,7 @@
 
 pub const AES_GCM_TAG_SIZE: usize = 16;
 pub const AES_GCM_IV_SIZE: usize = 12;
-pub const AES_GCM_KEY_SIZE: usize = 32;
+pub const AES_GCM_KEY_SIZE: usize = super::aes::AES_256_KEY_SIZE;
 
 /// Implementations of this trait does not have to be Send + Sync,
 /// but if it is wrapped in a `Mutex` it must satisfy the requirements of Send + Sync.

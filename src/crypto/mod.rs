@@ -6,6 +6,10 @@ pub mod sha512;
 pub mod p384;
 pub mod secret;
 
+pub use pqc_kyber;
+pub use pqc_kyber::RngCore;
+pub use pqc_kyber::CryptoRng;
+
 /// Constant time byte slice equality.
 #[inline]
 pub fn secure_eq<A: AsRef<[u8]> + ?Sized, B: AsRef<[u8]> + ?Sized>(a: &A, b: &B) -> bool {

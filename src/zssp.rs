@@ -22,17 +22,16 @@ use crate::crypto::p384::{P384_ECDH_SHARED_SECRET_SIZE, P384_PUBLIC_KEY_SIZE, P3
 use crate::crypto::secret::Secret;
 use crate::crypto::secure_eq;
 use crate::crypto::sha512::Sha512;
+use crate::crypto::pqc_kyber::{KYBER_SECRETKEYBYTES, RngCore};
 
-use pqc_kyber::{KYBER_SECRETKEYBYTES, RngCore};
-use crate::indexed_heap::{BinaryHeapIndex, IndexedBinaryHeap};
-
+use crate::proto::*;
 use crate::applicationlayer::*;
+use crate::log_event::LogEvent;
 use crate::error::{FaultType, OpenError, ReceiveError, SendError};
+use crate::indexed_heap::{BinaryHeapIndex, IndexedBinaryHeap};
 use crate::frag_cache::UnassociatedFragCache;
 use crate::fragged::{Assembled, Fragged};
 use crate::handshake_cache::UnassociatedHandshakeCache;
-use crate::log_event::LogEvent;
-use crate::proto::*;
 use crate::symmetric_state::SymmetricState;
 
 /// Session context for local application.
