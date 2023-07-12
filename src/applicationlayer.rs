@@ -8,11 +8,11 @@
 
 use std::sync::Arc;
 
-use crate::crypto::aes::{AesEnc, AesDec};
-use crate::crypto::aes_gcm::{AesGcmEnc, AesGcmDec};
-use crate::crypto::sha512::{Sha512, HmacSha512};
+use crate::crypto::aes::{AesDec, AesEnc};
+use crate::crypto::aes_gcm::{AesGcmDec, AesGcmEnc};
+use crate::crypto::p384::{P384KeyPair, P384PublicKey};
+use crate::crypto::sha512::{HmacSha512, Sha512};
 use crate::{log_event::LogEvent, Session, RATCHET_FINGERPRINT_SIZE, RATCHET_KEY_SIZE};
-use crate::crypto::p384::{P384PublicKey, P384KeyPair};
 
 /// Trait to implement to integrate the session into an application.
 ///
@@ -82,7 +82,6 @@ pub trait ApplicationLayer: Sized {
     /// Default is 13, which, on a modern processor, ensures Alice will have to do about as much
     /// computational work as Bob will when they process Alice's initiation packet.
     const PROOF_OF_WORK_BIT_DIFFICULTY: u32 = 13;
-
 
     type BlockCipherEnc: AesEnc;
     type BlockCipherDec: AesDec;
@@ -238,8 +237,8 @@ pub enum SaveRatchetAction {
     /// state with ratchet number one less than the given ratchet state.
     DeletePrevious,
 }
+use pqc_kyber::{CryptoRng, RngCore};
 use SaveRatchetAction::*;
-use pqc_kyber::{RngCore, CryptoRng};
 impl SaveRatchetAction {
     /// If this is true then this is the first time the latest ratchet state has ever been seen,
     /// so it ought to be immediately saved.

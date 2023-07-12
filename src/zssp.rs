@@ -9,29 +9,29 @@
 // FIPS compliant Noise_XK with Jedi powers (Kyber1024) and built-in attack-resistant large payload (fragmentation) support.
 
 use std::cmp::Reverse;
-use std::ops::DerefMut;
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::num::NonZeroU32;
+use std::ops::DerefMut;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, Weak};
 
-use crate::crypto::aes::{AesEnc, AesDec};
-use crate::crypto::aes_gcm::{AES_GCM_KEY_SIZE, AES_GCM_IV_SIZE, AES_GCM_TAG_SIZE, AesGcmDec, AesGcmEnc};
-use crate::crypto::p384::{P384_ECDH_SHARED_SECRET_SIZE, P384_PUBLIC_KEY_SIZE, P384KeyPair, P384PublicKey};
+use crate::crypto::aes::{AesDec, AesEnc};
+use crate::crypto::aes_gcm::{AesGcmDec, AesGcmEnc, AES_GCM_IV_SIZE, AES_GCM_KEY_SIZE, AES_GCM_TAG_SIZE};
+use crate::crypto::p384::{P384KeyPair, P384PublicKey, P384_ECDH_SHARED_SECRET_SIZE, P384_PUBLIC_KEY_SIZE};
+use crate::crypto::pqc_kyber::{RngCore, KYBER_SECRETKEYBYTES};
 use crate::crypto::secret::Secret;
 use crate::crypto::secure_eq;
 use crate::crypto::sha512::Sha512;
-use crate::crypto::pqc_kyber::{KYBER_SECRETKEYBYTES, RngCore};
 
-use crate::proto::*;
 use crate::applicationlayer::*;
-use crate::log_event::LogEvent;
 use crate::error::{FaultType, OpenError, ReceiveError, SendError};
-use crate::indexed_heap::{BinaryHeapIndex, IndexedBinaryHeap};
 use crate::frag_cache::UnassociatedFragCache;
 use crate::fragged::{Assembled, Fragged};
 use crate::handshake_cache::UnassociatedHandshakeCache;
+use crate::indexed_heap::{BinaryHeapIndex, IndexedBinaryHeap};
+use crate::log_event::LogEvent;
+use crate::proto::*;
 use crate::symmetric_state::SymmetricState;
 
 /// Session context for local application.
@@ -363,7 +363,8 @@ impl<Application: ApplicationLayer> Context<Application> {
                                     if !handshake_state.reinitialize(
                                         &session,
                                         &ratchet_fingerprint,
-                                        &mut self.0.session_map.write().unwrap(), &mut self.0.rng.lock().unwrap(),
+                                        &mut self.0.session_map.write().unwrap(),
+                                        &mut self.0.rng.lock().unwrap(),
                                         current_time,
                                     ) {
                                         session.expire_inner(&self.0, &mut session_queue);
@@ -497,7 +498,7 @@ impl<Application: ApplicationLayer> Context<Application> {
 
         let mut noise_kk_ss = Secret::new();
         if !self.0.static_keypair.agree(&remote_s_public_key, noise_kk_ss.as_mut()) {
-            return Err(OpenError::InvalidPublicKey)
+            return Err(OpenError::InvalidPublicKey);
         }
         let noise_kk_local_init_h = mix_hash(sha512, &INITIAL_H_REKEY, self.0.static_keypair.public_key_bytes());
         let noise_kk_local_init_h = mix_hash(sha512, &noise_kk_local_init_h, remote_s_public_key.as_bytes());
@@ -508,8 +509,12 @@ impl<Application: ApplicationLayer> Context<Application> {
         let mut session_map = self.0.session_map.write().unwrap();
         let local_key_id = generate_key_id(&session_map, &mut self.0.rng.lock().unwrap());
         // Begin Noise XKhfs+psk2.
-        let (offer, a2b_header_key, b2a_header_key) =
-            NoiseXKAliceHandshake::<Application>::initialize(local_key_id, &remote_s_public_key, &ratchet_fingerprint, &mut self.0.rng.lock().unwrap())?;
+        let (offer, a2b_header_key, b2a_header_key) = NoiseXKAliceHandshake::<Application>::initialize(
+            local_key_id,
+            &remote_s_public_key,
+            &ratchet_fingerprint,
+            &mut self.0.rng.lock().unwrap(),
+        )?;
         let handshake_state = Box::new(NoiseXKAliceHandshake {
             next_retry_time: AtomicI64::new(current_time.saturating_add(Application::RETRY_INTERVAL_MS)),
             timeout: current_time.saturating_add(Application::INITIAL_OFFER_TIMEOUT_MS),
@@ -636,9 +641,11 @@ impl<Application: ApplicationLayer> Context<Application> {
                 let session_map = self.0.session_map.read().unwrap();
                 if let Some((Some(session), key_index)) = session_map.get(&local_key_id).map(|r| (r.0.upgrade(), r.1 as usize)) {
                     drop(session_map);
-                    session
-                        .header_receive_cipher
-                        .decrypt_in_place((&mut incoming_physical_packet[HEADER_PROTECT_ENC_START..HEADER_PROTECT_ENC_END]).try_into().unwrap());
+                    session.header_receive_cipher.decrypt_in_place(
+                        (&mut incoming_physical_packet[HEADER_PROTECT_ENC_START..HEADER_PROTECT_ENC_END])
+                            .try_into()
+                            .unwrap(),
+                    );
                     let (fragment_count, fragment_no, packet_type, incoming_counter, header_nonce) = parse_packet_header(&incoming_physical_packet);
                     // Handle replay protection.
                     if PACKET_TYPE_RANGE_TRANSPORT.contains(&packet_type) {
@@ -782,8 +789,11 @@ impl<Application: ApplicationLayer> Context<Application> {
                     // Check for and handle PACKET_TYPE_ALICE_NOISE_XK_PATTERN_3
                     incoming = self.0.unassociated_handshake_states.get(local_key_id);
                     if let Some(incoming) = incoming.as_ref() {
-                        Application::BlockCipherDec::new(incoming.header_receive_key.as_ref())
-                            .decrypt_in_place((&mut incoming_physical_packet[HEADER_PROTECT_ENC_START..HEADER_PROTECT_ENC_END]).try_into().unwrap());
+                        Application::BlockCipherDec::new(incoming.header_receive_key.as_ref()).decrypt_in_place(
+                            (&mut incoming_physical_packet[HEADER_PROTECT_ENC_START..HEADER_PROTECT_ENC_END])
+                                .try_into()
+                                .unwrap(),
+                        );
                         let (fragment_count, fragment_no, packet_type, _, header_nonce) = parse_packet_header(&incoming_physical_packet);
                         app.event_log(
                             LogEvent::ReceiveUnassociatedFragment(fragment_count, fragment_no, packet_type),
@@ -954,8 +964,9 @@ impl<Application: ApplicationLayer> Context<Application> {
                     // Noise process pattern1 e token.
                     let mut noise_ck = SymmetricState::new(INITIAL_H);
                     let mut noise_es = Secret::new();
-                    let noise_e_pattern1 = from_bytes_agreement::<Application::PublicKey>(&noise_pattern1.noise_e, &self.0.static_keypair, noise_es.as_mut())
-                        .ok_or(byzantine_fault!(FaultType::FailedAuthentication, false))?;
+                    let noise_e_pattern1 =
+                        from_bytes_agreement::<Application::PublicKey>(&noise_pattern1.noise_e, &self.0.static_keypair, noise_es.as_mut())
+                            .ok_or(byzantine_fault!(FaultType::FailedAuthentication, false))?;
                     let noise_h_e = mix_hash(sha512, &noise_h, &noise_pattern1.noise_e);
                     noise_ck.mix_key(&noise_pattern1.noise_e);
                     // Noise process pattern1 es token.
@@ -1021,8 +1032,7 @@ impl<Application: ApplicationLayer> Context<Application> {
                     noise_ck.mix_key(&noise_pattern2.noise_e);
                     // Noise process pattern2 ee token.
                     let mut noise_ee = Secret::new();
-                    if !noise_e_pattern2_secret
-                    .agree(&noise_e_pattern1, noise_ee.as_mut()) {
+                    if !noise_e_pattern2_secret.agree(&noise_e_pattern1, noise_ee.as_mut()) {
                         return Err(byzantine_fault!(FaultType::FailedAuthentication, false));
                     }
                     let noise_k_esee = noise_ck.mix_key_initialize_key(noise_ee.as_ref());
@@ -1187,7 +1197,9 @@ impl<Application: ApplicationLayer> Context<Application> {
 
                         // Noise process pattern2 e token.
                         let mut noise_ee = Secret::new();
-                        if let Some(noise_e_pattern2) = from_bytes_agreement::<Application::PublicKey>(&noise_pattern2.noise_e, noise_e_secret, noise_ee.as_mut()) {
+                        if let Some(noise_e_pattern2) =
+                            from_bytes_agreement::<Application::PublicKey>(&noise_pattern2.noise_e, noise_e_secret, noise_ee.as_mut())
+                        {
                             let sha512 = &mut Application::Hash::new();
                             let mut noise_ck = noise_ck_es.clone();
                             let noise_h_ee1pe = mix_hash(sha512, noise_h_ee1p, noise_e_pattern2.as_bytes());
@@ -1205,8 +1217,7 @@ impl<Application: ApplicationLayer> Context<Application> {
                                 &mut message[NoiseXKPattern2::EKEM1_ENC_START..NoiseXKPattern2::P_ENC_START],
                             );
                             let noise_pattern2: &NoiseXKPattern2 = byte_array_as_proto_buffer(message);
-                            let noise_ekem1_secret =
-                                pqc_kyber::decapsulate(&noise_pattern2.noise_ekem1, noise_e1_secret.as_ref()).map(|k| Secret(k));
+                            let noise_ekem1_secret = pqc_kyber::decapsulate(&noise_pattern2.noise_ekem1, noise_e1_secret.as_ref()).map(|k| Secret(k));
                             if let Some(Ok(noise_ekem1_secret)) = is_auth.then_some(noise_ekem1_secret) {
                                 noise_ck.mix_key(noise_ekem1_secret.as_ref());
                                 drop(noise_ekem1_secret);
@@ -1225,8 +1236,14 @@ impl<Application: ApplicationLayer> Context<Application> {
                                     let (temp_h, noise_k_ratchet) = noise_ck_ratchet.mix_key_and_hash_initialize_key(ratchet_key);
                                     let noise_h_ee1peekem1psk = mix_hash(sha512, &noise_h_ee1peekem1, &temp_h);
                                     // Noise process pattern2 payload.
-                                    let (is_auth, noise_h_ratchet) =
-                                        decrypt_and_hash::<Application>(sha512, &noise_k_ratchet, &noise_h_ee1peekem1psk, packet_type, 0, &mut payload);
+                                    let (is_auth, noise_h_ratchet) = decrypt_and_hash::<Application>(
+                                        sha512,
+                                        &noise_k_ratchet,
+                                        &noise_h_ee1peekem1psk,
+                                        packet_type,
+                                        0,
+                                        &mut payload,
+                                    );
                                     let mut key_id = 0u32.to_ne_bytes();
                                     key_id.copy_from_slice(&payload[..NoiseXKPattern2::P_AUTH_START - NoiseXKPattern2::P_ENC_START]);
 
@@ -1309,16 +1326,18 @@ impl<Application: ApplicationLayer> Context<Application> {
                                         let local_key_id = handshake_state.local_key_id;
                                         drop(state);
                                         let mut state = session.state.write().unwrap();
-                                        session.kex_send_cipher.lock().unwrap().replace(Application::AeadEnc::new(kex_key_a2b.as_ref()));
-                                        session.kex_receive_cipher.lock().unwrap().replace(Application::AeadDec::new(kex_key_b2a.as_ref()));
+                                        session
+                                            .kex_send_cipher
+                                            .lock()
+                                            .unwrap()
+                                            .replace(Application::AeadEnc::new(kex_key_a2b.as_ref()));
+                                        session
+                                            .kex_receive_cipher
+                                            .lock()
+                                            .unwrap()
+                                            .replace(Application::AeadDec::new(kex_key_b2a.as_ref()));
 
-                                        state.cipher_states[0].replace(SessionKey::new(
-                                            noise_ck,
-                                            local_key_id,
-                                            remote_key_id,
-                                            INIT_COUNTER,
-                                            false,
-                                        ));
+                                        state.cipher_states[0].replace(SessionKey::new(noise_ck, local_key_id, remote_key_id, INIT_COUNTER, false));
                                         debug_assert!(state.cipher_states[1].is_none());
                                         if let NoiseXKPattern1or3(handshake_state) = &mut state.outgoing_offer {
                                             handshake_state.next_retry_time =
@@ -1359,7 +1378,13 @@ impl<Application: ApplicationLayer> Context<Application> {
                         let mut state = session.state.write().unwrap();
                         let ratchet_fingerprint = state.ratchet_fingerprint.clone();
                         if let NoiseXKPattern1or3(handshake_state) = &mut state.outgoing_offer {
-                            if !handshake_state.reinitialize(&session, &ratchet_fingerprint, &mut self.0.session_map.write().unwrap(), &mut self.0.rng.lock().unwrap(), current_time) {
+                            if !handshake_state.reinitialize(
+                                &session,
+                                &ratchet_fingerprint,
+                                &mut self.0.session_map.write().unwrap(),
+                                &mut self.0.rng.lock().unwrap(),
+                                current_time,
+                            ) {
                                 session.expire()
                             }
                         }
@@ -1443,10 +1468,9 @@ impl<Application: ApplicationLayer> Context<Application> {
                     ) {
                         AcceptSessionAction::Accept(application_data) => {
                             let mut noise_kk_ss = Secret::new();
-                            if !self.0.static_keypair
-                                .agree(&remote_s_public_key, noise_kk_ss.as_mut()) {
-                                    return Err(byzantine_fault!(FaultType::FailedAuthentication, false));
-                                }
+                            if !self.0.static_keypair.agree(&remote_s_public_key, noise_kk_ss.as_mut()) {
+                                return Err(byzantine_fault!(FaultType::FailedAuthentication, false));
+                            }
                             let noise_kk_local_init_h = mix_hash(sha512, &INITIAL_H_REKEY, self.0.static_keypair.public_key_bytes());
                             let noise_kk_local_init_h = mix_hash(sha512, &noise_kk_local_init_h, remote_s_public_key.as_bytes());
                             let noise_kk_remote_init_h = mix_hash(sha512, &INITIAL_H_REKEY, remote_s_public_key.as_bytes());
@@ -1622,9 +1646,11 @@ impl<Application: ApplicationLayer> Context<Application> {
                 fragment_size = tagged_fragment_size;
             }
 
-            session
-                .header_send_cipher
-                .encrypt_in_place((&mut mtu_sized_buffer[HEADER_PROTECT_ENC_START..HEADER_PROTECT_ENC_END]).try_into().unwrap());
+            session.header_send_cipher.encrypt_in_place(
+                (&mut mtu_sized_buffer[HEADER_PROTECT_ENC_START..HEADER_PROTECT_ENC_END])
+                    .try_into()
+                    .unwrap(),
+            );
             if !send(&mut mtu_sized_buffer[..fragment_size]) {
                 break;
             }
@@ -1803,7 +1829,11 @@ fn receive_control_fragment<'a, Application: ApplicationLayer, SendFn: FnMut(&mu
                 );
                 if result.is_ok() {
                     if let NoiseKKPattern2 { kex_send_key, .. } = &state.outgoing_offer {
-                        session.kex_send_cipher.lock().unwrap().replace(Application::AeadEnc::new(kex_send_key.as_ref()));
+                        session
+                            .kex_send_cipher
+                            .lock()
+                            .unwrap()
+                            .replace(Application::AeadEnc::new(kex_send_key.as_ref()));
                     }
                     state.ratchet_number = ratchet.0;
                     state.ratchet_fingerprint.overwrite(&ratchet.1);
@@ -1889,7 +1919,9 @@ fn receive_control_fragment<'a, Application: ApplicationLayer, SendFn: FnMut(&mu
             let mut noise_es = Secret::new();
             let mut noise_ee = Secret::new();
             let mut noise_se = Secret::new();
-            if let Some(alice_e) = from_bytes_agreement::<Application::PublicKey>(&noise_pattern1.noise_e, &context.0.static_keypair, noise_es.as_mut()) {
+            if let Some(alice_e) =
+                from_bytes_agreement::<Application::PublicKey>(&noise_pattern1.noise_e, &context.0.static_keypair, noise_es.as_mut())
+            {
                 let bob_e_secret = Application::KeyPair::generate();
                 if bob_e_secret.agree(&alice_e, noise_ee.as_mut()) && bob_e_secret.agree(&session.remote_s_public_key, noise_se.as_mut()) {
                     let noise_h_pske = mix_hash(sha512, &noise_h_psk, alice_e.as_bytes());
@@ -1970,15 +2002,13 @@ fn receive_control_fragment<'a, Application: ApplicationLayer, SendFn: FnMut(&mu
                         drop(state);
                         let mut state = session.state.write().unwrap();
                         let current_counter = session.send_counter.load(Ordering::Relaxed);
-                        session.kex_receive_cipher.lock().unwrap().replace(Application::AeadDec::new(kex_key_a2b.as_ref()));
+                        session
+                            .kex_receive_cipher
+                            .lock()
+                            .unwrap()
+                            .replace(Application::AeadDec::new(kex_key_a2b.as_ref()));
 
-                        state.cipher_states[next_key_index].replace(SessionKey::new(
-                            noise_ck,
-                            new_key_id,
-                            remote_key_id,
-                            current_counter,
-                            true,
-                        ));
+                        state.cipher_states[next_key_index].replace(SessionKey::new(noise_ck, new_key_id, remote_key_id, current_counter, true));
                         let timer = current_time.saturating_add(Application::RETRY_INTERVAL_MS);
                         state.outgoing_offer = NoiseKKPattern2 {
                             next_retry_time: AtomicI64::new(timer),
@@ -2067,8 +2097,16 @@ fn receive_control_fragment<'a, Application: ApplicationLayer, SendFn: FnMut(&mu
                             if let Some(key) = state.cipher_states[next_key_index].as_ref() {
                                 context.0.session_map.write().unwrap().remove(&key.local_key_id);
                             }
-                            session.kex_receive_cipher.lock().unwrap().replace(Application::AeadDec::new(kex_key_b2a.as_ref()));
-                            session.kex_send_cipher.lock().unwrap().replace(Application::AeadEnc::new(kex_key_a2b.as_ref()));
+                            session
+                                .kex_receive_cipher
+                                .lock()
+                                .unwrap()
+                                .replace(Application::AeadDec::new(kex_key_b2a.as_ref()));
+                            session
+                                .kex_send_cipher
+                                .lock()
+                                .unwrap()
+                                .replace(Application::AeadEnc::new(kex_key_a2b.as_ref()));
 
                             state.ratchet_number = new_ratchet_number;
                             state.ratchet_fingerprint.overwrite_first_n(&new_ratchet_fingerprint);
@@ -2246,7 +2284,14 @@ impl<Application: ApplicationLayer> NoiseXKAliceHandshake<Application> {
         remote_s_public_key: &Application::PublicKey,
         ratchet_fingerprint: &[u8; RATCHET_FINGERPRINT_SIZE],
         rng: &mut Application::Rng,
-    ) -> Result<(NoiseXKAliceHandshakeState<Application>, Secret<AES_GCM_KEY_SIZE>, Secret<AES_GCM_KEY_SIZE>), OpenError> {
+    ) -> Result<
+        (
+            NoiseXKAliceHandshakeState<Application>,
+            Secret<AES_GCM_KEY_SIZE>,
+            Secret<AES_GCM_KEY_SIZE>,
+        ),
+        OpenError,
+    > {
         let mut message = [0u8; NoiseXKPattern1::SIZE];
         let sha512 = &mut Application::Hash::new();
         // Start of Noise XKhfs+psk2 pattern1.
@@ -2552,7 +2597,10 @@ fn assemble_fragments_into<A: ApplicationLayer>(fragments: &[A::IncomingPacketBu
     return Ok(l);
 }
 /// Generate a random local key id that is currently unused.
-fn generate_key_id<Application: ApplicationLayer>(session_map: &HashMap<NonZeroU32, (Weak<Session<Application>>, bool)>, rng: &mut Application::Rng) -> NonZeroU32 {
+fn generate_key_id<Application: ApplicationLayer>(
+    session_map: &HashMap<NonZeroU32, (Weak<Session<Application>>, bool)>,
+    rng: &mut Application::Rng,
+) -> NonZeroU32 {
     loop {
         if let Some(local_key_id) = NonZeroU32::new(rng.next_u32()) {
             if !session_map.contains_key(&local_key_id) {
@@ -2630,6 +2678,10 @@ fn verify_pow<Application: ApplicationLayer>(hasher: &mut Application::Hash, mes
     n.leading_zeros() >= Application::PROOF_OF_WORK_BIT_DIFFICULTY
 }
 #[inline(always)]
-fn from_bytes_agreement<PublicKey: P384PublicKey>(public: &[u8], private: &impl P384KeyPair, output: &mut [u8; P384_ECDH_SHARED_SECRET_SIZE]) -> Option<PublicKey> {
+fn from_bytes_agreement<PublicKey: P384PublicKey>(
+    public: &[u8],
+    private: &impl P384KeyPair,
+    output: &mut [u8; P384_ECDH_SHARED_SECRET_SIZE],
+) -> Option<PublicKey> {
     PublicKey::from_bytes(public.try_into().unwrap()).and_then(|e| private.agree(&e, output).then_some(e))
 }

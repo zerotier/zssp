@@ -2,13 +2,13 @@
 
 pub mod aes;
 pub mod aes_gcm;
-pub mod sha512;
 pub mod p384;
 pub mod secret;
+pub mod sha512;
 
 pub use pqc_kyber;
-pub use pqc_kyber::RngCore;
 pub use pqc_kyber::CryptoRng;
+pub use pqc_kyber::RngCore;
 
 /// Constant time byte slice equality.
 #[inline]

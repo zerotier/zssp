@@ -8,19 +8,23 @@
 use std::marker::PhantomData;
 
 use crate::crypto::aes::AES_256_KEY_SIZE;
-use crate::crypto::sha512::HmacSha512;
 use crate::crypto::secret::Secret;
+use crate::crypto::sha512::HmacSha512;
 
 use crate::proto::NOISE_HASHLEN;
 
 pub(crate) struct SymmetricState<Hmac: HmacSha512> {
     chaining_key: Secret<NOISE_HASHLEN>,
     token_counter: u8,
-    p: PhantomData<Hmac>
+    p: PhantomData<Hmac>,
 }
 impl<Hmac: HmacSha512> Clone for SymmetricState<Hmac> {
     fn clone(&self) -> Self {
-        Self { chaining_key: self.chaining_key.clone(), token_counter: self.token_counter.clone(), p: PhantomData }
+        Self {
+            chaining_key: self.chaining_key.clone(),
+            token_counter: self.token_counter.clone(),
+            p: PhantomData,
+        }
     }
 }
 
