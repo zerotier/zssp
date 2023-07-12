@@ -10,12 +10,15 @@ pub trait P384PublicKey: Sized + Send + Sync {
     /// Create a p384 public key from raw bytes.
     fn from_bytes(raw_key: &[u8; P384_PUBLIC_KEY_SIZE]) -> Option<Self>;
 
+    /// Get the raw bytes that uniquely define the public key.
     fn as_bytes(&self) -> &[u8; P384_PUBLIC_KEY_SIZE];
 }
 
 /// A NIST P-384 ECDH/ECDSA public/private key pair.
 pub trait P384KeyPair<PubKey: P384PublicKey, Rng: RngCore + CryptoRng>: Send + Sync {
     /// Randomly generate a new p384 keypair.
+    /// This function may use the provided RNG or it's own, so long as the produced keys are
+    /// cryptographically random.
     fn generate(rng: &mut Rng) -> Self;
 
     /// Get the raw bytes that uniquely define the public key.
