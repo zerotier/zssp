@@ -21,6 +21,7 @@ struct PacketMetadata {
     packet_size: u32,
     creation_time: i64,
 }
+
 pub(crate) struct UnassociatedFragCache<Fragment> {
     dos_salt: RandomState,
     frags_first_unused: usize,

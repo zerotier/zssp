@@ -18,6 +18,7 @@ pub(crate) struct SymmetricState<Hmac: HmacSha512> {
     token_counter: u8,
     p: PhantomData<Hmac>,
 }
+
 impl<Hmac: HmacSha512> Clone for SymmetricState<Hmac> {
     fn clone(&self) -> Self {
         Self {

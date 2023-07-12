@@ -14,6 +14,7 @@ pub enum OpenError {
     /// Local identity blob is too large to send, even with fragmentation.
     DataTooLarge,
 }
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum SendError {
     /// An invalid parameter was supplied to the function.
@@ -33,6 +34,7 @@ pub enum SendError {
     /// Data object is too large to send, even with fragmentation.
     DataTooLarge,
 }
+
 /// A type of fault occurred because we received a bad packet.
 ///
 /// An unauthenticated attacker can intentionally trigger any of these, so it is best to
