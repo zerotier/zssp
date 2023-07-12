@@ -14,6 +14,7 @@ pub struct IndexedBinaryHeap<T, P> {
     map: Vec<(usize, u64)>,
 }
 
+#[allow(unused)]
 impl<T, P: Ord> IndexedBinaryHeap<T, P> {
     pub fn new() -> Self {
         Self {
