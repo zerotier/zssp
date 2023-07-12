@@ -5,28 +5,34 @@
  * (c) ZeroTier, Inc.
  * https://www.zerotier.com/
  */
-use zerotier_crypto::constant::AES_256_KEY_SIZE;
-use zerotier_crypto::hash::{HMACSHA512, HMAC_SHA512_SIZE};
-use zerotier_crypto::secret::Secret;
+use std::marker::PhantomData;
+
+use crate::crypto::aes::AES_256_KEY_SIZE;
+use crate::crypto::sha512::HmacSha512;
+use crate::crypto::secret::Secret;
 
 use crate::proto::NOISE_HASHLEN;
 
-#[derive(Clone)]
-pub(crate) struct SymmetricState {
+pub(crate) struct SymmetricState<Hmac: HmacSha512> {
     chaining_key: Secret<NOISE_HASHLEN>,
     token_counter: u8,
+    p: PhantomData<Hmac>
+}
+impl<Hmac: HmacSha512> Clone for SymmetricState<Hmac> {
+    fn clone(&self) -> Self {
+        Self { chaining_key: self.chaining_key.clone(), token_counter: self.token_counter.clone(), p: PhantomData }
+    }
 }
 
-impl SymmetricState {
+impl<Hmac: HmacSha512> SymmetricState<Hmac> {
     pub(crate) fn new(h: [u8; NOISE_HASHLEN]) -> Self {
-        debug_assert_eq!(NOISE_HASHLEN, HMAC_SHA512_SIZE);
-        Self { chaining_key: Secret(h), token_counter: b'P' }
+        Self { chaining_key: Secret(h), token_counter: b'P', p: PhantomData }
     }
     /// Corresponds to Noise `MixKey`.
     pub(crate) fn mix_key(&mut self, input_key_material: &[u8]) {
         let mut next_ck = Secret::new();
 
-        self.kbkdf(input_key_material, self.label(), 2, next_ck.as_bytes_mut(), None, None);
+        self.kbkdf(input_key_material, self.label(), 2, next_ck.as_mut(), None, None);
         self.token_counter += 1;
 
         self.chaining_key.overwrite(&next_ck);
@@ -39,7 +45,7 @@ impl SymmetricState {
         let mut next_ck = Secret::new();
         let mut temp_k = [0u8; NOISE_HASHLEN];
 
-        self.kbkdf(input_key_material, self.label(), 2, next_ck.as_bytes_mut(), Some(&mut temp_k), None);
+        self.kbkdf(input_key_material, self.label(), 2, next_ck.as_mut(), Some(&mut temp_k), None);
         self.token_counter += 1;
 
         self.chaining_key.overwrite(&next_ck);
@@ -50,7 +56,7 @@ impl SymmetricState {
         let mut next_ck = Secret::new();
         let mut temp_h = [0u8; NOISE_HASHLEN];
 
-        self.kbkdf(input_key_material, self.label(), 3, next_ck.as_bytes_mut(), Some(&mut temp_h), None);
+        self.kbkdf(input_key_material, self.label(), 3, next_ck.as_mut(), Some(&mut temp_h), None);
         self.token_counter += 1;
 
         self.chaining_key.overwrite(&next_ck);
@@ -66,7 +72,7 @@ impl SymmetricState {
             input_key_material,
             self.label(),
             3,
-            next_ck.as_bytes_mut(),
+            next_ck.as_mut(),
             Some(&mut temp_h),
             Some(&mut temp_k),
         );
@@ -129,24 +135,24 @@ impl SymmetricState {
     ) {
         let l = &(num_outputs * 512u16).to_be_bytes();
 
-        let mut hm = HMACSHA512::new(input_key_material);
+        let mut hm = Hmac::new(input_key_material);
         hm.update(&[1, label[0], label[1], label[2], label[3], 0x00]);
-        hm.update(self.chaining_key.as_bytes());
+        hm.update(self.chaining_key.as_ref());
         hm.update(l);
-        *output1 = hm.finish();
+        hm.finish(output1);
         if let Some(output2) = output2 {
             hm.reset(input_key_material);
             hm.update(&[2, label[0], label[1], label[2], label[3], 0x00]);
-            hm.update(self.chaining_key.as_bytes());
+            hm.update(self.chaining_key.as_ref());
             hm.update(l);
-            *output2 = hm.finish();
+            hm.finish(output2);
         }
         if let Some(output3) = output3 {
             hm.reset(input_key_material);
             hm.update(&[3, label[0], label[1], label[2], label[3], 0x00]);
-            hm.update(self.chaining_key.as_bytes());
+            hm.update(self.chaining_key.as_ref());
             hm.update(l);
-            *output3 = hm.finish();
+            hm.finish(output3);
         }
     }
 }

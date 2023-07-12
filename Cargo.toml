@@ -17,5 +17,5 @@ path = "src/main.rs"
 doc = false
 
 [dependencies]
-pqc_kyber = { version = "0.4.0", default-features = false, features = ["kyber1024", "std"] }
-hex-literal = "0.3.4"
+pqc_kyber = { version = "0.6.0", default-features = false, features = ["kyber1024", "std"] }
+hex-literal = "0.4.1"

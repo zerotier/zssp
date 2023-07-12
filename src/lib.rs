@@ -5,10 +5,14 @@
  * (c) ZeroTier, Inc.
  * https://www.zerotier.com/
  */
+pub const AES_BLOCK_SIZE: usize = 16;
+
+pub mod crypto;
 
 mod applicationlayer;
 mod frag_cache;
 mod fragged;
+mod indexed_heap;
 mod handshake_cache;
 mod log_event;
 mod proto;

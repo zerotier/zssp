@@ -11,9 +11,9 @@ use std::mem::size_of;
 
 use hex_literal::hex;
 use pqc_kyber::{KYBER_CIPHERTEXTBYTES, KYBER_PUBLICKEYBYTES};
-use zerotier_crypto::constant::AES_GCM_TAG_SIZE;
-use zerotier_crypto::hash::{SHA512, SHA512_HASH_SIZE};
-use zerotier_crypto::p384::P384_PUBLIC_KEY_SIZE;
+use crate::crypto::aes_gcm::AES_GCM_TAG_SIZE;
+use crate::crypto::sha512::{Sha512, SHA512_HASH_SIZE};
+use crate::crypto::p384::P384_PUBLIC_KEY_SIZE;
 
 /// Minimum size of a valid physical ZSSP packet of any type. Anything smaller is discarded.
 pub const MIN_PACKET_SIZE: usize = HEADER_SIZE + AES_GCM_TAG_SIZE;
@@ -282,8 +282,8 @@ pub(crate) fn byte_array_as_proto_buffer_mut<B: ProtocolFlatBuffer>(b: &mut [u8]
     unsafe { &mut *b.as_mut_ptr().cast() }
 }
 /// Trick rust into letting us use a hasher that returns more than 64 bits.
-pub(crate) struct SHAHasher<'a>(pub &'a mut SHA512);
-impl<'a> Hasher for SHAHasher<'a> {
+pub(crate) struct ShaHasher<'a, ShaImpl: Sha512>(pub &'a mut ShaImpl);
+impl<'a, ShaImpl: Sha512> Hasher for ShaHasher<'a, ShaImpl> {
     fn finish(&self) -> u64 {
         panic!()
     }

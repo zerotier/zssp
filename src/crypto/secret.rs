@@ -1,10 +1,6 @@
 // (c) 2020-2022 ZeroTier, Inc. -- currently proprietary pending actual release and licensing. See LICENSE.md.
 
-use std::{convert::TryInto, ffi::c_void};
-
-extern "C" {
-    fn OPENSSL_cleanse(ptr: *mut c_void, len: usize);
-}
+use std::convert::TryInto;
 
 /// Container for secrets that clears them on drop.
 ///
@@ -36,7 +32,7 @@ impl<const L: usize> Secret<L> {
     #[inline(always)]
     pub fn from_bytes_then_nuke(b: &mut [u8]) -> Self {
         let ret = Self(b.try_into().unwrap());
-        unsafe { OPENSSL_cleanse(b.as_mut_ptr().cast(), L) };
+        b.fill(0);
         ret
     }
     #[inline(always)]
@@ -45,17 +41,8 @@ impl<const L: usize> Secret<L> {
     }
 
     #[inline(always)]
-    pub fn as_bytes(&self) -> &[u8; L] {
-        &self.0
-    }
-    #[inline(always)]
     pub fn as_ptr(&self) -> *const u8 {
         self.0.as_ptr()
-    }
-
-    #[inline(always)]
-    pub fn as_bytes_mut(&mut self) -> &mut [u8; L] {
-        &mut self.0
     }
 
     /// Get the first N bytes of this secret as a fixed length array.
@@ -78,20 +65,12 @@ impl<const L: usize> Secret<L> {
         let amount = N.min(L);
         self.0[..amount].copy_from_slice(&src.0[..amount]);
     }
-
-    /// Destroy the contents of this secret, ignoring normal Rust mutability constraints.
-    ///
-    /// This can be used to force a secret to be forgotten under e.g. key lifetime exceeded or error conditions.
-    #[inline(always)]
-    pub fn nuke(&self) {
-        unsafe { OPENSSL_cleanse(self.0.as_ptr().cast_mut().cast(), L) };
-    }
 }
 
 impl<const L: usize> Drop for Secret<L> {
     #[inline(always)]
     fn drop(&mut self) {
-        unsafe { OPENSSL_cleanse(self.0.as_mut_ptr().cast(), L) };
+        self.0.fill(0);
     }
 }
 

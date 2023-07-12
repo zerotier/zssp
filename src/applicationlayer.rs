@@ -8,9 +8,11 @@
 
 use std::sync::Arc;
 
-use zerotier_crypto::p384::{P384KeyPair, P384PublicKey};
-
+use crate::crypto::aes::{AesEnc, AesDec};
+use crate::crypto::aes_gcm::{AesGcmEnc, AesGcmDec};
+use crate::crypto::sha512::{Sha512, HmacSha512};
 use crate::{log_event::LogEvent, Session, RATCHET_FINGERPRINT_SIZE, RATCHET_KEY_SIZE};
+use crate::crypto::p384::{P384PublicKey, P384KeyPair};
 
 /// Trait to implement to integrate the session into an application.
 ///
@@ -81,6 +83,21 @@ pub trait ApplicationLayer: Sized {
     /// computational work as Bob will when they process Alice's initiation packet.
     const PROOF_OF_WORK_BIT_DIFFICULTY: u32 = 13;
 
+
+    type BlockCipherEnc: AesEnc;
+    type BlockCipherDec: AesDec;
+
+    type AeadEnc: AesGcmEnc;
+    type AeadDec: AesGcmDec;
+
+    type Hash: Sha512;
+    type HmacHash: HmacSha512;
+
+    type KeyPair: P384KeyPair;
+    type PublicKey: P384PublicKey;
+
+    type Rng: CryptoRng + RngCore;
+
     /// Type for arbitrary opaque object for use by the application that is attached to
     /// each session.
     type Data;
@@ -97,8 +114,6 @@ pub trait ApplicationLayer: Sized {
     /// It will be dropped as soon as the session is established.
     type LocalIdentityBlob: AsRef<[u8]>;
 
-    /// Get this node's static key in serialized form and the P-384 static key it contains.
-    fn local_s_keypair(&self) -> &P384KeyPair;
     /// Save the given ratchet state to persistent storage.
     /// A ratchet state consists of a ratchet number, a ratchet fingerprint, and a ratchet key.
     ///
@@ -129,7 +144,7 @@ pub trait ApplicationLayer: Sized {
     #[allow(unused)]
     fn save_ratchet_state(
         &self,
-        alice_s_public: &P384PublicKey,
+        alice_s_public: &Self::PublicKey,
         application_data: &Self::Data,
         ratchet_action: SaveRatchetAction,
         latest_ratchet_number: u64,
@@ -224,6 +239,7 @@ pub enum SaveRatchetAction {
     DeletePrevious,
 }
 use SaveRatchetAction::*;
+use pqc_kyber::{RngCore, CryptoRng};
 impl SaveRatchetAction {
     /// If this is true then this is the first time the latest ratchet state has ever been seen,
     /// so it ought to be immediately saved.
