@@ -12,4 +12,5 @@ doc = true
 
 [dependencies]
 pqc_kyber = { version = "0.6.0", default-features = false, features = ["kyber1024", "std"] }
+rand_core = "0.6.4"
 hex-literal = "0.4.1"

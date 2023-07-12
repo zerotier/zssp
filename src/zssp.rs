@@ -22,7 +22,7 @@ use crate::crypto::p384::{P384KeyPair, P384PublicKey, P384_ECDH_SHARED_SECRET_SI
 use crate::crypto::pqc_kyber::KYBER_SECRETKEYBYTES;
 use crate::crypto::secret::{secure_eq, Secret};
 use crate::crypto::sha512::Sha512;
-use crate::crypto::RngCore;
+use crate::crypto::rand_core::RngCore;
 
 use crate::applicationlayer::*;
 use crate::error::{FaultType, OpenError, ReceiveError, SendError};

@@ -12,7 +12,7 @@ use crate::crypto::aes::{AesDec, AesEnc};
 use crate::crypto::aes_gcm::{AesGcmDec, AesGcmEnc};
 use crate::crypto::p384::{P384KeyPair, P384PublicKey};
 use crate::crypto::sha512::{HmacSha512, Sha512};
-use crate::crypto::{CryptoRng, RngCore};
+use crate::crypto::rand_core::{CryptoRng, RngCore};
 use crate::{log_event::LogEvent, Session, RATCHET_FINGERPRINT_SIZE, RATCHET_KEY_SIZE};
 
 /// Trait to implement to integrate the session into an application.

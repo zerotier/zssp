@@ -7,5 +7,4 @@ pub mod secret;
 pub mod sha512;
 
 pub use pqc_kyber;
-pub use pqc_kyber::CryptoRng;
-pub use pqc_kyber::RngCore;
+pub use rand_core;
