@@ -891,8 +891,9 @@ impl<Application: ApplicationLayer> Context<Application> {
                 if message[8..16] != message[p_auth_end - 8..p_auth_end] {
                     return Err(byzantine_fault!(FaultType::InvalidPacket, false));
                 }
-                let total_ratchet_fingerprints = (p_auth_end - AES_GCM_TAG_SIZE) / RATCHET_SIZE;
-                if (p_auth_end - AES_GCM_TAG_SIZE) % RATCHET_SIZE != 0 || total_ratchet_fingerprints > 2 {
+                let p_size = p_auth_end - NoiseXKPattern1::P_ENC_START - AES_GCM_TAG_SIZE;
+                let total_ratchet_fingerprints = p_size / RATCHET_SIZE;
+                if p_size % RATCHET_SIZE != 0 || total_ratchet_fingerprints > 2 {
                     return Err(byzantine_fault!(FaultType::InvalidPacket, false));
                 }
 
