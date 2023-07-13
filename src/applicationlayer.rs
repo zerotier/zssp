@@ -11,9 +11,10 @@ use std::sync::Arc;
 use crate::crypto::aes::{AesDec, AesEnc};
 use crate::crypto::aes_gcm::{AesGcmDec, AesGcmEnc};
 use crate::crypto::p384::{P384KeyPair, P384PublicKey};
-use crate::crypto::sha512::{HmacSha512, Sha512};
 use crate::crypto::rand_core::{CryptoRng, RngCore};
-use crate::{log_event::LogEvent, Session, RATCHET_FINGERPRINT_SIZE, RATCHET_KEY_SIZE};
+use crate::crypto::secret::Secret;
+use crate::crypto::sha512::{HmacSha512, Sha512};
+use crate::{log_event::LogEvent, Session, RATCHET_SIZE};
 
 /// Trait to implement to integrate the session into an application.
 ///
@@ -162,8 +163,8 @@ pub trait ApplicationLayer: Sized {
     /// to the zero ratchet key, restarting the ratchet chain.
     /// If `RatchetAction::FailAuthentication` is returned Alice's connection will be silently dropped.
     #[allow(unused)]
-    fn restore_ratchet(&self, ratchet_fingerprint: &[u8; RATCHET_FINGERPRINT_SIZE], current_time: i64) -> Result<RestoreAction, ()> {
-        Ok(RestoreAction::DowngradeRatchet)
+    fn restore_ratchet(&self, ratchet_fingerprint: &[u8; RATCHET_SIZE], current_time: i64) -> Result<Option<RatchetState>, ()> {
+        Ok(None)
     }
     /// Atomically save the given ratchet key, fingerprint and number to persistent storage.
     ///
@@ -184,14 +185,11 @@ pub trait ApplicationLayer: Sized {
     /// (`initiator_disallows_downgrade` returns false and/or`restore_ratchet` returns `DowngradeRatchet`).
     /// Otherwise, when we restart, we will not be allowed to reconnect.
     #[allow(unused)]
-    fn save_ratchet_state(
+    fn save_ratchet_state<'a>(
         &self,
         remote_static_key: &Self::PublicKey,
         application_data: &Self::Data,
-        ratchet_action: SaveAction,
-        latest_ratchet_number: u64,
-        latest_ratchet_fingerprint: &[u8; RATCHET_FINGERPRINT_SIZE],
-        latest_ratchet_key: &[u8; RATCHET_KEY_SIZE],
+        save_action: SaveAction<'a>,
         current_time: i64,
     ) -> Result<(), ()> {
         Ok(())
@@ -200,84 +198,20 @@ pub trait ApplicationLayer: Sized {
     #[inline]
     fn event_log<'a>(&self, event: LogEvent<'a, Self>, current_time: i64) {}
 }
-pub enum RestoreAction {
-    RestoreRatchet(u64, [u8; RATCHET_KEY_SIZE]),
-    DowngradeRatchet,
-    FailAuthentication,
+
+#[derive(Default, Clone)]
+pub struct RatchetState {
+    pub fingerprint: [u8; RATCHET_SIZE],
+    pub key: Secret<RATCHET_SIZE>,
+    pub ratchet_count: u64,
 }
 /// Ratchet keys and fingerprints should be saved *per remote peer*. It is up to the application to
 /// enforce separate storage for each remote peer based on `remote_static_key` and `application_data`.
 ///
-/// Only up to 2 ratchet keys and fingerprints may be saved at one time.
-/// If a 3rd needs to be saved the 1st should be deleted, if it was not already deleted.
-pub enum SaveAction {
-    /// Save the given `latest_ratchet_fingerprint` and `latest_ratchet_key`,
-    /// but do not update the confirmed ratchet number.
-    ///
-    /// If a ratchet key and fingerprint already exist with ratchet number `latest_ratchet_number`,
-    /// then `latest_ratchet_fingerprint` and `latest_ratchet_key` should overwrite them.
-    ///
-    /// Keep the previous ratchet state saved and searchable until it is explicitly deleted.
-    /// If there are two saved ratchet keys and fingerprints, replace the oldest pair with
-    /// the new pair.
-    SaveAsUnconfirmed,
-    /// Save the given `latest_ratchet_fingerprint` and `latest_ratchet_key`,
-    /// and set the confirmed ratchet number to `latest_ratchet_number`.
-    /// The confirmed ratchet number should be set equal to `latest_ratchet_number`.
-    ///
-    /// If a ratchet key and fingerprint already exist with ratchet number `latest_ratchet_number`,
-    /// then `latest_ratchet_fingerprint` and `latest_ratchet_key` should overwrite them.
-    ///
-    /// Keep the previous ratchet state saved and searchable until it is explicitly deleted.
-    /// If there are two saved ratchet keys and fingerprints, replace the oldest pair with
-    /// the new pair.
-    SaveAsConfirmed,
-    /// Set the confirmed ratchet number to `latest_ratchet_number`,
-    /// and permanently delete the previous (oldest) ratchet key and fingerprint.
-    ///
-    /// The given `latest_ratchet_fingerprint` and `latest_ratchet_key` will be identical to those
-    /// saved during a prior `SaveAsUnconfirmed` call.
-    /// These two must be the only saved ratchet key and fingerprint when this call completes.
-    ConfirmLatestAndDeletePrevious,
-    /// Permanently delete the previous (oldest) ratchet key and fingerprint.
-    ///
-    /// The given `latest_ratchet_fingerprint` and `latest_ratchet_key` will be identical to those
-    /// saved during a prior `SaveAsConfirmed` call.
-    /// These two must be the only saved ratchet key and fingerprint when this call completes.
-    DeletePrevious,
-}
-use SaveAction::*;
-impl SaveAction {
-    /// If this is true then the given `latest_ratchet_fingerprint` and `latest_ratchet_key`
-    /// must be saved to permanent storage.
-    /// `latest_ratchet_key` should be searchable using `latest_ratchet_fingerprint`.
-    pub fn save_latest(&self) -> bool {
-        match self {
-            SaveAsUnconfirmed => true,
-            SaveAsConfirmed => true,
-            _ => false,
-        }
-    }
-    /// If this is true then the previous ratchet key and fingerprint should be deleted.
-    /// If `latest_ratchet_number > 1`, then the previous ratchet key and fingerprint will have
-    /// ratchet number `latest_ratchet_number - 1`.
-    pub fn delete_previous(&self) -> bool {
-        match self {
-            ConfirmLatestAndDeletePrevious => true,
-            DeletePrevious => true,
-            _ => false,
-        }
-    }
-    /// If this is true then set the confirmed ratchet number to `latest_ratchet_number`.
-    ///
-    /// The confirmed ratchet number is a single 64-bit number saved to persistent storage that denotes its
-    /// associated ratchet key is "confirmed". Only the confirmed ratchet key should be used to
-    /// `open` a new session.
-    pub fn confirm_latest(&self) -> bool {
-        match self {
-            ConfirmLatestAndDeletePrevious => true,
-            SaveAsConfirmed => true,
-            _ => false,
-        }
-    }
+/// Only up to 2 ratchet keys and fingerprints will be saved at one time.
+pub enum SaveAction<'a> {
+    AddRatchet(&'a RatchetState),
+    DeleteRatchet(&'a RatchetState),
+    DeleteThenAddRatchet(&'a RatchetState, &'a RatchetState),
+    VerifyThenOverwriteRatchet(Option<&'a RatchetState>, &'a RatchetState),
 }
