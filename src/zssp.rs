@@ -887,12 +887,12 @@ impl<Application: ApplicationLayer> Context<Application> {
                 }
                 // The message id must be the first 8 bytes of the gcm tag.
                 // This forces the message id to be authenticated along with the entire message.
-                let challenge_start_idx = message_size - ChallengeResponse::SIZE;
-                if message[8..] != message[challenge_start_idx - 8..challenge_start_idx] {
+                let p_auth_end = message_size - ChallengeResponse::SIZE;
+                if message[8..16] != message[p_auth_end - 8..p_auth_end] {
                     return Err(byzantine_fault!(FaultType::InvalidPacket, false));
                 }
-                let total_ratchet_fingerprints = (challenge_start_idx - AES_GCM_TAG_SIZE) / RATCHET_SIZE;
-                if (challenge_start_idx - AES_GCM_TAG_SIZE) % RATCHET_SIZE != 0 || total_ratchet_fingerprints > 2 {
+                let total_ratchet_fingerprints = (p_auth_end - AES_GCM_TAG_SIZE) / RATCHET_SIZE;
+                if (p_auth_end - AES_GCM_TAG_SIZE) % RATCHET_SIZE != 0 || total_ratchet_fingerprints > 2 {
                     return Err(byzantine_fault!(FaultType::InvalidPacket, false));
                 }
 
@@ -904,7 +904,7 @@ impl<Application: ApplicationLayer> Context<Application> {
                     match check_allow_incoming_session() {
                         IncomingSessionAction::Allow => {}
                         IncomingSessionAction::Challenge => {
-                            let response: &ChallengeResponse = byte_array_as_proto_buffer(&message[challenge_start_idx..message_size]);
+                            let response: &ChallengeResponse = byte_array_as_proto_buffer(&message[p_auth_end..message_size]);
                             let mut counter = 0u64.to_ne_bytes();
                             counter.copy_from_slice(&response.challenge_counter);
                             let counter = u64::from_be_bytes(counter);
@@ -918,7 +918,7 @@ impl<Application: ApplicationLayer> Context<Application> {
                             hasher.0.finish(&mut output);
                             let is_valid = self.check_challenge_window(counter)
                                 && secure_eq(&output[..CHALLENGE_MAC_SIZE], &response.challenge_mac)
-                                && verify_pow::<Application>(&mut hasher.0, &message[challenge_start_idx..message_size])
+                                && verify_pow::<Application>(&mut hasher.0, &message[p_auth_end..message_size])
                                 && self.update_challenge_window(counter);
                             app.event_log(LogEvent::ReceiveCheckXK1Challenge(is_valid), current_time);
                             if !is_valid {
@@ -1002,7 +1002,7 @@ impl<Application: ApplicationLayer> Context<Application> {
                         &noise_h_ee1,
                         packet_type,
                         1,
-                        &mut message[NoiseXKPattern1::P_ENC_START..challenge_start_idx],
+                        &mut message[NoiseXKPattern1::P_ENC_START..p_auth_end],
                     );
                     drop(noise_k_es);
                     if !is_auth {
