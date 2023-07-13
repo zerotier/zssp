@@ -1452,9 +1452,11 @@ impl<Application: ApplicationLayer> Context<Application> {
                 }
             }
             PACKET_TYPE_NOISE_XK_PATTERN_3 => {
-                app.event_log(LogEvent::ReceiveUncheckedXK3, current_time);
                 // Alice (remote) --> Bob (local)
                 // -> s, se
+                let message = &mut message[..message_size];
+                app.event_log(LogEvent::ReceiveUncheckedXK3, current_time);
+
                 if session.is_some() {
                     return Err(byzantine_fault!(FaultType::OutOfSequence, false));
                 }
