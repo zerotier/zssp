@@ -1204,7 +1204,7 @@ impl<Application: ApplicationLayer> Context<Application> {
                     {
                         let noise_pattern2: &NoiseXKPattern2 = byte_array_as_proto_buffer(message);
                         // Authenticate header counter.
-                        if noise_pattern2.header[13..] != noise_pattern2.p_gcm_tag[13..] {
+                        if noise_pattern2.header[13..16] != noise_pattern2.p_gcm_tag[13..16] {
                             return Err(byzantine_fault!(FaultType::InvalidPacket, false));
                         }
 
