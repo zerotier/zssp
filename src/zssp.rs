@@ -2207,7 +2207,10 @@ impl<Application: ApplicationLayer> Session<Application> {
     /// The most recent confirmed ratchet number of this session.
     #[inline]
     pub fn ratchet_count(&self) -> u64 {
-        self.state.read().unwrap().ratchet_state[0].as_ref().map(|rs| rs.ratchet_count).unwrap_or(0)
+        self.state.read().unwrap().ratchet_state[0]
+            .as_ref()
+            .map(|rs| rs.ratchet_count)
+            .unwrap_or(0)
     }
     /// Mark a session as expired. This will make it impossible for this session to successfully
     /// receive or send data. It is recommended to simply `drop` the session instead, but this can
