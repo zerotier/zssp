@@ -2351,7 +2351,8 @@ impl<Application: ApplicationLayer> NoiseXKAliceHandshake<Application> {
                 idx = next_idx;
             }
         }
-        idx += AES_GCM_TAG_SIZE;
+        let p_auth_end = NoiseXKPattern1::P_ENC_START + idx + AES_GCM_TAG_SIZE;
+        let noise_message_len = p_auth_end + ChallengeResponse::SIZE;
 
         let noise_h_ee1p = encrypt_and_hash::<Application>(
             sha512,
@@ -2359,21 +2360,20 @@ impl<Application: ApplicationLayer> NoiseXKAliceHandshake<Application> {
             &noise_h_ee1,
             PACKET_TYPE_NOISE_XK_PATTERN_1,
             1,
-            &mut message[NoiseXKPattern1::P_ENC_START..idx],
+            &mut message[NoiseXKPattern1::P_ENC_START..p_auth_end],
         );
         drop(noise_k_es);
         let (header_b2a_key, header_a2b_key) = noise_ck.get_ask2(hmac, LABEL_HEADER_KEY, &noise_h_ee1p);
-        let message_id = u64::from_be_bytes(message[idx - 8..idx].try_into().unwrap());
+        let message_id = u64::from_be_bytes(message[p_auth_end - 8..p_auth_end].try_into().unwrap());
 
-        idx += ChallengeResponse::SIZE;
-        message[idx - CHALLENGE_POW_SIZE..idx].copy_from_slice(&rng.next_u64().to_ne_bytes());
+        message[noise_message_len - CHALLENGE_POW_SIZE..noise_message_len].copy_from_slice(&rng.next_u64().to_ne_bytes());
         Ok((
             NoiseXKAliceHandshakeState::NoiseXKPattern1 {
                 noise_h_ee1p,
                 noise_e_secret,
                 noise_e1_secret: Secret(noise_e1_secret.secret),
                 noise_ck_es: noise_ck,
-                noise_message_len: idx,
+                noise_message_len,
                 noise_message: message,
                 message_id,
             },
