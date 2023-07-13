@@ -490,7 +490,7 @@ impl<Application: ApplicationLayer> Context<Application> {
         // Double check that the application gave us these in the correct order.
         if let Some(first) = &ratchet_state[0] {
             if let Some(second) = &ratchet_state[1] {
-                if first.ratchet_count < second.ratchet_count {
+                if first.chain_len < second.chain_len {
                     ratchet_state.swap(0, 1);
                 }
             }
@@ -1327,12 +1327,12 @@ impl<Application: ApplicationLayer> Context<Application> {
                                         drop(noise_k_eseeekem1pskse);
                                         // Alice finished Noise XKhfs+psk2 handshake.
                                         // Transition offer state machine to the NoiseXKPattern3 state.
-                                        let (new_ratchet_key, new_ratchet_fingerprint) =
+                                        let (rk, rf) =
                                             noise_ck.get_ask2(hmac, LABEL_RATCHET_STATE, &noise_h_ee1peekem1pskpsp);
                                         let new_ratchet_state = RatchetState {
-                                            fingerprint: new_ratchet_fingerprint.0,
-                                            key: new_ratchet_key,
-                                            ratchet_count: ratchet_number + 1,
+                                            key: rk,
+                                            fingerprint: rf,
+                                            chain_len: ratchet_number + 1,
                                         };
                                         let action = if state.ratchet_state[0].is_some() && state.ratchet_state[1].is_some() {
                                             SaveAction::DeleteThenAddRatchet(state.ratchet_state[1 - ratchet_i].as_ref().unwrap(), &new_ratchet_state)
@@ -1505,12 +1505,12 @@ impl<Application: ApplicationLayer> Context<Application> {
                             let noise_kk_remote_init_h = mix_hash(sha512, &INITIAL_H_REKEY, remote_s_public_key.as_bytes());
                             let noise_kk_remote_init_h = mix_hash(sha512, &noise_kk_remote_init_h, self.0.static_keypair.public_key_bytes());
 
-                            let (new_ratchet_key, new_ratchet_fingerprint) = noise_ck.get_ask2(hmac, LABEL_RATCHET_STATE, &noise_h_ee1peekem1pskpsp);
+                            let (rk, rf) = noise_ck.get_ask2(hmac, LABEL_RATCHET_STATE, &noise_h_ee1peekem1pskpsp);
                             // We must make sure the ratchet key is saved before we transition.
                             let new_ratchet_state = RatchetState {
-                                fingerprint: new_ratchet_fingerprint.0,
-                                key: new_ratchet_key,
-                                ratchet_count: handshake_state.ratchet_state.as_ref().map(|rs| rs.ratchet_count + 1).unwrap_or(1),
+                                key: rk,
+                                fingerprint: rf,
+                                chain_len: handshake_state.ratchet_state.as_ref().map(|rs| rs.chain_len + 1).unwrap_or(1),
                             };
                             let result = app.save_ratchet_state(
                                 &remote_s_public_key,
@@ -1975,11 +1975,11 @@ fn receive_control_fragment<'a, Application: ApplicationLayer, SendFn: FnMut(&mu
                         );
                         drop(noise_k_pskessseese);
                         // Bob finished Noise KKpsk0 handshake.
-                        let (new_ratchet_key, new_ratchet_fingerprint) = noise_ck.get_ask2(hmac, LABEL_RATCHET_STATE, &noise_h_pskepep);
+                        let (rk, rf) = noise_ck.get_ask2(hmac, LABEL_RATCHET_STATE, &noise_h_pskepep);
                         let new_ratchet_state = RatchetState {
-                            fingerprint: new_ratchet_fingerprint.0,
-                            key: new_ratchet_key,
-                            ratchet_count: state.ratchet_state[0].as_ref().map(|rs| rs.ratchet_count + 1).unwrap_or(1),
+                            key: rk,
+                            fingerprint: rf,
+                            chain_len: state.ratchet_state[0].as_ref().map(|rs| rs.chain_len + 1).unwrap_or(1),
                         };
                         let result = app.save_ratchet_state(
                             &session.remote_s_public_key,
@@ -2080,11 +2080,11 @@ fn receive_control_fragment<'a, Application: ApplicationLayer, SendFn: FnMut(&mu
                         if let (true, Some(remote_key_id)) = (is_auth, NonZeroU32::new(u32::from_ne_bytes(noise_pattern2.key_id))) {
                             // Bob fully authenticated.
                             // Alice finished Noise KKpsk0 handshake.
-                            let (new_ratchet_key, new_ratchet_fingerprint) = noise_ck.get_ask2(hmac, LABEL_RATCHET_STATE, &noise_h_pskepep);
+                            let (rk, rf) = noise_ck.get_ask2(hmac, LABEL_RATCHET_STATE, &noise_h_pskepep);
                             let new_ratchet_state = RatchetState {
-                                fingerprint: new_ratchet_fingerprint.0,
-                                key: new_ratchet_key,
-                                ratchet_count: state.ratchet_state[0].as_ref().map(|rs| rs.ratchet_count + 1).unwrap_or(1),
+                                key: rk,
+                                fingerprint: rf,
+                                chain_len: state.ratchet_state[0].as_ref().map(|rs| rs.chain_len + 1).unwrap_or(1),
                             };
                             let result = app.save_ratchet_state(
                                 &session.remote_s_public_key,
@@ -2209,7 +2209,7 @@ impl<Application: ApplicationLayer> Session<Application> {
     pub fn ratchet_count(&self) -> u64 {
         self.state.read().unwrap().ratchet_state[0]
             .as_ref()
-            .map(|rs| rs.ratchet_count)
+            .map(|rs| rs.chain_len)
             .unwrap_or(0)
     }
     /// Mark a session as expired. This will make it impossible for this session to successfully
@@ -2347,7 +2347,7 @@ impl<Application: ApplicationLayer> NoiseXKAliceHandshake<Application> {
         for r in ratchet_state {
             if let Some(rs) = r {
                 let next_idx = idx + RATCHET_SIZE;
-                noise_pattern1.payload[idx..next_idx].copy_from_slice(&rs.fingerprint);
+                noise_pattern1.payload[idx..next_idx].copy_from_slice(rs.fingerprint.as_ref());
                 idx = next_idx;
             }
         }

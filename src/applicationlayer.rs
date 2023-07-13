@@ -199,11 +199,11 @@ pub trait ApplicationLayer: Sized {
     fn event_log<'a>(&self, event: LogEvent<'a, Self>, current_time: i64) {}
 }
 
-#[derive(Default, Clone)]
+#[derive(Default, Clone, PartialEq, Eq)]
 pub struct RatchetState {
-    pub fingerprint: [u8; RATCHET_SIZE],
     pub key: Secret<RATCHET_SIZE>,
-    pub ratchet_count: u64,
+    pub fingerprint: Secret<RATCHET_SIZE>,
+    pub chain_len: u64,
 }
 /// Ratchet keys and fingerprints should be saved *per remote peer*. It is up to the application to
 /// enforce separate storage for each remote peer based on `remote_static_key` and `application_data`.
