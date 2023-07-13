@@ -114,45 +114,18 @@ pub trait ApplicationLayer: Sized {
     /// It will be dropped as soon as the session is established.
     type LocalIdentityBlob: AsRef<[u8]>;
 
-    /// Save the given ratchet state to persistent storage.
-    /// A ratchet state consists of a ratchet number, a ratchet fingerprint, and a ratchet key.
+    /// This function will be called whenever Alice's initial Hello packet contains the zero ratchet
+    /// fingerprint. Brand new peers will always connect to Bob with the zero ratchet key, but from
+    /// then on they should be using non-zero ratchet keys.
     ///
-    /// Ratchet states are identified by their ratchet number, the latest ratchet state with a
-    /// specific ratchet number should overwrite any previous ratchet state with the same number.
-    /// Only the `ratchet_number` and `ratchet_number - 1` ratchet states should be saved to persistent
-    /// storage, when a new one is saved the `ratchet_number - 2` ratchet state should be deleted.
-    ///
-    /// The `last_confirmed_ratchet_number` specifies which of the two saved ratchet states should
-    /// be used if this local peer needs to re-open this session (i.e. after a system restart).
-    /// This number should also be saved to persistent storage.
-    ///
-    /// A ratchet fingerprint is a 32 byte string unique for each ratchet key, it should be
-    /// possible to quickly look up the `ratchet_key` from just its `ratchet_fingerprint`.
-    ///
-    /// If this returns `Err(())`, the packet which triggered this function to be called will be
-    /// dropped, and no session state will be mutated, preserving synchronization. The remote peer
-    /// will eventually resend that packet and so this function will be called again.
-    ///
-    /// If persistent storage is supported, this function should not return until the ratchet state
-    /// is saved, otherwise it is possible, albeit unlikely, for a sudden restart of the local
-    /// machine to put our ratchet state out of sync with the remote peer. If this happens the only
-    /// fix is to restart the entire ratchet chain from zero.
-    ///
-    /// This function may also save state to volatile storage, or potentially not even save it at
-    /// all, in which case all peers which connect to us will always have to allow us to downgrade
-    /// the ratchet chain to zero. Otherwise they might not consider us to be "authentic".
+    /// If this returns false, we will attempt to connect to Alice with the zero ratchet key.
+    /// If this returns true, Alice's connection will be silently dropped.
+    /// If this function is configured to always return true, it means peers will not be able to
+    /// connect to us unless they had a prior-established ratchet key with us. This is the best way
+    /// for the paranoid to enforce a manual allow-list.
     #[allow(unused)]
-    fn save_ratchet_state(
-        &self,
-        alice_s_public: &Self::PublicKey,
-        application_data: &Self::Data,
-        ratchet_action: SaveRatchetAction,
-        latest_ratchet_number: u64,
-        latest_ratchet_fingerprint: &[u8; RATCHET_FINGERPRINT_SIZE],
-        latest_ratchet_key: &[u8; RATCHET_KEY_SIZE],
-        current_time: i64,
-    ) -> Result<(), ()> {
-        Ok(())
+    fn hello_requires_recognized_ratchet(&self, current_time: i64) -> bool {
+        false
     }
     /// This function is called if we, as Alice, attempted to open a session with Bob using a
     /// non-zero ratchet key, but Bob does not have this ratchet key and wants to downgrade
@@ -173,75 +146,111 @@ pub trait ApplicationLayer: Sized {
     /// If Alice does decide to reconnect without a ratchet key, be sure to generate some warning
     /// that something has gone wrong and Bob could not be fully authenticated.
     #[allow(unused)]
-    fn allow_downgrade(&self, session: &Arc<Session<Self>>, current_time: i64) -> bool {
-        true
+    fn initiator_disallows_downgrade(&self, session: &Arc<Session<Self>>, current_time: i64) -> bool {
+        false
     }
     /// Lookup a specific ratchet key based on its ratchet fingerprint.
     /// This function will be called whenever Alice attempts to connect to us with a non-zero
-    /// ratchet key.
+    /// ratchet fingerprint.
     ///
-    /// If the ratchet key was found, the function should return `RatchetAction::Found`. This will
+    /// If the ratchet key was found, the function should return `RestoreAction::RestoreRatchet`. This will
     /// cause us to connect to Alice using the returned ratchet number and ratchet key.
-    /// We don't know Alice's static identity at this point in the handshake, so a
-    /// `RemotePeerIdentifier` must be returned, so when Alice does send their identity we
-    /// can verify it matches what we expect.
     ///
     /// If the ratchet key could not be found, the application may choose between returning
-    /// `RatchetAction::Downgrade` or `RatchetAction::Ignore`.
-    /// If `RatchetAction::Downgrade` is returned we will attempt to convince Alice to downgrade
+    /// `RatchetAction::DowngradeRatchet` or `RatchetAction::FailAuthentication`.
+    /// If `RatchetAction::DowngradeRatchet` is returned we will attempt to convince Alice to downgrade
     /// to the zero ratchet key, restarting the ratchet chain.
-    /// If `RatchetAction::Ignore` is returned Alice's connection will be silently dropped.
+    /// If `RatchetAction::FailAuthentication` is returned Alice's connection will be silently dropped.
     #[allow(unused)]
-    fn lookup_ratchet(&self, ratchet_fingerprint: &[u8; RATCHET_FINGERPRINT_SIZE], current_time: i64) -> Result<GetRatchetAction, ()> {
-        Ok(GetRatchetAction::Downgrade)
+    fn restore_ratchet(&self, ratchet_fingerprint: &[u8; RATCHET_FINGERPRINT_SIZE], current_time: i64) -> Result<RestoreAction, ()> {
+        Ok(RestoreAction::DowngradeRatchet)
     }
-    /// This function will be called whenever Alice's initial Hello packet contains the zero ratchet
-    /// key. Brand new peers will always connect to Bob with the zero ratchet key, but from then on
-    /// they should be using non-zero ratchet keys.
+    /// Atomically save the given ratchet key, fingerprint and number to persistent storage.
     ///
-    /// If this returns true, we will attempt to connect to Alice with the zero ratchet key.
-    /// If this returns false, Alice's connection will be silently dropped.
-    /// If this function is configured to always return false, it means peers will not be able to
-    /// connect to us unless they had a prior-established ratchet key with us. This is the best way
-    /// for the paranoid to enforce a manual allow-list.
+    /// See the documentation of `SaveAction` for more details on how to save them to storage,
+    /// and how to handle any pre-existing ratchet keys, fingerprints and numbers.
+    ///
+    /// If this returns `Err(())`, the packet which triggered this function to be called will be
+    /// dropped, and no session state will be mutated, preserving synchronization. The remote peer
+    /// will eventually resend that packet and so this function will be called again.
+    ///
+    /// If persistent storage is supported, this function should not return until the ratchet state
+    /// is saved, otherwise it is possible, albeit unlikely, for a sudden restart of the local
+    /// machine to put our ratchet state out of sync with the remote peer. If this happens the only
+    /// fix is to reset both ratchet keys to zero.
+    ///
+    /// This function may also save state to volatile storage, in which case all peers which connect
+    /// to us will have to allow downgrade
+    /// (`initiator_disallows_downgrade` returns false and/or`restore_ratchet` returns `DowngradeRatchet`).
+    /// Otherwise, when we restart, we will not be allowed to reconnect.
     #[allow(unused)]
-    fn allow_zero_ratchet(&self, current_time: i64) -> bool {
-        true
+    fn save_ratchet_state(
+        &self,
+        remote_static_key: &Self::PublicKey,
+        application_data: &Self::Data,
+        ratchet_action: SaveAction,
+        latest_ratchet_number: u64,
+        latest_ratchet_fingerprint: &[u8; RATCHET_FINGERPRINT_SIZE],
+        latest_ratchet_key: &[u8; RATCHET_KEY_SIZE],
+        current_time: i64,
+    ) -> Result<(), ()> {
+        Ok(())
     }
     #[allow(unused)]
     #[inline]
     fn event_log<'a>(&self, event: LogEvent<'a, Self>, current_time: i64) {}
 }
-pub enum GetRatchetAction {
-    Found(u64, [u8; RATCHET_KEY_SIZE]),
-    Downgrade,
-    Ignore,
+pub enum RestoreAction {
+    RestoreRatchet(u64, [u8; RATCHET_KEY_SIZE]),
+    DowngradeRatchet,
+    FailAuthentication,
 }
-/// Only 2 ratchet states may be saved at one time.
-/// If a 3rd ratchet state needs to be saved the 1st should be deleted, if it was not already deleted.
-/// The "previous ratchet state" may be the zero ratchet state.
-pub enum SaveRatchetAction {
-    /// Save the given new ratchet state and set the previous saved ratchet state as
-    /// the confirmed ratchet state, if it was not already.
-    /// If there are currently two saved states delete the oldest state and replace it with this one.
+/// Ratchet keys and fingerprints should be saved *per remote peer*. It is up to the application to
+/// enforce separate storage for each remote peer based on `remote_static_key` and `application_data`.
+///
+/// Only up to 2 ratchet keys and fingerprints may be saved at one time.
+/// If a 3rd needs to be saved the 1st should be deleted, if it was not already deleted.
+pub enum SaveAction {
+    /// Save the given `latest_ratchet_fingerprint` and `latest_ratchet_key`,
+    /// but do not update the confirmed ratchet number.
+    ///
+    /// If a ratchet key and fingerprint already exist with ratchet number `latest_ratchet_number`,
+    /// then `latest_ratchet_fingerprint` and `latest_ratchet_key` should overwrite them.
+    ///
+    /// Keep the previous ratchet state saved and searchable until it is explicitly deleted.
+    /// If there are two saved ratchet keys and fingerprints, replace the oldest pair with
+    /// the new pair.
     SaveAsUnconfirmed,
-    /// Save the given new ratchet state and set it as the confirmed ratchet state. Keep the previous
-    /// ratchet state saved and searchable until it is explicitly deleted.
-    /// If there are currently two saved states delete the oldest state and replace it with this one.
+    /// Save the given `latest_ratchet_fingerprint` and `latest_ratchet_key`,
+    /// and set the confirmed ratchet number to `latest_ratchet_number`.
+    /// The confirmed ratchet number should be set equal to `latest_ratchet_number`.
+    ///
+    /// If a ratchet key and fingerprint already exist with ratchet number `latest_ratchet_number`,
+    /// then `latest_ratchet_fingerprint` and `latest_ratchet_key` should overwrite them.
+    ///
+    /// Keep the previous ratchet state saved and searchable until it is explicitly deleted.
+    /// If there are two saved ratchet keys and fingerprints, replace the oldest pair with
+    /// the new pair.
     SaveAsConfirmed,
-    /// The given ratchet state will be identical to that saved during a previous call to
-    /// `SaveAsUnconfirmedAndConfirmPrevious`. Set the given ratchet state as the
-    /// confirmed ratchet state and permanently delete the previous ratchet state.
+    /// Set the confirmed ratchet number to `latest_ratchet_number`,
+    /// and permanently delete the previous (oldest) ratchet key and fingerprint.
+    ///
+    /// The given `latest_ratchet_fingerprint` and `latest_ratchet_key` will be identical to those
+    /// saved during a prior `SaveAsUnconfirmed` call.
+    /// These two must be the only saved ratchet key and fingerprint when this call completes.
     ConfirmLatestAndDeletePrevious,
-    /// The given ratchet state will be identical to that saved during a previous call to
-    /// `SaveAsConfirmed`. Permanently delete the previous ratchet state, as in delete the ratchet
-    /// state with ratchet number one less than the given ratchet state.
+    /// Permanently delete the previous (oldest) ratchet key and fingerprint.
+    ///
+    /// The given `latest_ratchet_fingerprint` and `latest_ratchet_key` will be identical to those
+    /// saved during a prior `SaveAsConfirmed` call.
+    /// These two must be the only saved ratchet key and fingerprint when this call completes.
     DeletePrevious,
 }
-use SaveRatchetAction::*;
-impl SaveRatchetAction {
-    /// If this is true then this is the first time the latest ratchet state has ever been seen,
-    /// so it ought to be immediately saved.
+use SaveAction::*;
+impl SaveAction {
+    /// If this is true then the given `latest_ratchet_fingerprint` and `latest_ratchet_key`
+    /// must be saved to permanent storage.
+    /// `latest_ratchet_key` should be searchable using `latest_ratchet_fingerprint`.
     pub fn save_latest(&self) -> bool {
         match self {
             SaveAsUnconfirmed => true,
@@ -249,8 +258,9 @@ impl SaveRatchetAction {
             _ => false,
         }
     }
-    /// If this is true then only the latest ratchet state should be saved.
-    /// Any previous ratchet states should be deleted now.
+    /// If this is true then the previous ratchet key and fingerprint should be deleted.
+    /// If `latest_ratchet_number > 1`, then the previous ratchet key and fingerprint will have
+    /// ratchet number `latest_ratchet_number - 1`.
     pub fn delete_previous(&self) -> bool {
         match self {
             ConfirmLatestAndDeletePrevious => true,
@@ -258,6 +268,11 @@ impl SaveRatchetAction {
             _ => false,
         }
     }
+    /// If this is true then set the confirmed ratchet number to `latest_ratchet_number`.
+    ///
+    /// The confirmed ratchet number is a single 64-bit number saved to persistent storage that denotes its
+    /// associated ratchet key is "confirmed". Only the confirmed ratchet key should be used to
+    /// `open` a new session.
     pub fn confirm_latest(&self) -> bool {
         match self {
             ConfirmLatestAndDeletePrevious => true,

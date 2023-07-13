@@ -1015,18 +1015,18 @@ impl<Application: ApplicationLayer> Context<Application> {
                     let (header_b2a_key, header_a2b_key) = noise_ck.get_ask2(hmac, LABEL_HEADER_KEY, &noise_h_ee1p);
                     // Get ratchet key.
                     let noise_pattern1: &mut NoiseXKPattern1 = byte_array_as_proto_buffer_mut(message);
-                    use crate::GetRatchetAction::*;
+                    use crate::RestoreAction::*;
                     let (sent_zero, ratchet_number, ratchet_key) = if noise_pattern1.ratchet_fingerprint == [0u8; RATCHET_FINGERPRINT_SIZE] {
-                        if app.allow_zero_ratchet(current_time) {
-                            (true, 0, [0u8; RATCHET_KEY_SIZE])
-                        } else {
+                        if app.hello_requires_recognized_ratchet(current_time) {
                             return Ok(ReceiveResult::Rejected);
+                        } else {
+                            (true, 0, [0u8; RATCHET_KEY_SIZE])
                         }
                     } else {
-                        match app.lookup_ratchet(&noise_pattern1.ratchet_fingerprint, current_time) {
-                            Ok(Found(ratchet_number, ratchet_key)) => (false, ratchet_number, ratchet_key),
-                            Ok(Downgrade) => (false, 0, [0u8; RATCHET_KEY_SIZE]),
-                            Ok(Ignore) => return Ok(ReceiveResult::Rejected),
+                        match app.restore_ratchet(&noise_pattern1.ratchet_fingerprint, current_time) {
+                            Ok(RestoreRatchet(ratchet_number, ratchet_key)) => (false, ratchet_number, ratchet_key),
+                            Ok(DowngradeRatchet) => (false, 0, [0u8; RATCHET_KEY_SIZE]),
+                            Ok(FailAuthentication) => return Err(byzantine_fault!(FaultType::FailedAuthentication, false)),
                             Err(()) => return Err(ReceiveError::RatchetIoError),
                         }
                     };
@@ -1265,7 +1265,7 @@ impl<Application: ApplicationLayer> Context<Application> {
                                             break;
                                         }
                                     } else {
-                                        if i > 0 || !app.allow_downgrade(&session, current_time) {
+                                        if i > 0 || app.initiator_disallows_downgrade(&session, current_time) {
                                             break;
                                         }
                                         // If auth failed maybe Bob wants to downgrade the ratchet,
@@ -1322,7 +1322,7 @@ impl<Application: ApplicationLayer> Context<Application> {
                                         let result = app.save_ratchet_state(
                                             &session.remote_s_public_key,
                                             &session.application_data,
-                                            SaveRatchetAction::SaveAsUnconfirmed,
+                                            SaveAction::SaveAsUnconfirmed,
                                             new_ratchet_number,
                                             new_ratchet_fingerprint.as_ref(),
                                             new_ratchet_key.as_ref(),
@@ -1493,7 +1493,7 @@ impl<Application: ApplicationLayer> Context<Application> {
                             let result = app.save_ratchet_state(
                                 &remote_s_public_key,
                                 &application_data,
-                                SaveRatchetAction::SaveAsConfirmed,
+                                SaveAction::SaveAsConfirmed,
                                 new_ratchet_number,
                                 new_ratchet_fingerprint.as_ref(),
                                 new_ratchet_key.as_ref(),
@@ -1834,7 +1834,7 @@ fn receive_control_fragment<'a, Application: ApplicationLayer, SendFn: FnMut(&mu
                 let result = app.save_ratchet_state(
                     &session.remote_s_public_key,
                     &session.application_data,
-                    SaveRatchetAction::ConfirmLatestAndDeletePrevious,
+                    SaveAction::ConfirmLatestAndDeletePrevious,
                     ratchet.0,
                     ratchet.1.as_ref(),
                     ratchet.2.as_ref(),
@@ -1878,7 +1878,7 @@ fn receive_control_fragment<'a, Application: ApplicationLayer, SendFn: FnMut(&mu
                     let result = app.save_ratchet_state(
                         &session.remote_s_public_key,
                         &session.application_data,
-                        SaveRatchetAction::DeletePrevious,
+                        SaveAction::DeletePrevious,
                         state.ratchet_number,
                         state.ratchet_fingerprint.as_ref(),
                         state.ratchet_key.as_ref(),
@@ -1992,7 +1992,7 @@ fn receive_control_fragment<'a, Application: ApplicationLayer, SendFn: FnMut(&mu
                         let result = app.save_ratchet_state(
                             &session.remote_s_public_key,
                             &session.application_data,
-                            SaveRatchetAction::SaveAsUnconfirmed,
+                            SaveAction::SaveAsUnconfirmed,
                             new_ratchet_number,
                             new_ratchet_fingerprint.as_ref(),
                             new_ratchet_key.as_ref(),
@@ -2091,7 +2091,7 @@ fn receive_control_fragment<'a, Application: ApplicationLayer, SendFn: FnMut(&mu
                             let result = app.save_ratchet_state(
                                 &session.remote_s_public_key,
                                 &session.application_data,
-                                SaveRatchetAction::SaveAsConfirmed,
+                                SaveAction::SaveAsConfirmed,
                                 new_ratchet_number,
                                 new_ratchet_fingerprint.as_ref(),
                                 new_ratchet_key.as_ref(),

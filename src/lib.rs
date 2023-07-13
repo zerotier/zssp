@@ -18,7 +18,7 @@ mod symmetric_state;
 mod zssp;
 
 pub mod error;
-pub use crate::applicationlayer::{ApplicationLayer, GetRatchetAction, SaveRatchetAction};
+pub use crate::applicationlayer::{ApplicationLayer, RestoreAction, SaveAction};
 pub use crate::log_event::LogEvent;
 pub use crate::proto::{MAX_IDENTITY_BLOB_SIZE, MIN_PACKET_SIZE, MIN_TRANSPORT_MTU, RATCHET_FINGERPRINT_SIZE, RATCHET_KEY_SIZE};
 pub use crate::zssp::{AcceptSessionAction, Context, ContextInner, IncomingSessionAction, ReceiveResult, Session, SessionEvent};
