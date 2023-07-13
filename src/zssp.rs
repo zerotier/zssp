@@ -882,7 +882,7 @@ impl<Application: ApplicationLayer> Context<Application> {
                 if session.is_some() || incoming.is_some() {
                     return Err(byzantine_fault!(FaultType::OutOfSequence, false));
                 }
-                if message.len() < NoiseXKPattern1::MIN_SIZE || message.len() > NoiseXKPattern1::MIN_SIZE {
+                if message_size < NoiseXKPattern1::MIN_SIZE || message_size > NoiseXKPattern1::MIN_SIZE {
                     return Err(byzantine_fault!(FaultType::InvalidPacket, false));
                 }
                 // The message id must be the first 8 bytes of the gcm tag.
