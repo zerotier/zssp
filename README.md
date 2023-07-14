@@ -1,4 +1,4 @@
-ZeroTier Secure Socket Protocol
+ZeroTier Secure Sessions Protocol
 ======
 
 # Introduction
