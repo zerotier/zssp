@@ -125,10 +125,7 @@ pub trait ApplicationLayer: Sized {
     /// If this function is configured to always return true, it means peers will not be able to
     /// connect to us unless they had a prior-established ratchet key with us. This is the best way
     /// for the paranoid to enforce a manual allow-list.
-    #[allow(unused)]
-    fn hello_requires_recognized_ratchet(&self, current_time: i64) -> bool {
-        false
-    }
+    fn hello_requires_recognized_ratchet(&self, current_time: i64) -> bool;
     /// This function is called if we, as Alice, attempted to open a session with Bob using a
     /// non-empty ratchet key, but Bob does not have this ratchet key and wants to downgrade
     /// to the zero ratchet key.
@@ -144,14 +141,8 @@ pub trait ApplicationLayer: Sized {
     /// least one party is misconfigured and got their ratchet keys corrupted or lost, or Bob has
     /// been compromised and is being impersonated. An attacker must at least have Bob's private
     /// static key to be able to ask Alice to downgrade.
-    ///
-    /// If Alice does decide to reconnect without a ratchet key, be sure to generate some warning
-    /// that something has gone wrong and Bob could not be fully authenticated.
-    #[allow(unused)]
-    fn initiator_disallows_downgrade(&self, session: &Arc<Session<Self>>, current_time: i64) -> bool {
-        false
-    }
-    /// Lookup a specific ratchet key based on its ratchet fingerprint.
+    fn initiator_disallows_downgrade(&self, session: &Arc<Session<Self>>, current_time: i64) -> bool;
+    /// Lookup a specific ratchet state based on its ratchet fingerprint.
     /// This function will be called whenever Alice attempts to connect to us with a non-empty
     /// ratchet fingerprint.
     ///
@@ -163,23 +154,19 @@ pub trait ApplicationLayer: Sized {
     /// If `RatchetAction::DowngradeRatchet` is returned we will attempt to convince Alice to downgrade
     /// to the empty ratchet key, restarting the ratchet chain.
     /// If `RatchetAction::FailAuthentication` is returned Alice's connection will be silently dropped.
-    #[allow(unused)]
-    fn restore_by_fingerprint(&self, ratchet_fingerprint: &[u8; RATCHET_SIZE], current_time: i64) -> Result<RatchetState, Self::IoError> {
-        Ok(RatchetState::Null)
-    }
-    #[allow(unused)]
+    fn restore_by_fingerprint(&self, ratchet_fingerprint: &[u8; RATCHET_SIZE], current_time: i64) -> Result<RatchetState, Self::IoError>;
+
+    /// Lookup a specific ratchet state based on the identity of the peer being communicated with.
+    /// This function will be called whenever Alice attempts to open a session, or Bob attempts
+    /// to verify Alice's identity.
     fn restore_by_identity(
         &self,
         remote_static_key: &Self::PublicKey,
         application_data: &Self::Data,
         current_time: i64,
-    ) -> Result<[RatchetState; 2], Self::IoError> {
-        Ok([RatchetState::Null, RatchetState::Null])
-    }
-    /// Atomically save the given ratchet key, fingerprint and number to persistent storage.
-    ///
-    /// See the documentation of `SaveAction` for more details on how to save them to storage,
-    /// and how to handle any pre-existing ratchet keys, fingerprints and numbers.
+    ) -> Result<[RatchetState; 2], Self::IoError>;
+    /// Atomically save the given `new_ratchet_states` to persistent storage.
+    /// `pre_ratchet_states` contains what should be the previous contents of persistent storage.
     ///
     /// If this returns `Err(IoError)`, the packet which triggered this function to be called will be
     /// dropped, and no session state will be mutated, preserving synchronization. The remote peer
@@ -191,20 +178,18 @@ pub trait ApplicationLayer: Sized {
     /// fix is to reset both ratchet keys to empty.
     ///
     /// This function may also save state to volatile storage, in which case all peers which connect
-    /// to us will have to allow downgrade
-    /// (`initiator_disallows_downgrade` returns false and/or`restore_ratchet` returns `DowngradeRatchet`).
+    /// to us will have to allow downgrade, i.e. `initiator_disallows_downgrade` returns false
+    /// and/or `check_accept_session` returns `(Some(true, _), _)`.
     /// Otherwise, when we restart, we will not be allowed to reconnect.
-    #[allow(unused)]
     fn save_ratchet_state(
         &self,
         remote_static_key: &Self::PublicKey,
         application_data: &Self::Data,
-        previous_ratchet_states: [&RatchetState; 2],
+        pre_ratchet_states: [&RatchetState; 2],
         new_ratchet_states: [&RatchetState; 2],
         current_time: i64,
-    ) -> Result<(), Self::IoError> {
-        Ok(())
-    }
+    ) -> Result<(), Self::IoError>;
+
     #[allow(unused)]
     #[inline]
     fn event_log(&self, event: LogEvent<Self>, current_time: i64) {}
