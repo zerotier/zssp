@@ -73,7 +73,7 @@ impl<Application: ApplicationLayer> UnassociatedHandshakeCache<Application> {
                 return true;
             }
         }
-        return false;
+        false
     }
     pub(crate) fn service(&self, current_time: i64) {
         // Only check for expiration if we have a pending packet.

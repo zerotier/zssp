@@ -29,22 +29,16 @@ impl RatchetState {
     }
     #[inline]
     pub fn is_null(&self) -> bool {
-        match self {
-            Null => true,
-            _ => false,
-        }
+        matches!(self, Null)
     }
     #[inline]
     pub fn is_empty(&self) -> bool {
-        match self {
-            Empty => true,
-            _ => false,
-        }
+        matches!(self, Empty)
     }
     #[inline]
     pub fn nonempty(&self) -> Option<&NonEmptyRatchetState> {
         match self {
-            NonEmpty(rs) => Some(&rs),
+            NonEmpty(rs) => Some(rs),
             _ => None,
         }
     }
@@ -54,7 +48,7 @@ impl RatchetState {
     }
     #[inline]
     pub fn fingerprint(&self) -> Option<&[u8; RATCHET_SIZE]> {
-        self.nonempty().map_or(None, |rs| Some(&rs.fingerprint.as_ref()))
+        self.nonempty().map(|rs| rs.fingerprint.as_ref())
     }
     #[inline]
     pub fn key(&self) -> Option<&[u8; RATCHET_SIZE]> {

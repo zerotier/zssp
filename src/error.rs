@@ -7,14 +7,14 @@
  */
 
 #[derive(Debug, PartialEq, Eq)]
-pub enum OpenError {
+pub enum OpenError<IoError> {
     /// An invalid parameter was supplied to the function.
     InvalidPublicKey,
 
     /// Local identity blob is too large to send, even with fragmentation.
     DataTooLarge,
 
-    RatchetIoError,
+    RatchetIoError(IoError),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -61,7 +61,7 @@ pub enum FaultType {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub enum ReceiveError {
+pub enum ReceiveError<IoError> {
     /// A type of fault that can occur because a remote peer sent us a bad packet.
     /// Such packets will be ignored by ZSSP but a user of ZSSP might want to log
     /// them for debugging or tracing.
@@ -106,5 +106,5 @@ pub enum ReceiveError {
 
     /// One of the ratchet saving or lookup functions returned an error, so the packet had to be
     /// dropped.
-    RatchetIoError,
+    RatchetIoError(IoError),
 }

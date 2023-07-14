@@ -98,6 +98,8 @@ pub trait ApplicationLayer: Sized {
     type PublicKey: P384PublicKey;
     type KeyPair: P384KeyPair<PublicKey = Self::PublicKey, Rng = Self::Rng>;
 
+    type IoError: std::fmt::Debug;
+
     /// Type for arbitrary opaque object for use by the application that is attached to
     /// each session.
     type Data;
@@ -162,7 +164,7 @@ pub trait ApplicationLayer: Sized {
     /// to the empty ratchet key, restarting the ratchet chain.
     /// If `RatchetAction::FailAuthentication` is returned Alice's connection will be silently dropped.
     #[allow(unused)]
-    fn restore_by_fingerprint(&self, ratchet_fingerprint: &[u8; RATCHET_SIZE], current_time: i64) -> Result<RatchetState, ()> {
+    fn restore_by_fingerprint(&self, ratchet_fingerprint: &[u8; RATCHET_SIZE], current_time: i64) -> Result<RatchetState, Self::IoError> {
         Ok(RatchetState::Null)
     }
     #[allow(unused)]
@@ -171,7 +173,7 @@ pub trait ApplicationLayer: Sized {
         remote_static_key: &Self::PublicKey,
         application_data: &Self::Data,
         current_time: i64,
-    ) -> Result<[RatchetState; 2], ()> {
+    ) -> Result<[RatchetState; 2], Self::IoError> {
         Ok([RatchetState::Null, RatchetState::Null])
     }
     /// Atomically save the given ratchet key, fingerprint and number to persistent storage.
@@ -179,7 +181,7 @@ pub trait ApplicationLayer: Sized {
     /// See the documentation of `SaveAction` for more details on how to save them to storage,
     /// and how to handle any pre-existing ratchet keys, fingerprints and numbers.
     ///
-    /// If this returns `Err(())`, the packet which triggered this function to be called will be
+    /// If this returns `Err(IoError)`, the packet which triggered this function to be called will be
     /// dropped, and no session state will be mutated, preserving synchronization. The remote peer
     /// will eventually resend that packet and so this function will be called again.
     ///
@@ -193,17 +195,17 @@ pub trait ApplicationLayer: Sized {
     /// (`initiator_disallows_downgrade` returns false and/or`restore_ratchet` returns `DowngradeRatchet`).
     /// Otherwise, when we restart, we will not be allowed to reconnect.
     #[allow(unused)]
-    fn save_ratchet_state<'a>(
+    fn save_ratchet_state(
         &self,
         remote_static_key: &Self::PublicKey,
         application_data: &Self::Data,
         previous_ratchet_states: [&RatchetState; 2],
         new_ratchet_states: [&RatchetState; 2],
         current_time: i64,
-    ) -> Result<(), ()> {
+    ) -> Result<(), Self::IoError> {
         Ok(())
     }
     #[allow(unused)]
     #[inline]
-    fn event_log<'a>(&self, event: LogEvent<'a, Self>, current_time: i64) {}
+    fn event_log(&self, event: LogEvent<Self>, current_time: i64) {}
 }
