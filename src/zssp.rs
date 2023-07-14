@@ -1274,7 +1274,7 @@ impl<Application: ApplicationLayer> Context<Application> {
                                 if result.is_none() {
                                     ratchet_i = 1;
                                     if let Some(key) = state.ratchet_states[1].key() {
-                                        chain_len = state.ratchet_states[0].chain_len();
+                                        chain_len = state.ratchet_states[1].chain_len();
                                         result = test_ratchet_key(key);
                                     }
                                 }
