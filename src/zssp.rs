@@ -69,7 +69,8 @@ pub enum ReceiveResult<'b, Application: ApplicationLayer> {
     Session(Arc<Session<Application>>, SessionEvent<'b>),
     /// Packet was a part of a handshake, and while it superficially appeared valid the application
     /// explicitly rejected it.
-    /// Relates to callbacks `check_allow_incoming_session` and `check_accept_session`.
+    /// Relates to callbacks `check_allow_incoming_session`, `hello_requires_recognized_ratchet`
+    /// and `check_accept_session`.
     Rejected,
 }
 
