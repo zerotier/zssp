@@ -870,7 +870,7 @@ impl<Application: ApplicationLayer> Context<Application> {
                 if session.is_some() || incoming.is_some() {
                     return Err(byzantine_fault!(FaultType::OutOfSequence, false));
                 }
-                if (NoiseXKPattern1::MIN_SIZE..=NoiseXKPattern1::MAX_SIZE).contains(&message_size) {
+                if !(NoiseXKPattern1::MIN_SIZE..=NoiseXKPattern1::MAX_SIZE).contains(&message_size) {
                     return Err(byzantine_fault!(FaultType::InvalidPacket, false));
                 }
                 // The message id must be the first 8 bytes of the gcm tag.
@@ -2505,7 +2505,7 @@ fn encrypt_control(
 #[inline]
 fn decrypt_control<'a, IoError>(c: &mut impl AesGcmDec, packet_type: u8, counter: u64, fragment: &'a mut [u8]) -> Result<&'a mut [u8], ReceiveError<IoError>> {
     let fragment_len = fragment.len();
-    if (CONTROL_PACKET_MIN_SIZE..=CONTROL_PACKET_MAX_SIZE).contains(&fragment_len) {
+    if !(CONTROL_PACKET_MIN_SIZE..=CONTROL_PACKET_MAX_SIZE).contains(&fragment_len) {
         return Err(byzantine_fault!(FaultType::InvalidPacket, false));
     }
     c.set_iv(&create_message_nonce(packet_type, counter));
