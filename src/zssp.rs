@@ -2499,7 +2499,6 @@ fn encrypt_control(
         c.encrypt_in_place(&mut fragment[HEADER_SIZE..fragment_len - AES_GCM_TAG_SIZE]);
     }
     c.finish_encrypt((&mut fragment[fragment_len - AES_GCM_TAG_SIZE..fragment_len]).try_into().unwrap());
-    drop(c);
     set_packet_header(&mut fragment, 1, 0, packet_type, remote_key_id, counter);
     header_cipher.encrypt_in_place((&mut fragment[HEADER_PROTECT_ENC_START..HEADER_PROTECT_ENC_END]).try_into().unwrap());
     (fragment, fragment_len)
@@ -2678,7 +2677,7 @@ impl<Application: ApplicationLayer> SessionKey<Application> {
     }
 
     #[inline(always)]
-    fn get_send_cipher<'a>(&'a self, counter: u64) -> Result<MutexGuard<'a, Application::AeadEnc>, SendError> {
+    fn get_send_cipher(&self, counter: u64) -> Result<MutexGuard<Application::AeadEnc>, SendError> {
         if counter < self.expire_at_counter {
             Ok(self.send_cipher_pool[(counter as usize) % self.send_cipher_pool.len()].lock().unwrap())
         } else {
@@ -2687,7 +2686,7 @@ impl<Application: ApplicationLayer> SessionKey<Application> {
     }
 
     #[inline(always)]
-    fn get_receive_cipher<'a>(&'a self, counter: u64) -> MutexGuard<'a, Application::AeadDec> {
+    fn get_receive_cipher(&self, counter: u64) -> MutexGuard<Application::AeadDec> {
         let idx = (counter as usize) % self.receive_cipher_pool.len();
         self.receive_cipher_pool[idx].lock().unwrap()
     }
