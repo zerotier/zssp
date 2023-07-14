@@ -1,5 +1,4 @@
 // (c) 2020-2022 ZeroTier, Inc. -- currently proprietary pending actual release and licensing. See LICENSE.md.
-
 use std::convert::TryInto;
 
 /// Constant time byte slice equality.
@@ -36,20 +35,16 @@ impl<const L: usize> Secret<L> {
     pub fn new() -> Self {
         Self([0_u8; L])
     }
-
-    /// Moves bytes into secret, will panic if the slice does not match the size of this secret.
-    #[inline(always)]
-    pub fn move_bytes(b: [u8; L]) -> Self {
-        Self(b)
-    }
-
-    /// Copy bytes into secret, then nuke the previous value, will panic if the slice does not match the size of this secret.
-    #[inline(always)]
-    pub fn from_bytes_then_nuke(b: &mut [u8]) -> Self {
+    /// Copy bytes into secret, then delete the previous value, will panic if the slice does not match the size of this secret.
+    pub fn from_bytes_then_delete(b: &mut [u8]) -> Self {
         let ret = Self(b.try_into().unwrap());
         b.fill(0);
         ret
     }
+    /// Moves bytes into secret, will panic if the slice does not match the size of this secret.
+    /// This is unsafe because it will not destroy the contents of its input.
+    /// # Safety
+    /// Make sure the contents of the input are securely deleted.
     #[inline(always)]
     pub unsafe fn from_bytes(b: &[u8]) -> Self {
         Self(b.try_into().unwrap())
@@ -92,7 +87,6 @@ impl<const L: usize> Secret<L> {
 }
 
 impl<const L: usize> Drop for Secret<L> {
-    #[inline(always)]
     fn drop(&mut self) {
         self.0.fill(0);
     }

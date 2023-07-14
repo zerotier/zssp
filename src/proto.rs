@@ -21,9 +21,7 @@ pub const MIN_PACKET_SIZE: usize = HEADER_SIZE + AES_GCM_TAG_SIZE;
 /// Minimum physical MTU for ZSSP to function.
 pub const MIN_TRANSPORT_MTU: usize = 128;
 
-pub const RATCHET_KEY_SIZE: usize = 32;
-
-pub const RATCHET_FINGERPRINT_SIZE: usize = 32;
+pub const RATCHET_SIZE: usize = 32;
 
 /// The application has the ability to attach a data payload to Alice's handshake.
 /// It will be the first payload Bob receives from Alice.
@@ -48,7 +46,7 @@ pub(crate) const PACKET_TYPE_NOISE_XK_PATTERN_1: u8 = 0;
 pub(crate) const PACKET_TYPE_NOISE_XK_PATTERN_2: u8 = 1;
 pub(crate) const PACKET_TYPE_NOISE_XK_PATTERN_3: u8 = 2;
 pub(crate) const PACKET_TYPE_KEY_CONFIRM: u8 = 3;
-pub(crate) const PACKET_TYPE_KEY_DELETE: u8 = 4;
+pub(crate) const PACKET_TYPE_ACK: u8 = 4;
 pub(crate) const PACKET_TYPE_NOISE_KK_PATTERN_1: u8 = 5;
 pub(crate) const PACKET_TYPE_NOISE_KK_PATTERN_2: u8 = 6;
 pub(crate) const PACKET_TYPE_SESSION_REJECTED: u8 = 7;
@@ -126,7 +124,7 @@ pub(crate) const MAX_UNASSOCIATED_HANDSHAKE_STATES: usize = 32;
 
 /// The maximum size a packet that is not associated to a session may be.
 /// Excludes the size of headers for fragmentation.
-pub(crate) const MAX_UNASSOCIATED_PACKET_SIZE: usize = NoiseXKPattern1::SIZE - HEADER_SIZE;
+pub(crate) const MAX_UNASSOCIATED_PACKET_SIZE: usize = NoiseXKPattern1::MAX_SIZE - HEADER_SIZE;
 
 /*
 XKhfs+psk2:
@@ -168,10 +166,11 @@ pub(crate) struct NoiseXKPattern1 {
     pub noise_e1: [u8; KYBER_PUBLICKEYBYTES],
     /// -- end encrypted section
     pub e1_gcm_tag: [u8; AES_GCM_TAG_SIZE],
-    /// -- start AES-GCM(k_es) encrypted section
-    pub ratchet_fingerprint: [u8; RATCHET_FINGERPRINT_SIZE],
-    /// -- end encrypted section
-    pub p_gcm_tag: [u8; AES_GCM_TAG_SIZE],
+    pub payload: [u8; RATCHET_SIZE + RATCHET_SIZE + AES_GCM_TAG_SIZE + ChallengeResponse::SIZE],
+}
+
+#[repr(C, packed)]
+pub(crate) struct ChallengeResponse {
     pub challenge_counter: [u8; CHALLENGE_COUNTER_SIZE],
     pub challenge_mac: [u8; CHALLENGE_MAC_SIZE],
     pub challenge_pow: [u8; CHALLENGE_POW_SIZE],
@@ -183,9 +182,12 @@ impl NoiseXKPattern1 {
     pub const E1_ENC_START: usize = Self::PROLOGUE_END + P384_PUBLIC_KEY_SIZE;
     pub const E1_AUTH_START: usize = Self::E1_ENC_START + KYBER_PUBLICKEYBYTES;
     pub const P_ENC_START: usize = Self::E1_AUTH_START + AES_GCM_TAG_SIZE;
-    pub const P_AUTH_START: usize = Self::P_ENC_START + RATCHET_FINGERPRINT_SIZE;
-    pub const P_AUTH_END: usize = Self::P_AUTH_START + AES_GCM_TAG_SIZE;
-    pub const SIZE: usize = Self::P_AUTH_END + CHALLENGE_COUNTER_SIZE + CHALLENGE_MAC_SIZE + CHALLENGE_POW_SIZE;
+
+    pub const MIN_SIZE: usize = Self::P_ENC_START + AES_GCM_TAG_SIZE + ChallengeResponse::SIZE;
+    pub const MAX_SIZE: usize = Self::MIN_SIZE + RATCHET_SIZE + RATCHET_SIZE;
+}
+impl ChallengeResponse {
+    pub const SIZE: usize = CHALLENGE_COUNTER_SIZE + CHALLENGE_MAC_SIZE + CHALLENGE_POW_SIZE;
 }
 
 #[repr(C, packed)]
@@ -269,16 +271,17 @@ impl ProtocolFlatBuffer for NoiseXKPattern1 {}
 impl ProtocolFlatBuffer for NoiseXKPattern2 {}
 impl ProtocolFlatBuffer for NoiseKKPattern1or2 {}
 impl ProtocolFlatBuffer for BobDOSChallenge {}
+impl ProtocolFlatBuffer for ChallengeResponse {}
 
 #[inline(always)]
 pub(crate) fn byte_array_as_proto_buffer<B: ProtocolFlatBuffer>(b: &[u8]) -> &B {
-    assert_eq!(b.len(), size_of::<B>());
+    assert!(b.len() >= size_of::<B>());
     unsafe { &*b.as_ptr().cast() }
 }
 
 #[inline(always)]
 pub(crate) fn byte_array_as_proto_buffer_mut<B: ProtocolFlatBuffer>(b: &mut [u8]) -> &mut B {
-    assert_eq!(b.len(), size_of::<B>());
+    assert!(b.len() >= size_of::<B>());
     unsafe { &mut *b.as_mut_ptr().cast() }
 }
 /// Trick rust into letting us use a hasher that returns more than 64 bits.

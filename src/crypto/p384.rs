@@ -1,6 +1,6 @@
 // (c) 2020-2022 ZeroTier, Inc. -- currently proprietary pending actual release and licensing. See LICENSE.md.
 
-use super::rand_core::{RngCore, CryptoRng};
+use super::rand_core::{CryptoRng, RngCore};
 
 pub const P384_PUBLIC_KEY_SIZE: usize = 49;
 pub const P384_ECDH_SHARED_SECRET_SIZE: usize = 48;

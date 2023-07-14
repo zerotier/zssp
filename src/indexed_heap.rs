@@ -94,7 +94,7 @@ impl<T, P: Ord> IndexedBinaryHeap<T, P> {
         (idx.0 < self.map.len() && self.map[idx.0].1 == idx.1).then(|| self.map[idx.0].0)
     }
     pub fn pop(&mut self) -> Option<(T, P)> {
-        (self.data.len() > 0).then(|| self.remove_idx(0))
+        (!self.data.is_empty()).then(|| self.remove_idx(0))
     }
     /// Add an item to the queue and get back a generational index which allows for quick updating
     /// of this item and its priority.

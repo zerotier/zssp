@@ -42,7 +42,7 @@ impl SymmetricState {
         self.token_counter += 1;
 
         self.chaining_key.overwrite(&next_ck);
-        Secret::from_bytes_then_nuke(&mut temp_k[..AES_256_KEY_SIZE])
+        Secret::from_bytes_then_delete(&mut temp_k[..AES_256_KEY_SIZE])
     }
     /// Corresponds to Noise `MixKeyAndHash`.
     pub(crate) fn mix_key_and_hash(&mut self, hm: &mut impl HmacSha512, input_key_material: &[u8]) -> [u8; NOISE_HASHLEN] {
@@ -56,12 +56,17 @@ impl SymmetricState {
         temp_h
     }
     /// Corresponds to Noise `MixKeyAndHash` followed by `InitializeKey`.
-    pub(crate) fn mix_key_and_hash_initialize_key(&mut self, hm: &mut impl HmacSha512, input_key_material: &[u8]) -> ([u8; NOISE_HASHLEN], Secret<AES_256_KEY_SIZE>) {
+    pub(crate) fn mix_key_and_hash_initialize_key(
+        &mut self,
+        hm: &mut impl HmacSha512,
+        input_key_material: &[u8],
+    ) -> ([u8; NOISE_HASHLEN], Secret<AES_256_KEY_SIZE>) {
         let mut next_ck = Secret::new();
         let mut temp_h = [0u8; NOISE_HASHLEN];
         let mut temp_k = [0u8; NOISE_HASHLEN];
 
-        self.kbkdf(hm,
+        self.kbkdf(
+            hm,
             input_key_material,
             self.label(),
             3,
@@ -72,20 +77,25 @@ impl SymmetricState {
         self.token_counter += 1;
 
         self.chaining_key.overwrite(&next_ck);
-        (temp_h, Secret::from_bytes_then_nuke(&mut temp_k[..AES_256_KEY_SIZE]))
+        (temp_h, Secret::from_bytes_then_delete(&mut temp_k[..AES_256_KEY_SIZE]))
     }
     /// Get an additional symmetric key (ASK) that is a collision resistant hash of the transcript,
     /// is forward secrect and is cryptographically independent from all other produced keys.
     /// Based on Noise's unstable ASK mechanism, using KBKDF instead of HKDF.
     /// https://github.com/noiseprotocol/noise_wiki/wiki/Additional-Symmetric-Keys.
     #[inline(always)]
-    pub(crate) fn get_ask2(&self, hm: &mut impl HmacSha512, label: u8, noise_h: &[u8; NOISE_HASHLEN]) -> (Secret<AES_256_KEY_SIZE>, Secret<AES_256_KEY_SIZE>) {
+    pub(crate) fn get_ask2(
+        &self,
+        hm: &mut impl HmacSha512,
+        label: u8,
+        noise_h: &[u8; NOISE_HASHLEN],
+    ) -> (Secret<AES_256_KEY_SIZE>, Secret<AES_256_KEY_SIZE>) {
         let mut temp_k1 = [0u8; NOISE_HASHLEN];
         let mut temp_k2 = [0u8; NOISE_HASHLEN];
         self.kbkdf(hm, noise_h, [b'A', b'S', b'K', label], 2, &mut temp_k1, Some(&mut temp_k2), None);
         (
-            Secret::from_bytes_then_nuke(&mut temp_k1[..AES_256_KEY_SIZE]),
-            Secret::from_bytes_then_nuke(&mut temp_k2[..AES_256_KEY_SIZE]),
+            Secret::from_bytes_then_delete(&mut temp_k1[..AES_256_KEY_SIZE]),
+            Secret::from_bytes_then_delete(&mut temp_k2[..AES_256_KEY_SIZE]),
         )
     }
     /// Corresponds to Noise `Split`.
@@ -97,8 +107,8 @@ impl SymmetricState {
         // Normally KBKDF would not truncate to derive the correct length of AES keys,
         // but Noise specifies that the AES keys be truncated from NOISE_HASHLEN to AES_256_KEY_SIZE.
         (
-            Secret::from_bytes_then_nuke(&mut temp_k1[..AES_256_KEY_SIZE]),
-            Secret::from_bytes_then_nuke(&mut temp_k2[..AES_256_KEY_SIZE]),
+            Secret::from_bytes_then_delete(&mut temp_k1[..AES_256_KEY_SIZE]),
+            Secret::from_bytes_then_delete(&mut temp_k2[..AES_256_KEY_SIZE]),
         )
     }
     #[inline(always)]
