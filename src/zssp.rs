@@ -110,12 +110,6 @@ pub enum IncomingSessionAction {
     Drop,
 }
 
-pub enum AcceptSessionAction<Application: ApplicationLayer> {
-    Accept(Application::Data),
-    SendReject,
-    SilentlyReject,
-}
-
 /// ZeroTier Secure Session Protocol (ZSSP) Session
 ///
 /// A FIPS/NIST compliant variant of Noise_XK with hybrid Kyber1024 PQ data forward secrecy.
@@ -1328,8 +1322,7 @@ impl<Application: ApplicationLayer> Context<Application> {
                                         drop(noise_k_eseeekem1pskse);
                                         // Alice finished Noise XKhfs+psk2 handshake.
                                         // Transition offer state machine to the NoiseXKPattern3 state.
-                                        let (rk, rf) =
-                                            noise_ck.get_ask2(hmac, LABEL_RATCHET_STATE, &noise_h_ee1peekem1pskpsp);
+                                        let (rk, rf) = noise_ck.get_ask2(hmac, LABEL_RATCHET_STATE, &noise_h_ee1peekem1pskpsp);
                                         let new_ratchet_state = RatchetState::new_nonempty(rk, rf, NonZeroU64::new(chain_len + 1).unwrap());
 
                                         let ratchet_to_preserve = &state.ratchet_states[ratchet_i];
@@ -1338,7 +1331,7 @@ impl<Application: ApplicationLayer> Context<Application> {
                                             &session.application_data,
                                             [&state.ratchet_states[0], &state.ratchet_states[1]],
                                             [&new_ratchet_state, ratchet_to_preserve],
-                                            current_time
+                                            current_time,
                                         );
                                         if result.is_err() {
                                             return Err(ReceiveError::RatchetIoError);
@@ -1508,13 +1501,13 @@ impl<Application: ApplicationLayer> Context<Application> {
                         send_unassociated_reply(&mut fragment[..len]);
                     };
 
-                    let (responder_disallows_downgrade, responder_silently_rejects) = check_accept_session(&remote_s_public_key, &message[p_enc_start..p_auth_start], handshake_state.ratchet_state.chain_len());
+                    let (responder_disallows_downgrade, responder_silently_rejects) = check_accept_session(
+                        &remote_s_public_key,
+                        &message[p_enc_start..p_auth_start],
+                        handshake_state.ratchet_state.chain_len(),
+                    );
                     if let Some((responder_disallows_downgrade, application_data)) = responder_disallows_downgrade {
-                        let result = app.restore_by_identity(
-                            &remote_s_public_key,
-                            &application_data,
-                            current_time,
-                        );
+                        let result = app.restore_by_identity(&remote_s_public_key, &application_data, current_time);
                         if let Ok(true_ratchet_states) = result {
                             let mut has_match = false;
                             for rs in &true_ratchet_states {
@@ -1544,7 +1537,8 @@ impl<Application: ApplicationLayer> Context<Application> {
 
                             let (rk, rf) = noise_ck.get_ask2(hmac, LABEL_RATCHET_STATE, &noise_h_ee1peekem1pskpsp);
                             // We must make sure the ratchet key is saved before we transition.
-                            let new_ratchet_state = RatchetState::new_nonempty(rk, rf, NonZeroU64::new(handshake_state.ratchet_state.chain_len() + 1).unwrap());
+                            let new_ratchet_state =
+                                RatchetState::new_nonempty(rk, rf, NonZeroU64::new(handshake_state.ratchet_state.chain_len() + 1).unwrap());
                             let result = app.save_ratchet_state(
                                 &remote_s_public_key,
                                 &application_data,
@@ -2104,7 +2098,8 @@ fn receive_control_fragment<'a, Application: ApplicationLayer, SendFn: FnMut(&mu
                             // Bob fully authenticated.
                             // Alice finished Noise KKpsk0 handshake.
                             let (rk, rf) = noise_ck.get_ask2(hmac, LABEL_RATCHET_STATE, &noise_h_pskepep);
-                            let new_ratchet_state = RatchetState::new_nonempty(rk, rf, NonZeroU64::new(state.ratchet_states[0].chain_len() + 1).unwrap());
+                            let new_ratchet_state =
+                                RatchetState::new_nonempty(rk, rf, NonZeroU64::new(state.ratchet_states[0].chain_len() + 1).unwrap());
                             let result = app.save_ratchet_state(
                                 &session.remote_static_key,
                                 &session.application_data,

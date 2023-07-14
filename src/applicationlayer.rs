@@ -168,7 +168,12 @@ pub trait ApplicationLayer: Sized {
         Ok(RatchetState::Null)
     }
     #[allow(unused)]
-    fn restore_by_identity(&self, remote_static_key: &Self::PublicKey, application_data: &Self::Data, current_time: i64) -> Result<[RatchetState; 2], ()> {
+    fn restore_by_identity(
+        &self,
+        remote_static_key: &Self::PublicKey,
+        application_data: &Self::Data,
+        current_time: i64,
+    ) -> Result<[RatchetState; 2], ()> {
         Ok([RatchetState::Null, RatchetState::Null])
     }
     /// Atomically save the given ratchet key, fingerprint and number to persistent storage.
@@ -213,16 +218,8 @@ pub enum RatchetState {
 }
 use RatchetState::*;
 impl RatchetState {
-    pub fn new_nonempty(
-        key: Secret<RATCHET_SIZE>,
-        fingerprint: Secret<RATCHET_SIZE>,
-        chain_len: NonZeroU64,
-    ) -> Self {
-        NonEmpty(NonEmptyRatchetState {
-            key,
-            fingerprint,
-            chain_len,
-        })
+    pub fn new_nonempty(key: Secret<RATCHET_SIZE>, fingerprint: Secret<RATCHET_SIZE>, chain_len: NonZeroU64) -> Self {
+        NonEmpty(NonEmptyRatchetState { key, fingerprint, chain_len })
     }
     pub fn new_initial_states() -> [RatchetState; 2] {
         [RatchetState::Empty, RatchetState::Null]
