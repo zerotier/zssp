@@ -13,6 +13,8 @@ pub enum OpenError {
 
     /// Local identity blob is too large to send, even with fragmentation.
     DataTooLarge,
+
+    RatchetIoError
 }
 
 #[derive(Debug, PartialEq, Eq)]

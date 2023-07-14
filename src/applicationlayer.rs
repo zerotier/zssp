@@ -6,6 +6,7 @@
  * https://www.zerotier.com/
  */
 
+use std::num::NonZeroU64;
 use std::sync::Arc;
 
 use crate::crypto::aes::{AesDec, AesEnc};
@@ -163,8 +164,12 @@ pub trait ApplicationLayer: Sized {
     /// to the zero ratchet key, restarting the ratchet chain.
     /// If `RatchetAction::FailAuthentication` is returned Alice's connection will be silently dropped.
     #[allow(unused)]
-    fn restore_ratchet(&self, ratchet_fingerprint: &[u8; RATCHET_SIZE], current_time: i64) -> Result<Option<RatchetState>, ()> {
-        Ok(None)
+    fn restore_by_fingerprint(&self, ratchet_fingerprint: &[u8; RATCHET_SIZE], current_time: i64) -> Result<RatchetState, ()> {
+        Ok(RatchetState::Null)
+    }
+    #[allow(unused)]
+    fn restore_by_identity(&self, remote_static_key: &Self::PublicKey, application_data: &Self::Data, current_time: i64) -> Result<[RatchetState; 2], ()> {
+        Ok([RatchetState::Null, RatchetState::Null])
     }
     /// Atomically save the given ratchet key, fingerprint and number to persistent storage.
     ///
@@ -189,7 +194,8 @@ pub trait ApplicationLayer: Sized {
         &self,
         remote_static_key: &Self::PublicKey,
         application_data: &Self::Data,
-        save_action: SaveAction<'a>,
+        previous_ratchet_states: [&RatchetState; 2],
+        new_ratchet_states: [&RatchetState; 2],
         current_time: i64,
     ) -> Result<(), ()> {
         Ok(())
@@ -199,19 +205,70 @@ pub trait ApplicationLayer: Sized {
     fn event_log<'a>(&self, event: LogEvent<'a, Self>, current_time: i64) {}
 }
 
-#[derive(Default, Clone, PartialEq, Eq)]
-pub struct RatchetState {
+#[derive(Clone, PartialEq, Eq)]
+pub enum RatchetState {
+    Null,
+    Empty,
+    NonEmpty(NonEmptyRatchetState),
+}
+use RatchetState::*;
+impl RatchetState {
+    pub fn new_nonempty(
+        key: Secret<RATCHET_SIZE>,
+        fingerprint: Secret<RATCHET_SIZE>,
+        chain_len: NonZeroU64,
+    ) -> Self {
+        NonEmpty(NonEmptyRatchetState {
+            key,
+            fingerprint,
+            chain_len,
+        })
+    }
+    pub fn new_initial_states() -> [RatchetState; 2] {
+        [RatchetState::Empty, RatchetState::Null]
+    }
+    pub fn is_null(&self) -> bool {
+        match self {
+            Null => true,
+            _ => false,
+        }
+    }
+    pub fn is_empty(&self) -> bool {
+        match self {
+            Empty => true,
+            _ => false,
+        }
+    }
+    #[inline]
+    pub fn nonempty(&self) -> Option<&NonEmptyRatchetState> {
+        match self {
+            NonEmpty(rs) => Some(&rs),
+            _ => None,
+        }
+    }
+    #[inline]
+    pub fn chain_len(&self) -> u64 {
+        self.nonempty().map_or(0, |rs| rs.chain_len.get())
+    }
+    #[inline]
+    pub fn fingerprint(&self) -> Option<&[u8; RATCHET_SIZE]> {
+        self.nonempty().map_or(None, |rs| Some(&rs.fingerprint.as_ref()))
+    }
+    #[inline]
+    pub fn key(&self) -> Option<&[u8; RATCHET_SIZE]> {
+        const ZERO_KEY: [u8; RATCHET_SIZE] = [0u8; RATCHET_SIZE];
+        match self {
+            Null => None,
+            Empty => Some(&ZERO_KEY),
+            NonEmpty(rs) => Some(rs.key.as_ref()),
+        }
+    }
+}
+/// A ratchet key and fingerprint,
+/// along with the length of the ratchet chain the keys were derived from.
+#[derive(Clone, PartialEq, Eq)]
+pub struct NonEmptyRatchetState {
     pub key: Secret<RATCHET_SIZE>,
     pub fingerprint: Secret<RATCHET_SIZE>,
-    pub chain_len: u64,
-}
-/// Ratchet keys and fingerprints should be saved *per remote peer*. It is up to the application to
-/// enforce separate storage for each remote peer based on `remote_static_key` and `application_data`.
-///
-/// Only up to 2 ratchet keys and fingerprints will be saved at one time.
-pub enum SaveAction<'a> {
-    AddRatchet(&'a RatchetState),
-    DeleteRatchet(&'a RatchetState),
-    DeleteThenAddRatchet(&'a RatchetState, &'a RatchetState),
-    VerifyThenOverwriteRatchet(Option<&'a RatchetState>, &'a RatchetState),
+    pub chain_len: NonZeroU64,
 }

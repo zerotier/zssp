@@ -11,7 +11,7 @@
 use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::hash::Hash;
-use std::num::NonZeroU32;
+use std::num::{NonZeroU32, NonZeroU64};
 use std::ops::DerefMut;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, Weak};
@@ -128,7 +128,7 @@ pub struct Session<Application: ApplicationLayer> {
     /// Handle into the session queue for changing the update timer.
     queue_idx: BinaryHeapIndex,
 
-    remote_s_public_key: Application::PublicKey,
+    remote_static_key: Application::PublicKey,
     send_counter: AtomicU64,
     /// This bool signals to all threads to stop incrementing the counter and instead error out.
     session_has_expired: AtomicBool,
@@ -158,7 +158,7 @@ unsafe impl<Application: ApplicationLayer> Sync for Session<Application> {}
 
 /// Session state may only be mutated during atomic transitions of the offer state machine.
 struct SessionMutableState<Application: ApplicationLayer> {
-    ratchet_state: [Option<RatchetState>; 2],
+    ratchet_states: [RatchetState; 2],
     /// For OOO rekeying reliability we allow our version of Noise CipherState to hold the last two
     /// session keys, instead of just the most recent one.
     cipher_states: [Option<SessionKey<Application>>; 2],
@@ -200,11 +200,12 @@ enum OfferStateMachine<Application: ApplicationLayer> {
 }
 
 pub(crate) struct NoiseXKBobHandshakeState<Application: ApplicationLayer> {
+    /// Can never be Null.
+    ratchet_state: RatchetState,
     remote_key_id: NonZeroU32,
     local_key_id: NonZeroU32,
     header_receive_key: Secret<AES_GCM_KEY_SIZE>,
     header_send_key: Secret<AES_GCM_KEY_SIZE>,
-    ratchet_state: Option<RatchetState>,
     noise_h_ee1peekem1pskp: [u8; NOISE_HASHLEN],
     noise_e_secret: Application::KeyPair,
     noise_ck_eseeekem1psk: SymmetricState,
@@ -347,10 +348,10 @@ impl<Application: ApplicationLayer> Context<Application> {
                     } else {
                         // We have to eventually time out NoiseXKPattern3 because of unreliable network conditions.
                         if handshake_state.timeout <= current_time {
-                            let ratchet_state = state.ratchet_state.clone();
                             drop(state);
                             let _kex_lock = session.state_machine_lock.lock().unwrap();
                             let mut state = session.state.write().unwrap();
+                            let ratchet_state = state.ratchet_states.clone();
                             // Since we dropped the lock we must re-check if we are in the correct state.
                             if let NoiseXKPattern1or3(handshake_state) = &mut state.outgoing_offer {
                                 if handshake_state.timeout <= current_time {
@@ -463,7 +464,7 @@ impl<Application: ApplicationLayer> Context<Application> {
     /// * `send` - Function to be called to send one or more initial packets to the remote being
     ///   contacted
     /// * `mtu` - MTU for initial packets
-    /// * `remote_s_public_key` - Remote side's static public NIST P-384 key
+    /// * `remote_static_key` - Remote side's static public NIST P-384 key
     /// * `application_data` - Arbitrary data meaningful to the application to include with session
     ///   object
     /// * `ratchet_state` - The last saved and confirmed ratchet state associated with this remote
@@ -475,11 +476,11 @@ impl<Application: ApplicationLayer> Context<Application> {
     #[inline]
     pub fn open(
         &self,
+        app: &Application,
         mut send: impl FnMut(&mut [u8]) -> bool,
         mut mtu: usize,
-        remote_s_public_key: Application::PublicKey,
+        remote_static_key: Application::PublicKey,
         application_data: Application::Data,
-        mut ratchet_state: [Option<RatchetState>; 2],
         local_identity_blob: Application::LocalIdentityBlob,
         current_time: i64,
     ) -> Result<Arc<Session<Application>>, OpenError> {
@@ -487,88 +488,82 @@ impl<Application: ApplicationLayer> Context<Application> {
         if local_identity_blob.as_ref().len() > MAX_IDENTITY_BLOB_SIZE {
             return Err(OpenError::DataTooLarge);
         }
-        // Double check that the application gave us these in the correct order.
-        if let Some(first) = &ratchet_state[0] {
-            if let Some(second) = &ratchet_state[1] {
-                if first.chain_len < second.chain_len {
-                    ratchet_state.swap(0, 1);
-                }
+        let result = app.restore_by_identity(&remote_static_key, &application_data, current_time);
+        if let Ok(ratchet_states) = result {
+            let sha512 = &mut Application::Hash::new();
+
+            let mut noise_kk_ss = Secret::new();
+            if !self.0.static_keypair.agree(&remote_static_key, noise_kk_ss.as_mut()) {
+                return Err(OpenError::InvalidPublicKey);
             }
-        } else {
-            ratchet_state.swap(0, 1);
-        }
+            let noise_kk_local_init_h = mix_hash(sha512, &INITIAL_H_REKEY, self.0.static_keypair.public_key_bytes());
+            let noise_kk_local_init_h = mix_hash(sha512, &noise_kk_local_init_h, remote_static_key.as_bytes());
+            let noise_kk_remote_init_h = mix_hash(sha512, &INITIAL_H_REKEY, remote_static_key.as_bytes());
+            let noise_kk_remote_init_h = mix_hash(sha512, &noise_kk_remote_init_h, self.0.static_keypair.public_key_bytes());
 
-        let sha512 = &mut Application::Hash::new();
+            let mut session_queue = self.0.session_queue.lock().unwrap();
+            let mut session_map = self.0.session_map.write().unwrap();
+            let local_key_id = generate_key_id(&session_map, &mut self.0.rng.lock().unwrap());
+            // Begin Noise XKhfs+psk2.
+            let (offer, a2b_header_key, b2a_header_key) =
+                NoiseXKAliceHandshake::<Application>::initialize(local_key_id, &remote_static_key, &ratchet_states, &mut self.0.rng.lock().unwrap())?;
+            let handshake_state = Box::new(NoiseXKAliceHandshake {
+                next_retry_time: AtomicI64::new(current_time.saturating_add(Application::RETRY_INTERVAL_MS)),
+                timeout: current_time.saturating_add(Application::INITIAL_OFFER_TIMEOUT_MS),
+                local_key_id,
+                alice_identity_blob: local_identity_blob,
+                offer,
+            });
+            if let NoiseXKAliceHandshakeState::NoiseXKPattern1 { noise_message, noise_message_len, message_id, .. } = &handshake_state.offer {
+                send_with_fragmentation(
+                    &mut send,
+                    mtu,
+                    &mut noise_message.clone()[..*noise_message_len],
+                    PACKET_TYPE_NOISE_XK_PATTERN_1,
+                    None,
+                    *message_id,
+                    None::<&Application::PrpEnc>,
+                );
+            }
 
-        let mut noise_kk_ss = Secret::new();
-        if !self.0.static_keypair.agree(&remote_s_public_key, noise_kk_ss.as_mut()) {
-            return Err(OpenError::InvalidPublicKey);
-        }
-        let noise_kk_local_init_h = mix_hash(sha512, &INITIAL_H_REKEY, self.0.static_keypair.public_key_bytes());
-        let noise_kk_local_init_h = mix_hash(sha512, &noise_kk_local_init_h, remote_s_public_key.as_bytes());
-        let noise_kk_remote_init_h = mix_hash(sha512, &INITIAL_H_REKEY, remote_s_public_key.as_bytes());
-        let noise_kk_remote_init_h = mix_hash(sha512, &noise_kk_remote_init_h, self.0.static_keypair.public_key_bytes());
-
-        let mut session_queue = self.0.session_queue.lock().unwrap();
-        let mut session_map = self.0.session_map.write().unwrap();
-        let local_key_id = generate_key_id(&session_map, &mut self.0.rng.lock().unwrap());
-        // Begin Noise XKhfs+psk2.
-        let (offer, a2b_header_key, b2a_header_key) =
-            NoiseXKAliceHandshake::<Application>::initialize(local_key_id, &remote_s_public_key, &ratchet_state, &mut self.0.rng.lock().unwrap())?;
-        let handshake_state = Box::new(NoiseXKAliceHandshake {
-            next_retry_time: AtomicI64::new(current_time.saturating_add(Application::RETRY_INTERVAL_MS)),
-            timeout: current_time.saturating_add(Application::INITIAL_OFFER_TIMEOUT_MS),
-            local_key_id,
-            alice_identity_blob: local_identity_blob,
-            offer,
-        });
-        if let NoiseXKAliceHandshakeState::NoiseXKPattern1 { noise_message, noise_message_len, message_id, .. } = &handshake_state.offer {
-            send_with_fragmentation(
-                &mut send,
-                mtu,
-                &mut noise_message.clone()[..*noise_message_len],
-                PACKET_TYPE_NOISE_XK_PATTERN_1,
-                None,
-                *message_id,
-                None::<&Application::PrpEnc>,
+            let queue_idx = session_queue.reserve_index();
+            let session = Arc::new(Session {
+                context: Arc::downgrade(&self.0),
+                queue_idx,
+                application_data,
+                remote_static_key,
+                send_counter: AtomicU64::new(INIT_COUNTER),
+                session_has_expired: AtomicBool::new(false),
+                counter_antireplay_window: std::array::from_fn(|_| AtomicU64::new(0)),
+                state_machine_lock: Mutex::new(()),
+                state: RwLock::new(SessionMutableState {
+                    ratchet_states: ratchet_states.clone(),
+                    cipher_states: [None, None],
+                    // Points at 1 until the first key is confirmed.
+                    current_key: 1,
+                    outgoing_offer: OfferStateMachine::NoiseXKPattern1or3(handshake_state),
+                }),
+                header_send_cipher: Application::PrpEnc::new(a2b_header_key.as_ref()),
+                header_receive_cipher: Application::PrpDec::new(b2a_header_key.as_ref()),
+                kex_receive_cipher: Mutex::new(None),
+                kex_send_cipher: Mutex::new(None),
+                noise_kk_ss: noise_kk_ss.clone(),
+                noise_kk_local_init_h,
+                noise_kk_remote_init_h,
+                defrag: std::array::from_fn(|_| Mutex::new(Fragged::new())),
+                was_bob: false,
+            });
+            session_map.insert(local_key_id, (Arc::downgrade(&session), false));
+            session_queue.push_reserved(
+                queue_idx,
+                Arc::downgrade(&session),
+                Reverse(current_time.saturating_add(Application::RETRY_INTERVAL_MS)),
             );
+
+            return Ok(session);
+        } else {
+            return Err(OpenError::RatchetIoError);
         }
-
-        let queue_idx = session_queue.reserve_index();
-        let session = Arc::new(Session {
-            context: Arc::downgrade(&self.0),
-            queue_idx,
-            application_data,
-            remote_s_public_key,
-            send_counter: AtomicU64::new(INIT_COUNTER),
-            session_has_expired: AtomicBool::new(false),
-            counter_antireplay_window: std::array::from_fn(|_| AtomicU64::new(0)),
-            state_machine_lock: Mutex::new(()),
-            state: RwLock::new(SessionMutableState {
-                ratchet_state: ratchet_state.clone(),
-                cipher_states: [None, None],
-                // Points at 1 until the first key is confirmed.
-                current_key: 1,
-                outgoing_offer: OfferStateMachine::NoiseXKPattern1or3(handshake_state),
-            }),
-            header_send_cipher: Application::PrpEnc::new(a2b_header_key.as_ref()),
-            header_receive_cipher: Application::PrpDec::new(b2a_header_key.as_ref()),
-            kex_receive_cipher: Mutex::new(None),
-            kex_send_cipher: Mutex::new(None),
-            noise_kk_ss: noise_kk_ss.clone(),
-            noise_kk_local_init_h,
-            noise_kk_remote_init_h,
-            defrag: std::array::from_fn(|_| Mutex::new(Fragged::new())),
-            was_bob: false,
-        });
-        session_map.insert(local_key_id, (Arc::downgrade(&session), false));
-        session_queue.push_reserved(
-            queue_idx,
-            Arc::downgrade(&session),
-            Reverse(current_time.saturating_add(Application::RETRY_INTERVAL_MS)),
-        );
-
-        return Ok(session);
     }
 
     /// Receive, authenticate, decrypt, and process a physical wire packet.
@@ -588,11 +583,7 @@ impl<Application: ApplicationLayer> Context<Application> {
     /// * `check_accept_session` - Function to accept sessions after final negotiation.
     ///   The second argument is the identity blob that the remote peer sent us. The application
     ///   must verify this identity is associated with the remote peer's static key.
-    ///   If the third argument is `Some`, it is a ratchet fingerprint. The application must verify
-    ///   that it is associated with the remote peer's static key and identity.
-    ///   If the third argument is `None` it means the remote peer connected to us with the zero
-    ///   ratchet. The application should decide whether or not this remote peer is allowed to
-    ///   connect with the zero ratchet.
+    ///   The third argument is true if the remote peer connected to us with a recognized ratchet fingerprint.
     /// * `send_unassociated_reply` - Function to send reply packets directly when no session exists
     /// * `send_unassociated_mtu` - MTU for unassociated replies
     /// * `send_to` - Function to get senders for existing sessions, permitting MTU and path lookup
@@ -609,7 +600,7 @@ impl<Application: ApplicationLayer> Context<Application> {
         &self,
         app: &Application,
         check_allow_incoming_session: impl FnOnce() -> IncomingSessionAction,
-        check_accept_session: impl FnOnce(&Application::PublicKey, &[u8]) -> AcceptSessionAction<Application>,
+        check_accept_session: impl FnOnce(&Application::PublicKey, &[u8], u64) -> (Option<(bool, Application::Data)>, bool),
         mut send_unassociated_reply: impl FnMut(&mut [u8]) -> bool,
         mut send_unassociated_mtu: usize,
         mut send_to: impl FnMut(&Arc<Session<Application>>) -> Option<(SendFn, usize)>,
@@ -1012,22 +1003,25 @@ impl<Application: ApplicationLayer> Context<Application> {
                     let (header_b2a_key, header_a2b_key) = noise_ck.get_ask2(hmac, LABEL_HEADER_KEY, &noise_h_ee1p);
                     // Get ratchet key.
                     let noise_pattern1: &NoiseXKPattern1 = byte_array_as_proto_buffer(message);
-                    let mut ratchet_state = None;
+                    let mut ratchet_state = RatchetState::Null;
                     for i in 0..total_ratchet_fingerprints {
-                        match app.restore_ratchet(
+                        match app.restore_by_fingerprint(
                             (&noise_pattern1.payload[i * RATCHET_SIZE..(i + 1) * RATCHET_SIZE]).try_into().unwrap(),
                             current_time,
                         ) {
-                            Ok(Some(rs)) => {
-                                ratchet_state = Some(rs);
+                            Ok(RatchetState::Null) | Ok(RatchetState::Empty) => {}
+                            Ok(rs) => {
+                                ratchet_state = rs;
                                 break;
                             }
-                            Ok(None) => {}
                             Err(()) => return Err(ReceiveError::RatchetIoError),
                         }
                     }
-                    if ratchet_state.is_none() && app.hello_requires_recognized_ratchet(current_time) {
-                        return Ok(ReceiveResult::Rejected);
+                    if ratchet_state.is_null() {
+                        if app.hello_requires_recognized_ratchet(current_time) {
+                            return Ok(ReceiveResult::Rejected);
+                        }
+                        ratchet_state = RatchetState::Empty;
                     }
 
                     // Start of Noise XKhfs+psk2 pattern2.
@@ -1063,7 +1057,7 @@ impl<Application: ApplicationLayer> Context<Application> {
                     noise_ck.mix_key(hmac, noise_ekem1_secret.as_ref());
                     drop(noise_ekem1_secret);
                     // Noise process pattern2 psk token.
-                    let ratchet_key = ratchet_state.as_ref().map(|rs| rs.key.as_ref()).unwrap_or(&[0; RATCHET_SIZE]);
+                    let ratchet_key = ratchet_state.key().unwrap();
                     let (temp_h, noise_k_eseeekem1psk) = noise_ck.mix_key_and_hash_initialize_key(hmac, ratchet_key);
                     let noise_h_ee1peekem1psk = mix_hash(sha512, &noise_h_ee1peekem1, &temp_h);
                     // Noise process pattern2 payload.
@@ -1236,10 +1230,13 @@ impl<Application: ApplicationLayer> Context<Application> {
                             if let Some(Ok(noise_ekem1_secret)) = is_auth.then_some(noise_ekem1_secret) {
                                 noise_ck.mix_key(hmac, noise_ekem1_secret.as_ref());
                                 drop(noise_ekem1_secret);
+
                                 // We attempt to decrypt the payload at most three times. First two times with
                                 // the ratchet key Alice remembers, and final time with a ratchet
                                 // key of zero if Alice allows ratchet downgrades.
-
+                                // The following code is not constant time, meaning we leak to an
+                                // attacker whether or not we downgraded.
+                                // We don't currently consider this sensitive enough information to hide.
                                 let mut test_ratchet_key = |ratchet_key| -> Option<(NonZeroU32, SymmetricState, Secret<AES_GCM_KEY_SIZE>, [u8; 64])> {
                                     // Check for which ratchet key Bob wants to use.
                                     let mut noise_ck = noise_ck.clone();
@@ -1271,19 +1268,22 @@ impl<Application: ApplicationLayer> Context<Application> {
                                 // Check first key.
                                 let mut ratchet_i = 0;
                                 let mut result = None;
-                                let ratchet_number = 0;
-                                if let Some(rs) = &state.ratchet_state[0] {
-                                    result = test_ratchet_key(rs.key.as_ref());
+                                let mut chain_len = 0;
+                                if let Some(key) = state.ratchet_states[0].key() {
+                                    chain_len = state.ratchet_states[0].chain_len();
+                                    result = test_ratchet_key(key);
                                 }
                                 // Check second key.
                                 if result.is_none() {
                                     ratchet_i = 1;
-                                    if let Some(rs) = &state.ratchet_state[1] {
-                                        result = test_ratchet_key(rs.key.as_ref());
+                                    if let Some(key) = state.ratchet_states[1].key() {
+                                        chain_len = state.ratchet_states[0].chain_len();
+                                        result = test_ratchet_key(key);
                                     }
                                 }
                                 // Check zero key.
-                                if result.is_none() {
+                                if result.is_none() && !app.initiator_disallows_downgrade(&session, current_time) {
+                                    chain_len = 0;
                                     result = test_ratchet_key(&[0u8; RATCHET_SIZE]);
                                 }
 
@@ -1330,18 +1330,16 @@ impl<Application: ApplicationLayer> Context<Application> {
                                         // Transition offer state machine to the NoiseXKPattern3 state.
                                         let (rk, rf) =
                                             noise_ck.get_ask2(hmac, LABEL_RATCHET_STATE, &noise_h_ee1peekem1pskpsp);
-                                        let new_ratchet_state = RatchetState {
-                                            key: rk,
-                                            fingerprint: rf,
-                                            chain_len: ratchet_number + 1,
-                                        };
-                                        let action = if state.ratchet_state[0].is_some() && state.ratchet_state[1].is_some() {
-                                            SaveAction::DeleteThenAddRatchet(state.ratchet_state[1 - ratchet_i].as_ref().unwrap(), &new_ratchet_state)
-                                        } else {
-                                            SaveAction::AddRatchet(&new_ratchet_state)
-                                        };
-                                        let result =
-                                            app.save_ratchet_state(&session.remote_s_public_key, &session.application_data, action, current_time);
+                                        let new_ratchet_state = RatchetState::new_nonempty(rk, rf, NonZeroU64::new(chain_len + 1).unwrap());
+
+                                        let ratchet_to_preserve = &state.ratchet_states[ratchet_i];
+                                        let result = app.save_ratchet_state(
+                                            &session.remote_static_key,
+                                            &session.application_data,
+                                            [&state.ratchet_states[0], &state.ratchet_states[1]],
+                                            [&new_ratchet_state, ratchet_to_preserve],
+                                            current_time
+                                        );
                                         if result.is_err() {
                                             return Err(ReceiveError::RatchetIoError);
                                         }
@@ -1361,8 +1359,8 @@ impl<Application: ApplicationLayer> Context<Application> {
                                             .lock()
                                             .unwrap()
                                             .replace(Application::AeadDec::new(kex_key_b2a.as_ref()));
-                                        state.ratchet_state[1] = state.ratchet_state[ratchet_i].clone();
-                                        state.ratchet_state[0] = Some(new_ratchet_state.clone());
+                                        state.ratchet_states[1] = state.ratchet_states[ratchet_i].clone();
+                                        state.ratchet_states[0] = new_ratchet_state;
 
                                         state.cipher_states[0].replace(SessionKey::new(
                                             hmac,
@@ -1405,9 +1403,9 @@ impl<Application: ApplicationLayer> Context<Application> {
                         }
                         // Bob failed authentication so we must restart our offer according to Noise.
                         // We restart the offer instead of dropping the session to defend against DOS.
-                        let ratchet_state = state.ratchet_state.clone();
                         drop(state);
                         let mut state = session.state.write().unwrap();
+                        let ratchet_state = state.ratchet_states.clone();
                         if let NoiseXKPattern1or3(handshake_state) = &mut state.outgoing_offer {
                             if !handshake_state.reinitialize(
                                 &session,
@@ -1495,8 +1493,46 @@ impl<Application: ApplicationLayer> Context<Application> {
                     // Bob finished Noise XKhfs+psk2 handshake.
                     let header_send_cipher = Application::PrpEnc::new(handshake_state.header_send_key.as_ref());
                     let (kex_key_b2a, kex_key_a2b) = noise_ck.get_ask2(hmac, LABEL_KEX_KEY, &noise_h_ee1peekem1pskpsp);
-                    match check_accept_session(&remote_s_public_key, &message[p_enc_start..p_auth_start]) {
-                        AcceptSessionAction::Accept(application_data) => {
+                    let mut send_reject = || {
+                        // We just used a counter with this key, but we are not storing
+                        // the fact we used it in memory. This is currently ok because the
+                        // handshake is being dropped, so nonce reuse can't happen.
+                        let (mut fragment, len) = encrypt_control(
+                            &mut Application::AeadEnc::new(kex_key_b2a.as_ref()),
+                            &header_send_cipher,
+                            PACKET_TYPE_SESSION_REJECTED,
+                            INIT_COUNTER,
+                            handshake_state.remote_key_id.get(),
+                            &[],
+                        );
+                        send_unassociated_reply(&mut fragment[..len]);
+                    };
+
+                    let (responder_disallows_downgrade, responder_silently_rejects) = check_accept_session(&remote_s_public_key, &message[p_enc_start..p_auth_start], handshake_state.ratchet_state.chain_len());
+                    if let Some((responder_disallows_downgrade, application_data)) = responder_disallows_downgrade {
+                        let result = app.restore_by_identity(
+                            &remote_s_public_key,
+                            &application_data,
+                            current_time,
+                        );
+                        if let Ok(true_ratchet_states) = result {
+                            let mut has_match = false;
+                            for rs in &true_ratchet_states {
+                                if !rs.is_null() {
+                                    has_match |= &handshake_state.ratchet_state == rs;
+                                }
+                            }
+                            if !has_match {
+                                if !responder_disallows_downgrade && handshake_state.ratchet_state.is_empty() {
+                                    // TODO: add some kind of warning callback or signal.
+                                } else {
+                                    if !responder_silently_rejects {
+                                        send_reject();
+                                    }
+                                    return Err(byzantine_fault!(FaultType::FailedAuthentication, false));
+                                }
+                            }
+
                             let mut noise_kk_ss = Secret::new();
                             if !self.0.static_keypair.agree(&remote_s_public_key, noise_kk_ss.as_mut()) {
                                 return Err(byzantine_fault!(FaultType::FailedAuthentication, false));
@@ -1508,15 +1544,12 @@ impl<Application: ApplicationLayer> Context<Application> {
 
                             let (rk, rf) = noise_ck.get_ask2(hmac, LABEL_RATCHET_STATE, &noise_h_ee1peekem1pskpsp);
                             // We must make sure the ratchet key is saved before we transition.
-                            let new_ratchet_state = RatchetState {
-                                key: rk,
-                                fingerprint: rf,
-                                chain_len: handshake_state.ratchet_state.as_ref().map(|rs| rs.chain_len + 1).unwrap_or(1),
-                            };
+                            let new_ratchet_state = RatchetState::new_nonempty(rk, rf, NonZeroU64::new(handshake_state.ratchet_state.chain_len() + 1).unwrap());
                             let result = app.save_ratchet_state(
                                 &remote_s_public_key,
                                 &application_data,
-                                SaveAction::VerifyThenOverwriteRatchet(handshake_state.ratchet_state.as_ref(), &new_ratchet_state),
+                                [&true_ratchet_states[0], &true_ratchet_states[1]],
+                                [&new_ratchet_state, &RatchetState::Null],
                                 current_time,
                             );
                             if result.is_err() {
@@ -1529,13 +1562,13 @@ impl<Application: ApplicationLayer> Context<Application> {
                                 context: Arc::downgrade(&self.0),
                                 queue_idx,
                                 application_data,
-                                remote_s_public_key,
+                                remote_static_key: remote_s_public_key,
                                 send_counter: AtomicU64::new(INIT_COUNTER),
                                 session_has_expired: AtomicBool::new(false),
                                 counter_antireplay_window: std::array::from_fn(|_| AtomicU64::new(0)),
                                 state_machine_lock: Mutex::new(()),
                                 state: RwLock::new(SessionMutableState {
-                                    ratchet_state: [Some(new_ratchet_state.clone()), None],
+                                    ratchet_states: [new_ratchet_state.clone(), RatchetState::Null],
                                     cipher_states: [
                                         Some(SessionKey::new(
                                             hmac,
@@ -1584,23 +1617,14 @@ impl<Application: ApplicationLayer> Context<Application> {
                                 // restart the handshake in this case.
                                 return Err(byzantine_fault!(FaultType::UnknownLocalKeyId, true));
                             }
+                        } else {
+                            return Err(ReceiveError::RatchetIoError);
                         }
-                        AcceptSessionAction::SendReject => {
-                            // We just used a counter with this key, but we are not storing
-                            // the fact we used it in memory. This is currently ok because the
-                            // handshake is being dropped, so nonce reuse can't happen.
-                            let (mut fragment, len) = encrypt_control(
-                                &mut Application::AeadEnc::new(kex_key_b2a.as_ref()),
-                                &header_send_cipher,
-                                PACKET_TYPE_SESSION_REJECTED,
-                                INIT_COUNTER,
-                                handshake_state.remote_key_id.get(),
-                                &[],
-                            );
-                            send_unassociated_reply(&mut fragment[..len]);
-                            return Ok(ReceiveResult::Rejected);
+                    } else {
+                        if !responder_silently_rejects {
+                            send_reject();
                         }
-                        AcceptSessionAction::SilentlyReject => return Ok(ReceiveResult::Rejected),
+                        return Ok(ReceiveResult::Rejected);
                     }
                 } else {
                     return Err(byzantine_fault!(FaultType::FailedAuthentication, false));
@@ -1735,7 +1759,7 @@ fn initiate_rekey<Application: ApplicationLayer>(
     // Start of Noise KKpsk0 pattern1.
     // Noise process pattern1 psk0 token.
     let mut noise_ck = SymmetricState::new(INITIAL_H_REKEY);
-    let noise_temp_h = noise_ck.mix_key_and_hash(hmac, state.ratchet_state[0].as_ref().unwrap().key.as_ref());
+    let noise_temp_h = noise_ck.mix_key_and_hash(hmac, state.ratchet_states[0].key().unwrap());
     let noise_h_psk = mix_hash(sha512, &session.noise_kk_local_init_h, &noise_temp_h);
     // Noise process pattern1 e token.
     let noise_e_secret = Application::KeyPair::generate(&mut context.rng.lock().unwrap());
@@ -1746,7 +1770,7 @@ fn initiate_rekey<Application: ApplicationLayer>(
     noise_pattern1.noise_e = *noise_e_secret.public_key_bytes();
     // Noise process pattern1 es token.
     let mut noise_es = Secret::new();
-    if !noise_e_secret.agree(&session.remote_s_public_key, noise_es.as_mut()) {
+    if !noise_e_secret.agree(&session.remote_static_key, noise_es.as_mut()) {
         return Err(());
     }
     noise_ck.mix_key(hmac, noise_es.as_ref());
@@ -1836,11 +1860,12 @@ fn receive_control_fragment<'a, Application: ApplicationLayer, SendFn: FnMut(&mu
                 _ => (true, false, SessionEvent::Control),
             };
             if try_delete {
-                let is_ok = if let Some(rs) = &state.ratchet_state[1] {
+                let is_ok = if !state.ratchet_states[1].is_null() {
                     app.save_ratchet_state(
-                        &session.remote_s_public_key,
+                        &session.remote_static_key,
                         &session.application_data,
-                        SaveAction::DeleteRatchet(rs),
+                        [&state.ratchet_states[0], &state.ratchet_states[1]],
+                        [&state.ratchet_states[0], &RatchetState::Null],
                         current_time,
                     )
                     .is_ok()
@@ -1855,7 +1880,7 @@ fn receive_control_fragment<'a, Application: ApplicationLayer, SendFn: FnMut(&mu
                             .unwrap()
                             .replace(Application::AeadEnc::new(kex_send_key.as_ref()));
                     }
-                    state.ratchet_state[1] = None;
+                    state.ratchet_states[1] = RatchetState::Null;
                     state.current_key ^= 1;
                     state.outgoing_offer = new_normal_state(context.0.rng.lock().unwrap().next_u64(), current_time);
                 } else {
@@ -1917,7 +1942,7 @@ fn receive_control_fragment<'a, Application: ApplicationLayer, SendFn: FnMut(&mu
             let sha512 = &mut Application::Hash::new();
             let hmac = &mut Application::HmacHash::new();
             let mut noise_ck = SymmetricState::new(INITIAL_H_REKEY);
-            let noise_temp_h = noise_ck.mix_key_and_hash(hmac, state.ratchet_state[0].as_ref().unwrap().key.as_ref());
+            let noise_temp_h = noise_ck.mix_key_and_hash(hmac, state.ratchet_states[0].key().unwrap());
             let noise_h_psk = mix_hash(sha512, &session.noise_kk_remote_init_h, &noise_temp_h);
             // Noise process pattern1 e token.
             // Get public key validation out of the way early
@@ -1926,7 +1951,7 @@ fn receive_control_fragment<'a, Application: ApplicationLayer, SendFn: FnMut(&mu
             let mut noise_se = Secret::new();
             if let Some(alice_e) = from_bytes_agreement::<Application>(&noise_pattern1.noise_e, &context.0.static_keypair, noise_es.as_mut()) {
                 let bob_e_secret = Application::KeyPair::generate(&mut context.0.rng.lock().unwrap());
-                if bob_e_secret.agree(&alice_e, noise_ee.as_mut()) && bob_e_secret.agree(&session.remote_s_public_key, noise_se.as_mut()) {
+                if bob_e_secret.agree(&alice_e, noise_ee.as_mut()) && bob_e_secret.agree(&session.remote_static_key, noise_se.as_mut()) {
                     let noise_h_pske = mix_hash(sha512, &noise_h_psk, alice_e.as_bytes());
                     noise_ck.mix_key(hmac, alice_e.as_bytes());
                     // Noise process pattern1 es token.
@@ -1977,15 +2002,12 @@ fn receive_control_fragment<'a, Application: ApplicationLayer, SendFn: FnMut(&mu
                         drop(noise_k_pskessseese);
                         // Bob finished Noise KKpsk0 handshake.
                         let (rk, rf) = noise_ck.get_ask2(hmac, LABEL_RATCHET_STATE, &noise_h_pskepep);
-                        let new_ratchet_state = RatchetState {
-                            key: rk,
-                            fingerprint: rf,
-                            chain_len: state.ratchet_state[0].as_ref().map(|rs| rs.chain_len + 1).unwrap_or(1),
-                        };
+                        let new_ratchet_state = RatchetState::new_nonempty(rk, rf, NonZeroU64::new(state.ratchet_states[0].chain_len() + 1).unwrap());
                         let result = app.save_ratchet_state(
-                            &session.remote_s_public_key,
+                            &session.remote_static_key,
                             &session.application_data,
-                            SaveAction::AddRatchet(&new_ratchet_state),
+                            [&state.ratchet_states[0], &state.ratchet_states[1]],
+                            [&new_ratchet_state, &state.ratchet_states[0]],
                             current_time,
                         );
                         if result.is_err() {
@@ -2011,8 +2033,8 @@ fn receive_control_fragment<'a, Application: ApplicationLayer, SendFn: FnMut(&mu
                             .lock()
                             .unwrap()
                             .replace(Application::AeadDec::new(kex_key_a2b.as_ref()));
-                        state.ratchet_state[1] = state.ratchet_state[0].clone();
-                        state.ratchet_state[0] = Some(new_ratchet_state.clone());
+                        state.ratchet_states[1] = state.ratchet_states[0].clone();
+                        state.ratchet_states[0] = new_ratchet_state.clone();
 
                         state.cipher_states[next_key_index].replace(SessionKey::new(
                             hmac,
@@ -2082,15 +2104,12 @@ fn receive_control_fragment<'a, Application: ApplicationLayer, SendFn: FnMut(&mu
                             // Bob fully authenticated.
                             // Alice finished Noise KKpsk0 handshake.
                             let (rk, rf) = noise_ck.get_ask2(hmac, LABEL_RATCHET_STATE, &noise_h_pskepep);
-                            let new_ratchet_state = RatchetState {
-                                key: rk,
-                                fingerprint: rf,
-                                chain_len: state.ratchet_state[0].as_ref().map(|rs| rs.chain_len + 1).unwrap_or(1),
-                            };
+                            let new_ratchet_state = RatchetState::new_nonempty(rk, rf, NonZeroU64::new(state.ratchet_states[0].chain_len() + 1).unwrap());
                             let result = app.save_ratchet_state(
-                                &session.remote_s_public_key,
+                                &session.remote_static_key,
                                 &session.application_data,
-                                SaveAction::DeleteThenAddRatchet(&state.ratchet_state[0].as_ref().unwrap(), &new_ratchet_state),
+                                [&state.ratchet_states[0], &state.ratchet_states[1]],
+                                [&new_ratchet_state, &RatchetState::Null],
                                 current_time,
                             );
                             if result.is_err() {
@@ -2118,8 +2137,8 @@ fn receive_control_fragment<'a, Application: ApplicationLayer, SendFn: FnMut(&mu
                                 .lock()
                                 .unwrap()
                                 .replace(Application::AeadEnc::new(kex_key_a2b.as_ref()));
-                            state.ratchet_state[1] = None;
-                            state.ratchet_state[0] = Some(new_ratchet_state.clone());
+                            state.ratchet_states[1] = RatchetState::Null;
+                            state.ratchet_states[0] = new_ratchet_state.clone();
 
                             state.cipher_states[next_key_index].replace(SessionKey::new(
                                 hmac,
@@ -2196,22 +2215,19 @@ impl<Application: ApplicationLayer> Session<Application> {
     /// The static public key of the remote peer.
     #[inline]
     pub fn remote_s_public_key(&self) -> &Application::PublicKey {
-        &self.remote_s_public_key
+        &self.remote_static_key
     }
-    /// The most recent confirmed ratchet state of this session.
+    /// The current ratchet state of this session.
     /// The returned values are sensitive and should be securely erased before being dropped.
     #[inline]
-    pub fn ratchet_state(&self) -> [Option<RatchetState>; 2] {
+    pub fn ratchet_states(&self) -> [RatchetState; 2] {
         let state = self.state.read().unwrap();
-        state.ratchet_state.clone()
+        state.ratchet_states.clone()
     }
-    /// The most recent confirmed ratchet number of this session.
+    /// The current ratchet count of this session.
     #[inline]
     pub fn ratchet_count(&self) -> u64 {
-        self.state.read().unwrap().ratchet_state[0]
-            .as_ref()
-            .map(|rs| rs.chain_len)
-            .unwrap_or(0)
+        self.state.read().unwrap().ratchet_states[0].chain_len()
     }
     /// Mark a session as expired. This will make it impossible for this session to successfully
     /// receive or send data. It is recommended to simply `drop` the session instead, but this can
@@ -2295,7 +2311,7 @@ impl<Application: ApplicationLayer> NoiseXKAliceHandshake<Application> {
     fn initialize(
         local_key_id: NonZeroU32,
         remote_s_public_key: &Application::PublicKey,
-        ratchet_state: &[Option<RatchetState>; 2],
+        ratchet_state: &[RatchetState; 2],
         rng: &mut Application::Rng,
     ) -> Result<
         (
@@ -2345,10 +2361,10 @@ impl<Application: ApplicationLayer> NoiseXKAliceHandshake<Application> {
         // Noise process pattern1 payload.
         let noise_pattern1: &mut NoiseXKPattern1 = byte_array_as_proto_buffer_mut(&mut message);
         let mut idx = 0;
-        for r in ratchet_state {
-            if let Some(rs) = r {
+        for rs in ratchet_state {
+            if let Some(rf) = rs.fingerprint() {
                 let next_idx = idx + RATCHET_SIZE;
-                noise_pattern1.payload[idx..next_idx].copy_from_slice(rs.fingerprint.as_ref());
+                noise_pattern1.payload[idx..next_idx].copy_from_slice(rf);
                 idx = next_idx;
             }
         }
@@ -2386,13 +2402,13 @@ impl<Application: ApplicationLayer> NoiseXKAliceHandshake<Application> {
     fn reinitialize(
         &mut self,
         session: &Arc<Session<Application>>,
-        ratchet_state: &[Option<RatchetState>; 2],
+        ratchet_state: &[RatchetState; 2],
         session_map: &mut HashMap<NonZeroU32, (Weak<Session<Application>>, bool)>,
         rng: &mut Application::Rng,
         current_time: i64,
     ) -> bool {
         let local_key_id = generate_key_id(session_map, rng);
-        if let Ok((offer, a2b_header_key, b2a_header_key)) = Self::initialize(local_key_id, &session.remote_s_public_key, ratchet_state, rng) {
+        if let Ok((offer, a2b_header_key, b2a_header_key)) = Self::initialize(local_key_id, &session.remote_static_key, ratchet_state, rng) {
             self.timeout = current_time.saturating_add(Application::INITIAL_OFFER_TIMEOUT_MS);
             session_map.remove(&self.local_key_id);
             session_map.insert(local_key_id, (Arc::downgrade(session), false));
@@ -2580,7 +2596,7 @@ fn send_with_fragmentation(
             fragment_count as u8,
             fragment_no as u8,
             packet_type,
-            remote_key_id.map(|n| n.get()).unwrap_or(0),
+            remote_key_id.map_or(0, |n| n.get()),
             counter_or_id,
         );
         if let Some(hcc) = header_cipher {
