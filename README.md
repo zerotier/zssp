@@ -16,8 +16,8 @@ Further information can be found in the ZSSP whitepaper (pending official releas
 ## Cryptographic Primitives Used
 
  - AES-256-GCM: Authenticated encryption
- - SHA512: Used with the KBKDF construction, also used in a proof of work and ip ownership DOS mitigation scheme
+ - SHA512: Used with the KBKDF construction, also used in a proof of work and IP ownership DOS mitigation scheme
  - KBKDF: Key mixing, sub-key derivation
  - NIST P-384 ECDH: Elliptic curve key exchange during initial handshake and for periodic re-keying during the session
  - Kyber1024: Quantum attack resistant lattice-based key exchange during initial handshake
- - AES-256: 128-bit PRP for authenticated encryption of header information to harden the fragmentation protocol against DOS (see section on header protection)
+ - AES-256: 128-bit PRP for AES-256-GCM and for authenticated encryption of headera to harden fragmentation against DOS (see section on header protection)
