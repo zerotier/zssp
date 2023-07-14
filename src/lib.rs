@@ -14,11 +14,13 @@ mod handshake_cache;
 mod indexed_heap;
 mod log_event;
 mod proto;
+mod ratchet_state;
 mod symmetric_state;
 mod zssp;
 
 pub mod error;
-pub use crate::applicationlayer::{ApplicationLayer, RatchetState};
+pub use crate::applicationlayer::ApplicationLayer;
 pub use crate::log_event::LogEvent;
 pub use crate::proto::{MAX_IDENTITY_BLOB_SIZE, MIN_PACKET_SIZE, MIN_TRANSPORT_MTU, RATCHET_SIZE};
+pub use crate::ratchet_state::RatchetState;
 pub use crate::zssp::{Context, ContextInner, IncomingSessionAction, ReceiveResult, Session, SessionEvent};

@@ -24,7 +24,6 @@ use crate::crypto::rand_core::RngCore;
 use crate::crypto::secret::{secure_eq, Secret};
 use crate::crypto::sha512::{HmacSha512, Sha512};
 
-use crate::applicationlayer::*;
 use crate::error::{FaultType, OpenError, ReceiveError, SendError};
 use crate::frag_cache::UnassociatedFragCache;
 use crate::fragged::{Assembled, Fragged};
@@ -33,6 +32,7 @@ use crate::indexed_heap::{BinaryHeapIndex, IndexedBinaryHeap};
 use crate::log_event::LogEvent;
 use crate::proto::*;
 use crate::symmetric_state::SymmetricState;
+use crate::{applicationlayer::*, RatchetState};
 
 /// Session context for local application.
 ///
@@ -1036,7 +1036,7 @@ impl<Application: ApplicationLayer> Context<Application> {
                     // Noise process pattern2 ekem1 token.
                     let (noise_ekem1, noise_ekem1_secret) = pqc_kyber::encapsulate(&noise_pattern1.noise_e1, self.0.rng.lock().unwrap().deref_mut())
                         .map_err(|_| byzantine_fault!(FaultType::FailedAuthentication, false))
-                        .map(|(ct, ekem1)| (ct, Secret::move_bytes(ekem1)))?;
+                        .map(|(ct, ekem1)| (ct, Secret(ekem1)))?;
                     // Alice fully authenticated.
                     noise_pattern2.noise_ekem1 = noise_ekem1;
                     let noise_h_ee1peekem1 = encrypt_and_hash::<Application>(
@@ -1279,6 +1279,9 @@ impl<Application: ApplicationLayer> Context<Application> {
                                 if result.is_none() && !app.initiator_disallows_downgrade(&session, current_time) {
                                     chain_len = 0;
                                     result = test_ratchet_key(&[0u8; RATCHET_SIZE]);
+                                    if result.is_some() {
+                                        // TODO: add some kind of warning callback or signal.
+                                    }
                                 }
 
                                 if let Some((remote_key_id, mut noise_ck, noise_k_eseeekem1psk, noise_h_ee1peekem1pskp)) = result {

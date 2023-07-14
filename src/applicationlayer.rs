@@ -5,16 +5,14 @@
  * (c) ZeroTier, Inc.
  * https://www.zerotier.com/
  */
-
-use std::num::NonZeroU64;
 use std::sync::Arc;
 
 use crate::crypto::aes::{AesDec, AesEnc};
 use crate::crypto::aes_gcm::{AesGcmDec, AesGcmEnc};
 use crate::crypto::p384::{P384KeyPair, P384PublicKey};
 use crate::crypto::rand_core::{CryptoRng, RngCore};
-use crate::crypto::secret::Secret;
 use crate::crypto::sha512::{HmacSha512, Sha512};
+use crate::RatchetState;
 use crate::{log_event::LogEvent, Session, RATCHET_SIZE};
 
 /// Trait to implement to integrate the session into an application.
@@ -116,11 +114,11 @@ pub trait ApplicationLayer: Sized {
     /// It will be dropped as soon as the session is established.
     type LocalIdentityBlob: AsRef<[u8]>;
 
-    /// This function will be called whenever Alice's initial Hello packet contains the zero ratchet
-    /// fingerprint. Brand new peers will always connect to Bob with the zero ratchet key, but from
-    /// then on they should be using non-zero ratchet keys.
+    /// This function will be called whenever Alice's initial Hello packet contains the empty ratchet
+    /// fingerprint. Brand new peers will always connect to Bob with the empty ratchet, but from
+    /// then on they should be using non-empty ratchet states.
     ///
-    /// If this returns false, we will attempt to connect to Alice with the zero ratchet key.
+    /// If this returns false, we will attempt to connect to Alice with the empty ratchet state.
     /// If this returns true, Alice's connection will be silently dropped.
     /// If this function is configured to always return true, it means peers will not be able to
     /// connect to us unless they had a prior-established ratchet key with us. This is the best way
@@ -130,11 +128,11 @@ pub trait ApplicationLayer: Sized {
         false
     }
     /// This function is called if we, as Alice, attempted to open a session with Bob using a
-    /// non-zero ratchet key, but Bob does not have this ratchet key and wants to downgrade
+    /// non-empty ratchet key, but Bob does not have this ratchet key and wants to downgrade
     /// to the zero ratchet key.
     ///
-    /// If it returns true Alice will downgrade their ratchet number to 0, potentially ending their
-    /// current ratchet chain.
+    /// If it returns true Alice will downgrade their ratchet state to emtpy, potentially ending
+    /// their current ratchet chain.
     /// If it returns false then we will consider Bob as having failed authentication, and this
     /// packet will be dropped. The session will continue attempting to connect to Bob.
     ///
@@ -152,7 +150,7 @@ pub trait ApplicationLayer: Sized {
         false
     }
     /// Lookup a specific ratchet key based on its ratchet fingerprint.
-    /// This function will be called whenever Alice attempts to connect to us with a non-zero
+    /// This function will be called whenever Alice attempts to connect to us with a non-empty
     /// ratchet fingerprint.
     ///
     /// If the ratchet key was found, the function should return `RestoreAction::RestoreRatchet`. This will
@@ -161,7 +159,7 @@ pub trait ApplicationLayer: Sized {
     /// If the ratchet key could not be found, the application may choose between returning
     /// `RatchetAction::DowngradeRatchet` or `RatchetAction::FailAuthentication`.
     /// If `RatchetAction::DowngradeRatchet` is returned we will attempt to convince Alice to downgrade
-    /// to the zero ratchet key, restarting the ratchet chain.
+    /// to the empty ratchet key, restarting the ratchet chain.
     /// If `RatchetAction::FailAuthentication` is returned Alice's connection will be silently dropped.
     #[allow(unused)]
     fn restore_by_fingerprint(&self, ratchet_fingerprint: &[u8; RATCHET_SIZE], current_time: i64) -> Result<RatchetState, ()> {
@@ -188,7 +186,7 @@ pub trait ApplicationLayer: Sized {
     /// If persistent storage is supported, this function should not return until the ratchet state
     /// is saved, otherwise it is possible, albeit unlikely, for a sudden restart of the local
     /// machine to put our ratchet state out of sync with the remote peer. If this happens the only
-    /// fix is to reset both ratchet keys to zero.
+    /// fix is to reset both ratchet keys to empty.
     ///
     /// This function may also save state to volatile storage, in which case all peers which connect
     /// to us will have to allow downgrade
@@ -208,64 +206,4 @@ pub trait ApplicationLayer: Sized {
     #[allow(unused)]
     #[inline]
     fn event_log<'a>(&self, event: LogEvent<'a, Self>, current_time: i64) {}
-}
-
-#[derive(Clone, PartialEq, Eq)]
-pub enum RatchetState {
-    Null,
-    Empty,
-    NonEmpty(NonEmptyRatchetState),
-}
-use RatchetState::*;
-impl RatchetState {
-    pub fn new_nonempty(key: Secret<RATCHET_SIZE>, fingerprint: Secret<RATCHET_SIZE>, chain_len: NonZeroU64) -> Self {
-        NonEmpty(NonEmptyRatchetState { key, fingerprint, chain_len })
-    }
-    pub fn new_initial_states() -> [RatchetState; 2] {
-        [RatchetState::Empty, RatchetState::Null]
-    }
-    pub fn is_null(&self) -> bool {
-        match self {
-            Null => true,
-            _ => false,
-        }
-    }
-    pub fn is_empty(&self) -> bool {
-        match self {
-            Empty => true,
-            _ => false,
-        }
-    }
-    #[inline]
-    pub fn nonempty(&self) -> Option<&NonEmptyRatchetState> {
-        match self {
-            NonEmpty(rs) => Some(&rs),
-            _ => None,
-        }
-    }
-    #[inline]
-    pub fn chain_len(&self) -> u64 {
-        self.nonempty().map_or(0, |rs| rs.chain_len.get())
-    }
-    #[inline]
-    pub fn fingerprint(&self) -> Option<&[u8; RATCHET_SIZE]> {
-        self.nonempty().map_or(None, |rs| Some(&rs.fingerprint.as_ref()))
-    }
-    #[inline]
-    pub fn key(&self) -> Option<&[u8; RATCHET_SIZE]> {
-        const ZERO_KEY: [u8; RATCHET_SIZE] = [0u8; RATCHET_SIZE];
-        match self {
-            Null => None,
-            Empty => Some(&ZERO_KEY),
-            NonEmpty(rs) => Some(rs.key.as_ref()),
-        }
-    }
-}
-/// A ratchet key and fingerprint,
-/// along with the length of the ratchet chain the keys were derived from.
-#[derive(Clone, PartialEq, Eq)]
-pub struct NonEmptyRatchetState {
-    pub key: Secret<RATCHET_SIZE>,
-    pub fingerprint: Secret<RATCHET_SIZE>,
-    pub chain_len: NonZeroU64,
 }

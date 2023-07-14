@@ -42,7 +42,7 @@ impl SymmetricState {
         self.token_counter += 1;
 
         self.chaining_key.overwrite(&next_ck);
-        Secret::from_bytes_then_nuke(&mut temp_k[..AES_256_KEY_SIZE])
+        Secret::from_bytes_then_delete(&mut temp_k[..AES_256_KEY_SIZE])
     }
     /// Corresponds to Noise `MixKeyAndHash`.
     pub(crate) fn mix_key_and_hash(&mut self, hm: &mut impl HmacSha512, input_key_material: &[u8]) -> [u8; NOISE_HASHLEN] {
@@ -77,7 +77,7 @@ impl SymmetricState {
         self.token_counter += 1;
 
         self.chaining_key.overwrite(&next_ck);
-        (temp_h, Secret::from_bytes_then_nuke(&mut temp_k[..AES_256_KEY_SIZE]))
+        (temp_h, Secret::from_bytes_then_delete(&mut temp_k[..AES_256_KEY_SIZE]))
     }
     /// Get an additional symmetric key (ASK) that is a collision resistant hash of the transcript,
     /// is forward secrect and is cryptographically independent from all other produced keys.
@@ -94,8 +94,8 @@ impl SymmetricState {
         let mut temp_k2 = [0u8; NOISE_HASHLEN];
         self.kbkdf(hm, noise_h, [b'A', b'S', b'K', label], 2, &mut temp_k1, Some(&mut temp_k2), None);
         (
-            Secret::from_bytes_then_nuke(&mut temp_k1[..AES_256_KEY_SIZE]),
-            Secret::from_bytes_then_nuke(&mut temp_k2[..AES_256_KEY_SIZE]),
+            Secret::from_bytes_then_delete(&mut temp_k1[..AES_256_KEY_SIZE]),
+            Secret::from_bytes_then_delete(&mut temp_k2[..AES_256_KEY_SIZE]),
         )
     }
     /// Corresponds to Noise `Split`.
@@ -107,8 +107,8 @@ impl SymmetricState {
         // Normally KBKDF would not truncate to derive the correct length of AES keys,
         // but Noise specifies that the AES keys be truncated from NOISE_HASHLEN to AES_256_KEY_SIZE.
         (
-            Secret::from_bytes_then_nuke(&mut temp_k1[..AES_256_KEY_SIZE]),
-            Secret::from_bytes_then_nuke(&mut temp_k2[..AES_256_KEY_SIZE]),
+            Secret::from_bytes_then_delete(&mut temp_k1[..AES_256_KEY_SIZE]),
+            Secret::from_bytes_then_delete(&mut temp_k2[..AES_256_KEY_SIZE]),
         )
     }
     #[inline(always)]
