@@ -234,6 +234,7 @@ enum NoiseXKAliceHandshakeState<Application: ApplicationLayer> {
         noise_message: [u8; NoiseXKPattern3::MAX_SIZE],
         noise_message_len: usize,
     },
+    Rejected,
 }
 
 struct SessionKey<Application: ApplicationLayer> {
@@ -390,6 +391,7 @@ impl<Application: ApplicationLayer> Context<Application> {
                                         Some(&session.header_send_cipher),
                                     );
                                 }
+                                NoiseXKAliceHandshakeState::Rejected => {}
                             }
                         }
                         retry_next
@@ -501,8 +503,12 @@ impl<Application: ApplicationLayer> Context<Application> {
                 let mut session_map = self.0.session_map.write().unwrap();
                 let local_key_id = generate_key_id(&session_map, &mut self.0.rng.lock().unwrap());
                 // Begin Noise XKhfs+psk2.
-                let (offer, a2b_header_key, b2a_header_key) =
-                    NoiseXKAliceHandshake::<Application>::initialize(local_key_id, &remote_static_key, &ratchet_states, &mut self.0.rng.lock().unwrap())?;
+                let (offer, a2b_header_key, b2a_header_key) = NoiseXKAliceHandshake::<Application>::initialize(
+                    local_key_id,
+                    &remote_static_key,
+                    &ratchet_states,
+                    &mut self.0.rng.lock().unwrap(),
+                )?;
                 let handshake_state = Box::new(NoiseXKAliceHandshake {
                     next_retry_time: AtomicI64::new(current_time.saturating_add(Application::RETRY_INTERVAL_MS)),
                     timeout: current_time.saturating_add(Application::INITIAL_OFFER_TIMEOUT_MS),
@@ -558,9 +564,7 @@ impl<Application: ApplicationLayer> Context<Application> {
 
                 Ok(session)
             }
-            Err(e) => {
-                Err(OpenError::RatchetIoError(e))
-            }
+            Err(e) => Err(OpenError::RatchetIoError(e)),
         }
     }
 
@@ -681,7 +685,7 @@ impl<Application: ApplicationLayer> Context<Application> {
                                 }
                                 // This error can occur naturally if Bob's initial reply to Alice had a
                                 // resend that was delayed massively and arrived out of order.
-                                NoiseXKAliceHandshakeState::NoiseXKPattern3 { .. } => return Err(byzantine_fault!(FaultType::OutOfSequence, true)),
+                                _ => return Err(byzantine_fault!(FaultType::OutOfSequence, true)),
                             },
                             _ => return Err(byzantine_fault!(FaultType::OutOfSequence, false)),
                         };
@@ -1519,114 +1523,114 @@ impl<Application: ApplicationLayer> Context<Application> {
                         let result = app.restore_by_identity(&remote_s_public_key, &application_data, current_time);
                         match result {
                             Ok(true_ratchet_states) => {
-                            let mut has_match = false;
-                            for rs in &true_ratchet_states {
-                                if !rs.is_null() {
-                                    has_match |= &handshake_state.ratchet_state == rs;
-                                }
-                            }
-                            if !has_match {
-                                if !responder_disallows_downgrade && handshake_state.ratchet_state.is_empty() {
-                                    // TODO: add some kind of warning callback or signal.
-                                } else {
-                                    if !responder_silently_rejects {
-                                        send_reject();
+                                let mut has_match = false;
+                                for rs in &true_ratchet_states {
+                                    if !rs.is_null() {
+                                        has_match |= &handshake_state.ratchet_state == rs;
                                     }
+                                }
+                                if !has_match {
+                                    if !responder_disallows_downgrade && handshake_state.ratchet_state.is_empty() {
+                                        // TODO: add some kind of warning callback or signal.
+                                    } else {
+                                        if !responder_silently_rejects {
+                                            send_reject();
+                                        }
+                                        return Err(byzantine_fault!(FaultType::FailedAuthentication, false));
+                                    }
+                                }
+
+                                let mut noise_kk_ss = Secret::new();
+                                if !self.0.static_keypair.agree(&remote_s_public_key, noise_kk_ss.as_mut()) {
                                     return Err(byzantine_fault!(FaultType::FailedAuthentication, false));
                                 }
-                            }
+                                let noise_kk_local_init_h = mix_hash(sha512, &INITIAL_H_REKEY, self.0.static_keypair.public_key_bytes());
+                                let noise_kk_local_init_h = mix_hash(sha512, &noise_kk_local_init_h, remote_s_public_key.as_bytes());
+                                let noise_kk_remote_init_h = mix_hash(sha512, &INITIAL_H_REKEY, remote_s_public_key.as_bytes());
+                                let noise_kk_remote_init_h = mix_hash(sha512, &noise_kk_remote_init_h, self.0.static_keypair.public_key_bytes());
 
-                            let mut noise_kk_ss = Secret::new();
-                            if !self.0.static_keypair.agree(&remote_s_public_key, noise_kk_ss.as_mut()) {
-                                return Err(byzantine_fault!(FaultType::FailedAuthentication, false));
-                            }
-                            let noise_kk_local_init_h = mix_hash(sha512, &INITIAL_H_REKEY, self.0.static_keypair.public_key_bytes());
-                            let noise_kk_local_init_h = mix_hash(sha512, &noise_kk_local_init_h, remote_s_public_key.as_bytes());
-                            let noise_kk_remote_init_h = mix_hash(sha512, &INITIAL_H_REKEY, remote_s_public_key.as_bytes());
-                            let noise_kk_remote_init_h = mix_hash(sha512, &noise_kk_remote_init_h, self.0.static_keypair.public_key_bytes());
+                                let (rk, rf) = noise_ck.get_ask2(hmac, LABEL_RATCHET_STATE, &noise_h_ee1peekem1pskpsp);
+                                // We must make sure the ratchet key is saved before we transition.
+                                let new_ratchet_state =
+                                    RatchetState::new_nonempty(rk, rf, NonZeroU64::new(handshake_state.ratchet_state.chain_len() + 1).unwrap());
+                                let result = app.save_ratchet_state(
+                                    &remote_s_public_key,
+                                    &application_data,
+                                    [&true_ratchet_states[0], &true_ratchet_states[1]],
+                                    [&new_ratchet_state, &RatchetState::Null],
+                                    current_time,
+                                );
+                                if let Err(e) = result {
+                                    return Err(ReceiveError::RatchetIoError(e));
+                                }
 
-                            let (rk, rf) = noise_ck.get_ask2(hmac, LABEL_RATCHET_STATE, &noise_h_ee1peekem1pskpsp);
-                            // We must make sure the ratchet key is saved before we transition.
-                            let new_ratchet_state =
-                                RatchetState::new_nonempty(rk, rf, NonZeroU64::new(handshake_state.ratchet_state.chain_len() + 1).unwrap());
-                            let result = app.save_ratchet_state(
-                                &remote_s_public_key,
-                                &application_data,
-                                [&true_ratchet_states[0], &true_ratchet_states[1]],
-                                [&new_ratchet_state, &RatchetState::Null],
-                                current_time,
-                            );
-                            if let Err(e) = result {
+                                let mut session_queue = self.0.session_queue.lock().unwrap();
+                                let queue_idx = session_queue.reserve_index();
+                                let session = Arc::new(Session {
+                                    context: Arc::downgrade(&self.0),
+                                    queue_idx,
+                                    application_data,
+                                    remote_static_key: remote_s_public_key,
+                                    send_counter: AtomicU64::new(INIT_COUNTER),
+                                    session_has_expired: AtomicBool::new(false),
+                                    counter_antireplay_window: std::array::from_fn(|_| AtomicU64::new(0)),
+                                    state_machine_lock: Mutex::new(()),
+                                    state: RwLock::new(SessionMutableState {
+                                        ratchet_states: [new_ratchet_state.clone(), RatchetState::Null],
+                                        cipher_states: [
+                                            Some(SessionKey::new(
+                                                hmac,
+                                                noise_ck,
+                                                handshake_state.local_key_id,
+                                                handshake_state.remote_key_id,
+                                                INIT_COUNTER,
+                                                true,
+                                            )),
+                                            None,
+                                        ],
+                                        current_key: 0,
+                                        outgoing_offer: KeyConfirm {
+                                            next_retry_time: AtomicI64::new(current_time.saturating_add(Application::RETRY_INTERVAL_MS)),
+                                            timeout: current_time.saturating_add(Application::EXPIRATION_TIMEOUT_MS),
+                                        },
+                                    }),
+                                    header_receive_cipher: Application::PrpDec::new(handshake_state.header_receive_key.as_ref()),
+                                    header_send_cipher,
+                                    kex_send_cipher: Mutex::new(Some(Application::AeadEnc::new(kex_key_b2a.as_ref()))),
+                                    kex_receive_cipher: Mutex::new(Some(Application::AeadDec::new(kex_key_a2b.as_ref()))),
+                                    noise_kk_ss,
+                                    noise_kk_local_init_h,
+                                    noise_kk_remote_init_h,
+                                    defrag: std::array::from_fn(|_| Mutex::new(Fragged::new())),
+                                    was_bob: true,
+                                });
+                                let timer = Reverse(current_time.saturating_add(Application::RETRY_INTERVAL_MS));
+                                session_queue.push_reserved(queue_idx, Arc::downgrade(&session), timer);
+                                drop(session_queue);
+                                // There is the miniscule possibility this key id is already
+                                // in use, in which case we have to drop this session like
+                                // nothing ever happened.
+                                let mut session_map = self.0.session_map.write().unwrap();
+                                if let std::collections::hash_map::Entry::Vacant(e) = session_map.entry(handshake_state.local_key_id) {
+                                    e.insert((Arc::downgrade(&session), false));
+                                    drop(session_map);
+                                    let _ =
+                                        session.send_control(&session.state.read().unwrap(), send_unassociated_reply, PACKET_TYPE_KEY_CONFIRM, &[]);
+
+                                    app.event_log(LogEvent::ReceiveValidXK3(&session.application_data), current_time);
+                                    return Ok(ReceiveResult::Session(session, SessionEvent::NewSession));
+                                } else {
+                                    // This can occur if we accidentally generate a key id collision.
+                                    // There is an extremely short amount of time during which
+                                    // another session can steal this session's id, we'll have to
+                                    // restart the handshake in this case.
+                                    return Err(byzantine_fault!(FaultType::UnknownLocalKeyId, true));
+                                }
+                            }
+                            Err(e) => {
                                 return Err(ReceiveError::RatchetIoError(e));
                             }
-
-
-                            let mut session_queue = self.0.session_queue.lock().unwrap();
-                            let queue_idx = session_queue.reserve_index();
-                            let session = Arc::new(Session {
-                                context: Arc::downgrade(&self.0),
-                                queue_idx,
-                                application_data,
-                                remote_static_key: remote_s_public_key,
-                                send_counter: AtomicU64::new(INIT_COUNTER),
-                                session_has_expired: AtomicBool::new(false),
-                                counter_antireplay_window: std::array::from_fn(|_| AtomicU64::new(0)),
-                                state_machine_lock: Mutex::new(()),
-                                state: RwLock::new(SessionMutableState {
-                                    ratchet_states: [new_ratchet_state.clone(), RatchetState::Null],
-                                    cipher_states: [
-                                        Some(SessionKey::new(
-                                            hmac,
-                                            noise_ck,
-                                            handshake_state.local_key_id,
-                                            handshake_state.remote_key_id,
-                                            INIT_COUNTER,
-                                            true,
-                                        )),
-                                        None,
-                                    ],
-                                    current_key: 0,
-                                    outgoing_offer: KeyConfirm {
-                                        next_retry_time: AtomicI64::new(current_time.saturating_add(Application::RETRY_INTERVAL_MS)),
-                                        timeout: current_time.saturating_add(Application::EXPIRATION_TIMEOUT_MS),
-                                    },
-                                }),
-                                header_receive_cipher: Application::PrpDec::new(handshake_state.header_receive_key.as_ref()),
-                                header_send_cipher,
-                                kex_send_cipher: Mutex::new(Some(Application::AeadEnc::new(kex_key_b2a.as_ref()))),
-                                kex_receive_cipher: Mutex::new(Some(Application::AeadDec::new(kex_key_a2b.as_ref()))),
-                                noise_kk_ss,
-                                noise_kk_local_init_h,
-                                noise_kk_remote_init_h,
-                                defrag: std::array::from_fn(|_| Mutex::new(Fragged::new())),
-                                was_bob: true,
-                            });
-                            let timer = Reverse(current_time.saturating_add(Application::RETRY_INTERVAL_MS));
-                            session_queue.push_reserved(queue_idx, Arc::downgrade(&session), timer);
-                            drop(session_queue);
-                            // There is the miniscule possibility this key id is already
-                            // in use, in which case we have to drop this session like
-                            // nothing ever happened.
-                            let mut session_map = self.0.session_map.write().unwrap();
-                            if let std::collections::hash_map::Entry::Vacant(e) = session_map.entry(handshake_state.local_key_id) {
-                                e.insert((Arc::downgrade(&session), false));
-                                drop(session_map);
-                                let _ = session.send_control(&session.state.read().unwrap(), send_unassociated_reply, PACKET_TYPE_KEY_CONFIRM, &[]);
-
-                                app.event_log(LogEvent::ReceiveValidXK3(&session.application_data), current_time);
-                                return Ok(ReceiveResult::Session(session, SessionEvent::NewSession));
-                            } else {
-                                // This can occur if we accidentally generate a key id collision.
-                                // There is an extremely short amount of time during which
-                                // another session can steal this session's id, we'll have to
-                                // restart the handshake in this case.
-                                return Err(byzantine_fault!(FaultType::UnknownLocalKeyId, true));
-                            }
                         }
-                        Err(e) => {
-                            return Err(ReceiveError::RatchetIoError(e));
-                        }
-                    }
                     } else {
                         if !responder_silently_rejects {
                             send_reject();
@@ -1829,6 +1833,7 @@ fn receive_control_fragment<'a, Application: ApplicationLayer, SendFn: FnMut(&mu
     fragment: &mut [u8],
     current_time: i64,
 ) -> Result<ReceiveResult<'a, Application>, ReceiveError<Application::IoError>> {
+    let kex_lock = session.state_machine_lock.lock().unwrap();
     let state = session.state.read().unwrap();
     let mut c = session.kex_receive_cipher.lock().unwrap();
     let message = decrypt_control(
@@ -1841,17 +1846,25 @@ fn receive_control_fragment<'a, Application: ApplicationLayer, SendFn: FnMut(&mu
     session.update_receive_window(counter);
     use OfferStateMachine::*;
     return match packet_type {
-        PACKET_TYPE_SESSION_REJECTED => match &state.outgoing_offer {
-            NoiseXKPattern1or3(_) => {
+        PACKET_TYPE_SESSION_REJECTED => {
+            if let NoiseXKPattern1or3(_) = &state.outgoing_offer {
                 drop(state);
+                let mut state = session.state.write().unwrap();
+                if let NoiseXKPattern1or3(state) = &mut state.outgoing_offer {
+                    // We have to make sure that a different thread cannot receive
+                    // `PACKET_TYPE_KEY_CONFIRM` at the same time.
+                    state.offer = NoiseXKAliceHandshakeState::Rejected;
+                }
+                drop(state);
+                drop(kex_lock);
                 Ok(ReceiveResult::Session(session, SessionEvent::Rejected))
+            } else {
+                Err(byzantine_fault!(FaultType::OutOfSequence, false))
             }
-            _ => Err(byzantine_fault!(FaultType::OutOfSequence, false)),
-        },
+        }
         PACKET_TYPE_KEY_CONFIRM => {
             drop(state);
             app.event_log(LogEvent::ReceiveValidKeyConfirm(&session), current_time);
-            let kex_lock = session.state_machine_lock.lock().unwrap();
             let mut state = session.state.write().unwrap();
             // We only want to stop sending NoiseKKPattern2 offers when the latest derived
             // key is confirmed. And we only want to do that once.
@@ -1904,7 +1917,6 @@ fn receive_control_fragment<'a, Application: ApplicationLayer, SendFn: FnMut(&mu
         PACKET_TYPE_ACK => {
             drop(state);
             app.event_log(LogEvent::ReceiveValidAck(&session), current_time);
-            let kex_lock = session.state_machine_lock.lock().unwrap();
             let mut state = session.state.write().unwrap();
             // Check if we should end any current offers and transition back to Normal state
             if let KeyConfirm { .. } = &state.outgoing_offer {
@@ -1918,10 +1930,6 @@ fn receive_control_fragment<'a, Application: ApplicationLayer, SendFn: FnMut(&mu
             app.event_log(LogEvent::ReceiveUncheckedKK1, current_time);
             let message = &mut message[..NoiseKKPattern1or2::SIZE];
             let noise_pattern1: &NoiseKKPattern1or2 = byte_array_as_proto_buffer(message);
-
-            drop(state);
-            let kex_lock = session.state_machine_lock.lock().unwrap();
-            let state = session.state.read().unwrap();
             // We need the following operation to be atomic with the change of offer type
             let (should_rekey_as_bob, chosen_id) = match &state.outgoing_offer {
                 // Check rekey rate limits.
@@ -2072,9 +2080,6 @@ fn receive_control_fragment<'a, Application: ApplicationLayer, SendFn: FnMut(&mu
             let message = &mut message[..NoiseKKPattern1or2::SIZE];
             let noise_pattern2: &NoiseKKPattern1or2 = byte_array_as_proto_buffer(message);
 
-            drop(state);
-            let kex_lock = session.state_machine_lock.lock().unwrap();
-            let state = session.state.read().unwrap();
             if let NoiseKKPattern1 { new_key_id, noise_e_secret, noise_ck, noise_h_pskep, .. } = &state.outgoing_offer {
                 // Noise process pattern2 e token.
                 let mut noise_ee = Secret::new();
@@ -2496,7 +2501,7 @@ fn encrypt_control(
     let fragment_len = packet.len() + HEADER_SIZE + AES_GCM_TAG_SIZE;
 
     c.set_iv(&create_message_nonce(packet_type, counter));
-    if !packet.is_empty(){
+    if !packet.is_empty() {
         fragment[HEADER_SIZE..fragment_len - AES_GCM_TAG_SIZE].copy_from_slice(packet);
         c.encrypt_in_place(&mut fragment[HEADER_SIZE..fragment_len - AES_GCM_TAG_SIZE]);
     }
@@ -2506,7 +2511,12 @@ fn encrypt_control(
     (fragment, fragment_len)
 }
 #[inline]
-fn decrypt_control<'a, IoError>(c: &mut impl AesGcmDec, packet_type: u8, counter: u64, fragment: &'a mut [u8]) -> Result<&'a mut [u8], ReceiveError<IoError>> {
+fn decrypt_control<'a, IoError>(
+    c: &mut impl AesGcmDec,
+    packet_type: u8,
+    counter: u64,
+    fragment: &'a mut [u8],
+) -> Result<&'a mut [u8], ReceiveError<IoError>> {
     let fragment_len = fragment.len();
     if !(CONTROL_PACKET_MIN_SIZE..=CONTROL_PACKET_MAX_SIZE).contains(&fragment_len) {
         return Err(byzantine_fault!(FaultType::InvalidPacket, false));
