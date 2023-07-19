@@ -192,6 +192,7 @@ enum OfferStateMachine<Application: ApplicationLayer> {
         next_retry_time: AtomicI64,
         timeout: i64,
     }, // -> Normal
+    Null,
 }
 
 pub(crate) struct NoiseXKBobHandshakeState<Application: ApplicationLayer> {
@@ -234,7 +235,6 @@ enum NoiseXKAliceHandshakeState<Application: ApplicationLayer> {
         noise_message: [u8; NoiseXKPattern3::MAX_SIZE],
         noise_message_len: usize,
     },
-    Rejected,
 }
 
 struct SessionKey<Application: ApplicationLayer> {
@@ -352,15 +352,13 @@ impl<Application: ApplicationLayer> Context<Application> {
                             if let NoiseXKPattern1or3(handshake_state) = &mut state.outgoing_offer {
                                 if handshake_state.timeout <= current_time {
                                     app.event_log(LogEvent::ServiceXKTimeout(&session), current_time);
-                                    if !handshake_state.reinitialize(
+                                    handshake_state.reinitialize(
                                         &session,
                                         &ratchet_state,
                                         &mut self.0.session_map.write().unwrap(),
                                         &mut self.0.rng.lock().unwrap(),
                                         current_time,
-                                    ) {
-                                        session.expire_inner(&self.0, &mut session_queue);
-                                    }
+                                    );
                                 }
                             }
                         } else if let Some((mut send, mut mtu)) = send_to(&session) {
@@ -391,7 +389,6 @@ impl<Application: ApplicationLayer> Context<Application> {
                                         Some(&session.header_send_cipher),
                                     );
                                 }
-                                NoiseXKAliceHandshakeState::Rejected => {}
                             }
                         }
                         retry_next
@@ -404,6 +401,7 @@ impl<Application: ApplicationLayer> Context<Application> {
                         if *timeout <= current_time {
                             app.event_log(LogEvent::ServiceKKTimeout(&session), current_time);
                             next_retry_time.store(i64::MAX, Ordering::Relaxed);
+                            drop(state);
                             session.expire_inner(&self.0, &mut session_queue);
                         } else {
                             let packet_type = if let NoiseKKPattern1 { .. } = &state.outgoing_offer {
@@ -427,6 +425,7 @@ impl<Application: ApplicationLayer> Context<Application> {
                         if *timeout <= current_time {
                             app.event_log(LogEvent::ServiceKeyConfirmTimeout(&session), current_time);
                             next_retry_time.store(i64::MAX, Ordering::Relaxed);
+                            drop(state);
                             session.expire_inner(&self.0, &mut session_queue);
                         } else {
                             app.event_log(LogEvent::ServiceKeyConfirmResend(&session), current_time);
@@ -437,6 +436,7 @@ impl<Application: ApplicationLayer> Context<Application> {
                         retry_next
                     }
                 }
+                Null => retry_next,
             };
             session_queue.change_priority(queue_idx, Reverse(next_timer));
         }
@@ -1850,16 +1850,13 @@ fn receive_control_fragment<'a, Application: ApplicationLayer, SendFn: FnMut(&mu
             if let NoiseXKPattern1or3(_) = &state.outgoing_offer {
                 drop(state);
                 let mut state = session.state.write().unwrap();
-                if let NoiseXKPattern1or3(state) = &mut state.outgoing_offer {
-                    // We have to make sure that a different thread cannot receive
-                    // `PACKET_TYPE_KEY_CONFIRM` at the same time.
-                    state.offer = NoiseXKAliceHandshakeState::Rejected;
-                }
+                state.outgoing_offer = OfferStateMachine::Null;
                 drop(state);
                 drop(kex_lock);
                 Ok(ReceiveResult::Session(session, SessionEvent::Rejected))
             } else {
-                Err(byzantine_fault!(FaultType::OutOfSequence, false))
+                // This can occur naturally because of control packet resends.
+                Err(byzantine_fault!(FaultType::OutOfSequence, true))
             }
         }
         PACKET_TYPE_KEY_CONFIRM => {
@@ -1877,6 +1874,7 @@ fn receive_control_fragment<'a, Application: ApplicationLayer, SendFn: FnMut(&mu
                         (false, false, SessionEvent::Control)
                     }
                 }
+                Null => (false, false, SessionEvent::Control),
                 _ => (true, false, SessionEvent::Control),
             };
             if try_delete {
@@ -1915,16 +1913,19 @@ fn receive_control_fragment<'a, Application: ApplicationLayer, SendFn: FnMut(&mu
             Ok(ReceiveResult::Session(session, ret))
         }
         PACKET_TYPE_ACK => {
-            drop(state);
-            app.event_log(LogEvent::ReceiveValidAck(&session), current_time);
-            let mut state = session.state.write().unwrap();
-            // Check if we should end any current offers and transition back to Normal state
             if let KeyConfirm { .. } = &state.outgoing_offer {
+                drop(state);
+                app.event_log(LogEvent::ReceiveValidAck(&session), current_time);
+                let mut state = session.state.write().unwrap();
+                // Check if we should end any current offers and transition back to Normal state
                 state.outgoing_offer = new_normal_state(context.0.rng.lock().unwrap().next_u64(), current_time);
+                drop(kex_lock);
+                drop(state);
+                Ok(ReceiveResult::Session(session, SessionEvent::Control))
+            } else {
+                // This can occur naturally because of control packet resends.
+                Err(byzantine_fault!(FaultType::OutOfSequence, true))
             }
-            drop(state);
-            drop(kex_lock);
-            Ok(ReceiveResult::Session(session, SessionEvent::Control))
         }
         PACKET_TYPE_NOISE_KK_PATTERN_1 => {
             app.event_log(LogEvent::ReceiveUncheckedKK1, current_time);
@@ -2215,7 +2216,7 @@ impl<Application: ApplicationLayer> Session<Application> {
     #[inline]
     pub fn established(&self) -> bool {
         let state = self.state.read().unwrap();
-        !matches!(&state.outgoing_offer, OfferStateMachine::NoiseXKPattern1or3(_))
+        !matches!(&state.outgoing_offer, OfferStateMachine::NoiseXKPattern1or3(_) | OfferStateMachine::Null)
     }
     /// The static public key of the remote peer.
     #[inline]
@@ -2251,7 +2252,7 @@ impl<Application: ApplicationLayer> Session<Application> {
         session_queue.remove(self.queue_idx);
         self.session_has_expired.store(true, Ordering::Relaxed);
         let _kex_lock = self.state_machine_lock.lock().unwrap();
-        let state = self.state.read().unwrap();
+        let mut state = self.state.write().unwrap();
         let mut session_map = context.session_map.write().unwrap();
         for key in &state.cipher_states {
             if let Some(pre_id) = key.as_ref().map(|k| k.local_key_id) {
@@ -2259,12 +2260,12 @@ impl<Application: ApplicationLayer> Session<Application> {
             }
         }
         use OfferStateMachine::*;
-        let id = match &state.outgoing_offer {
-            NoiseXKPattern1or3(handshake_state) => handshake_state.local_key_id,
-            NoiseKKPattern1 { new_key_id, .. } => *new_key_id,
-            _ => return,
+        match &state.outgoing_offer {
+            NoiseXKPattern1or3(handshake_state) => session_map.remove(&handshake_state.local_key_id),
+            NoiseKKPattern1 { new_key_id, .. } => session_map.remove(new_key_id),
+            _ => None,
         };
-        session_map.remove(&id);
+        state.outgoing_offer = OfferStateMachine::Null;
     }
 
     /// Get the next outgoing counter value.
