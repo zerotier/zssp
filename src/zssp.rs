@@ -581,7 +581,9 @@ impl<Application: ApplicationLayer> Context<Application> {
     /// * `check_accept_session` - Function to accept sessions after final negotiation.
     ///   The second argument is the identity blob that the remote peer sent us. The application
     ///   must verify this identity is associated with the remote peer's static key.
-    ///   The third argument is true if the remote peer connected to us with a recognized ratchet fingerprint.
+    ///   The third argument is the ratchet chain length, or ratchet count.
+    ///   To prevent desync, if this function returns (Some(_), _), no other open session with the
+    ///   same remote peer must exist.
     /// * `send_unassociated_reply` - Function to send reply packets directly when no session exists
     /// * `send_unassociated_mtu` - MTU for unassociated replies
     /// * `send_to` - Function to get senders for existing sessions, permitting MTU and path lookup
@@ -2228,8 +2230,8 @@ impl<Application: ApplicationLayer> Session<Application> {
         self.state.read().unwrap().ratchet_states[0].chain_len()
     }
     /// Mark a session as expired. This will make it impossible for this session to successfully
-    /// receive or send data. It is recommended to simply `drop` the session instead, but this can
-    /// provide some reassurance in complex shared ownership situations.
+    /// receive or send data or control packets. It is recommended to simply `drop` the session
+    /// instead, but this can provide some reassurance in complex shared ownership situations.
     pub fn expire(&self) {
         if let Some(context) = self.context.upgrade() {
             self.expire_inner(&context, &mut context.session_queue.lock().unwrap());
