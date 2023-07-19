@@ -1901,7 +1901,7 @@ fn receive_control_fragment<'a, Application: ApplicationLayer, SendFn: FnMut(&mu
         }
         PACKET_TYPE_ACK => {
             drop(state);
-            app.event_log(LogEvent::ReceiveValidKeyDelete(&session), current_time);
+            app.event_log(LogEvent::ReceiveValidAck(&session), current_time);
             let kex_lock = session.state_machine_lock.lock().unwrap();
             let mut state = session.state.write().unwrap();
             // Check if we should end any current offers and transition back to Normal state

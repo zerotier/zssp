@@ -36,7 +36,7 @@ pub enum LogEvent<'a, Application: ApplicationLayer> {
     ReceiveUncheckedKK2,
     ReceiveValidKK2(&'a Arc<Session<Application>>),
     ReceiveValidKeyConfirm(&'a Arc<Session<Application>>),
-    ReceiveValidKeyDelete(&'a Arc<Session<Application>>),
+    ReceiveValidAck(&'a Arc<Session<Application>>),
 }
 impl<'a, Application: ApplicationLayer> std::fmt::Debug for LogEvent<'a, Application> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -68,7 +68,7 @@ impl<'a, Application: ApplicationLayer> std::fmt::Debug for LogEvent<'a, Applica
             ReceiveUncheckedKK2 => write!(f, "ReceiveUncheckedKK2"),
             ReceiveValidKK2(_) => write!(f, "ReceiveValidKK2"),
             ReceiveValidKeyConfirm(_) => write!(f, "ReceiveValidKeyConfirm"),
-            ReceiveValidKeyDelete(_) => write!(f, "ReceiveValidKeyDelete"),
+            ReceiveValidAck(_) => write!(f, "ReceiveValidAck"),
         }
     }
 }
