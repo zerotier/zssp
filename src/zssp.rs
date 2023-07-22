@@ -117,6 +117,8 @@ pub enum IncomingSessionAction {
 pub struct Session<Application: ApplicationLayer> {
     /// An arbitrary application defined object associated with each session.
     pub application_data: Application::Data,
+    /// Is true if the local peer acted as Bob, the responder in the initial key exchange.
+    pub was_bob: bool,
     /// The receive context associated with this session,
     /// only this context can receive messages from the remote peer.
     context: Weak<ContextInner<Application>>,
@@ -145,7 +147,6 @@ pub struct Session<Application: ApplicationLayer> {
     noise_kk_ss: Secret<P384_ECDH_SHARED_SECRET_SIZE>,
     noise_kk_local_init_h: [u8; NOISE_HASHLEN],
     noise_kk_remote_init_h: [u8; NOISE_HASHLEN],
-    was_bob: bool,
 }
 /// `AesGcm` is not threadsafe, but it is threadsafe when inside a `Mutex`.
 unsafe impl<Application: ApplicationLayer> Send for Session<Application> {}
