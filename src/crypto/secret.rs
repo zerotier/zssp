@@ -2,7 +2,6 @@
 use std::{convert::TryInto, ptr::write_volatile};
 
 /// Constant time byte slice equality.
-#[inline]
 pub fn secure_eq<A: AsRef<[u8]> + ?Sized, B: AsRef<[u8]> + ?Sized>(a: &A, b: &B) -> bool {
     let (a, b) = (a.as_ref(), b.as_ref());
     if a.len() == b.len() {
@@ -31,7 +30,6 @@ pub struct Secret<const L: usize>(pub [u8; L]);
 
 impl<const L: usize> Secret<L> {
     /// Create a new all-zero secret.
-    #[inline(always)]
     pub fn new() -> Self {
         Self([0_u8; L])
     }
@@ -45,30 +43,25 @@ impl<const L: usize> Secret<L> {
     /// This is unsafe because it will not destroy the contents of its input.
     /// # Safety
     /// Make sure the contents of the input are securely deleted.
-    #[inline(always)]
     pub unsafe fn from_bytes(b: &[u8]) -> Self {
         Self(b.try_into().unwrap())
     }
 
-    #[inline(always)]
     pub fn as_ptr(&self) -> *const u8 {
         self.0.as_ptr()
     }
 
-    #[inline(always)]
     pub fn as_bytes(&self) -> &[u8; L] {
         &self.0
     }
 
     /// Get the first N bytes of this secret as a fixed length array.
-    #[inline(always)]
     pub fn first_n<const N: usize>(&self) -> &[u8; N] {
         assert!(N <= L);
         unsafe { &*self.0.as_ptr().cast() }
     }
 
     /// Clone the first N bytes of this secret as another secret.
-    #[inline(always)]
     pub fn first_n_clone<const N: usize>(&self) -> Secret<N> {
         Secret::<N>(*self.first_n())
     }
@@ -97,35 +90,30 @@ impl<const L: usize> Drop for Secret<L> {
 }
 
 impl<const L: usize> Default for Secret<L> {
-    #[inline(always)]
     fn default() -> Self {
         Self([0u8; L])
     }
 }
 
 impl<const L: usize> AsRef<[u8]> for Secret<L> {
-    #[inline(always)]
     fn as_ref(&self) -> &[u8] {
         &self.0
     }
 }
 
 impl<const L: usize> AsRef<[u8; L]> for Secret<L> {
-    #[inline(always)]
     fn as_ref(&self) -> &[u8; L] {
         &self.0
     }
 }
 
 impl<const L: usize> AsMut<[u8]> for Secret<L> {
-    #[inline(always)]
     fn as_mut(&mut self) -> &mut [u8] {
         &mut self.0
     }
 }
 
 impl<const L: usize> AsMut<[u8; L]> for Secret<L> {
-    #[inline(always)]
     fn as_mut(&mut self) -> &mut [u8; L] {
         &mut self.0
     }
