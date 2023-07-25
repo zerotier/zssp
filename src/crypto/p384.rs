@@ -20,6 +20,8 @@ pub trait P384PublicKey: Sized + Send + Sync {
 }
 
 /// A NIST P-384 ECDH/ECDSA public/private key pair.
+///
+/// Instances must securely delete the private key when dropped.
 pub trait P384KeyPair: Send + Sync {
     type PublicKey: P384PublicKey;
     type Rng: RngCore + CryptoRng;

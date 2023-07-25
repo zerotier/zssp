@@ -12,8 +12,10 @@ pub const AES_GCM_KEY_SIZE: usize = super::aes::AES_256_KEY_SIZE;
 /// An instance of this trait may be reused multiple times, each reuse should use the same key.
 /// If it is reused, `set_iv` will always be the very next call after `finish_encrypt`.
 ///
-/// Implementations of this trait does not have to be Send + Sync,
-/// but if it is wrapped in a `Mutex` it must satisfy the requirements of Send + Sync.
+/// Implementations of this trait do not have to be Send + Sync,
+/// but if instances are wrapped in a `Mutex` they must satisfy the requirements of Send + Sync.
+///
+/// Instances must securely delete their keys when dropped.
 pub trait AesGcmEnc {
     fn new(key: &[u8; AES_GCM_KEY_SIZE]) -> Self;
 
@@ -36,8 +38,10 @@ pub trait AesGcmEnc {
 /// An instance of this trait may be reused multiple times, each reuse should use the same key.
 /// If it is reused, `set_iv` will always be the very next call after `finish_decrypt`.
 ///
-/// Implementations of this trait does not have to be Send + Sync,
-/// but if it is wrapped in a `Mutex` it must satisfy the requirements of Send + Sync.
+/// Implementations of this trait do not have to be Send + Sync,
+/// but if instances are wrapped in a `Mutex` they must satisfy the requirements of Send + Sync.
+///
+/// Instances must securely delete their keys when dropped.
 pub trait AesGcmDec {
     fn new(key: &[u8; AES_GCM_KEY_SIZE]) -> Self;
 
