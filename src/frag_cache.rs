@@ -234,9 +234,20 @@ impl<Fragment> Drop for UnassociatedFragCache<Fragment> {
     }
 }
 
-/*
 #[test]
 fn test_cache() {
+    use std::sync::Mutex;
+    fn xorshift64_random() -> u64 {
+        static XORSHIFT64_STATE: Mutex<u64> = Mutex::new(12);
+        let mut x = XORSHIFT64_STATE.lock().unwrap();
+        *x ^= x.wrapping_shr(12);
+        *x ^= x.wrapping_shl(25);
+        *x ^= x.wrapping_shr(27);
+        let r = *x;
+        drop(x);
+        r.wrapping_mul(0x2545F4914F6CDD1Du64)
+    }
+
     let mut cache = UnassociatedFragCache::new();
     let mut assembled = Assembled::new();
 
@@ -245,8 +256,8 @@ fn test_cache() {
     let mut in_progress_fragments = 0;
     // A basic fuzzer for testing the cache.
     for i in 0..5000u32 {
-        let fragment_count = (random::xorshift64_random() as usize % MAX_FRAGMENTS) + 1;
-        let r = random::xorshift64_random() as u8;
+        let fragment_count = (xorshift64_random() as usize % MAX_FRAGMENTS) + 1;
+        let r = xorshift64_random() as u8;
         if r & 1 == 0 {
             let mut packet = Vec::new();
             for j in 0..fragment_count {
@@ -256,7 +267,7 @@ fn test_cache() {
             in_progress.push((i, fragment_count as u8, packet));
         } else {
             assembled.empty();
-            let drop = random::xorshift64_random() as usize % (2 * fragment_count);
+            let drop = xorshift64_random() as usize % (2 * fragment_count);
             for j in 0..fragment_count {
                 if drop != j {
                     let fragment = vec![0, 1, 2, 3, 4, 5, 6, r];
@@ -279,11 +290,11 @@ fn test_cache() {
         }
         if r > 200 {
             if in_progress.len() > 0 {
-                let to_remain = (random::xorshift64_random() as usize % in_progress_fragments) + 16;
+                let to_remain = (xorshift64_random() as usize % in_progress_fragments) + 16;
                 while in_progress_fragments > to_remain {
-                    let (id, fragment_count, mut packet) = in_progress.swap_remove(random::xorshift64_random() as usize % in_progress.len());
-                    for _ in 0..((random::xorshift64_random() as usize % packet.len()) + 1) {
-                        let (no, fragment) = packet.swap_remove(random::xorshift64_random() as usize % packet.len());
+                    let (id, fragment_count, mut packet) = in_progress.swap_remove(xorshift64_random() as usize % in_progress.len());
+                    for _ in 0..((xorshift64_random() as usize % packet.len()) + 1) {
+                        let (no, fragment) = packet.swap_remove(xorshift64_random() as usize % packet.len());
 
                         assembled.empty();
                         let mut nonce = [0; 10];
@@ -304,4 +315,3 @@ fn test_cache() {
         }
     }
 }
- */
