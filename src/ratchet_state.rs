@@ -19,38 +19,30 @@ pub enum RatchetState {
 }
 use RatchetState::*;
 impl RatchetState {
-    #[inline]
     pub fn new_nonempty(key: Secret<RATCHET_SIZE>, fingerprint: Secret<RATCHET_SIZE>, chain_len: NonZeroU64) -> Self {
         NonEmpty(NonEmptyRatchetState { key, fingerprint, chain_len })
     }
-    #[inline]
     pub fn new_initial_states() -> [RatchetState; 2] {
         [RatchetState::Empty, RatchetState::Null]
     }
-    #[inline]
     pub fn is_null(&self) -> bool {
         matches!(self, Null)
     }
-    #[inline]
     pub fn is_empty(&self) -> bool {
         matches!(self, Empty)
     }
-    #[inline]
     pub fn nonempty(&self) -> Option<&NonEmptyRatchetState> {
         match self {
             NonEmpty(rs) => Some(rs),
             _ => None,
         }
     }
-    #[inline]
     pub fn chain_len(&self) -> u64 {
         self.nonempty().map_or(0, |rs| rs.chain_len.get())
     }
-    #[inline]
     pub fn fingerprint(&self) -> Option<&[u8; RATCHET_SIZE]> {
         self.nonempty().map(|rs| rs.fingerprint.as_ref())
     }
-    #[inline]
     pub fn key(&self) -> Option<&[u8; RATCHET_SIZE]> {
         const ZERO_KEY: [u8; RATCHET_SIZE] = [0u8; RATCHET_SIZE];
         match self {

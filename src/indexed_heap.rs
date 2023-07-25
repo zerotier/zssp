@@ -42,7 +42,6 @@ impl<T, P: Ord> IndexedBinaryHeap<T, P> {
             .first_mut()
             .map(|entry| (&mut entry.0, &entry.1, BinaryHeapIndex(entry.2, self.map[entry.2].1)))
     }
-    #[inline]
     fn swap(&mut self, a: usize, b: usize) {
         self.map[self.data[a].2].0 = b;
         self.map[self.data[b].2].0 = a;

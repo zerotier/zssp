@@ -292,7 +292,6 @@ impl<Application: ApplicationLayer> Context<Application> {
     ///   with remote peers (although both of these properties would help reliability slightly).
     ///   Used to determine if any current handshakes should be resent or timed-out, or if a session
     ///   should rekey.
-    #[inline]
     pub fn service<SendFn: FnMut(&mut [u8]) -> bool>(
         &self,
         app: &Application,
@@ -471,7 +470,6 @@ impl<Application: ApplicationLayer> Context<Application> {
     ///   for the upper protocol to authenticate and approve of Alice's identity.
     /// * `current_time` - Current time in milliseconds. Does not have to be monotonic, nor synced
     /// with the remote peer. Used to determine when this offer should be resent.
-    #[inline]
     pub fn open(
         &self,
         app: &Application,
@@ -600,7 +598,6 @@ impl<Application: ApplicationLayer> Context<Application> {
     /// * `current_time` - Current time in milliseconds. Does not have to be monotonic, nor synced
     ///   with the remote peer. Used to check the state of local offers we may currently have or want
     ///   to put in-flight.
-    #[inline]
     pub fn receive<'a, SendFn: FnMut(&mut [u8]) -> bool>(
         &self,
         app: &Application,
@@ -1648,7 +1645,6 @@ impl<Application: ApplicationLayer> Context<Application> {
     /// * `send` - Function to call to send physical packet(s); the buffer passed to `send` is a
     ///   slice of `data`
     /// * `current_time` - Current time in milliseconds
-    #[inline]
     pub fn send_empty(&self, session: &Arc<Session<Application>>, send: impl FnMut(&mut [u8]) -> bool, current_time: i64) -> Result<(), SendError> {
         self.send(session, send, &mut [0u8; MIN_TRANSPORT_MTU], &[], current_time)
     }
@@ -1660,7 +1656,6 @@ impl<Application: ApplicationLayer> Context<Application> {
     /// * `mtu_sized_buffer` - A writable work buffer whose size equals the MTU
     /// * `data` - Data to send
     /// * `current_time` - Current time in milliseconds
-    #[inline]
     pub fn send(
         &self,
         session: &Arc<Session<Application>>,
@@ -1730,7 +1725,6 @@ impl<Application: ApplicationLayer> Context<Application> {
         Ok(())
     }
     /// Update the challenge window, returning true if the challenge is still valid.
-    #[inline(always)]
     fn check_challenge_window(&self, counter: u64) -> bool {
         let slot = &self.0.challenge_antireplay_window[(counter as usize) % self.0.challenge_antireplay_window.len()];
         let counter = counter.wrapping_add(1);
@@ -1738,7 +1732,6 @@ impl<Application: ApplicationLayer> Context<Application> {
         prev_counter < counter
     }
     /// Update the challenge window, returning true if the challenge is still valid.
-    #[inline(always)]
     fn update_challenge_window(&self, counter: u64) -> bool {
         let slot = &self.0.challenge_antireplay_window[(counter as usize) % self.0.challenge_antireplay_window.len()];
         let counter = counter.wrapping_add(1);
@@ -2188,7 +2181,6 @@ fn receive_control_fragment<'a, Application: ApplicationLayer, SendFn: FnMut(&mu
 
 impl<Application: ApplicationLayer> Session<Application> {
     /// This can only fail with `MaxKeyLifetimeExceeded` or `SessionNotEstablished`.
-    #[inline]
     fn send_control(
         &self,
         state: &SessionMutableState<Application>,
@@ -2211,25 +2203,21 @@ impl<Application: ApplicationLayer> Session<Application> {
         Ok(())
     }
     /// Check whether this session is established.
-    #[inline]
     pub fn established(&self) -> bool {
         let state = self.state.read().unwrap();
         !matches!(&state.outgoing_offer, OfferStateMachine::NoiseXKPattern1or3(_) | OfferStateMachine::Null)
     }
     /// The static public key of the remote peer.
-    #[inline]
     pub fn remote_s_public_key(&self) -> &Application::PublicKey {
         &self.remote_static_key
     }
     /// The current ratchet state of this session.
     /// The returned values are sensitive and should be securely erased before being dropped.
-    #[inline]
     pub fn ratchet_states(&self) -> [RatchetState; 2] {
         let state = self.state.read().unwrap();
         state.ratchet_states.clone()
     }
     /// The current ratchet count of this session.
-    #[inline]
     pub fn ratchet_count(&self) -> u64 {
         self.state.read().unwrap().ratchet_states[0].chain_len()
     }
@@ -2267,7 +2255,6 @@ impl<Application: ApplicationLayer> Session<Application> {
     }
 
     /// Get the next outgoing counter value.
-    #[inline(always)]
     fn get_next_outgoing_counter(&self) -> Result<u64, SendError> {
         if self.session_has_expired.load(Ordering::Relaxed) {
             Err(SendError::SessionExpired)
@@ -2283,7 +2270,6 @@ impl<Application: ApplicationLayer> Session<Application> {
         }
     }
     /// Check the receive window without mutating state.
-    #[inline(always)]
     fn check_receive_window(&self, counter: u64) -> bool {
         let slot = &self.counter_antireplay_window[(counter as usize) % self.counter_antireplay_window.len()];
         let counter = counter.wrapping_add(1);
@@ -2292,7 +2278,6 @@ impl<Application: ApplicationLayer> Session<Application> {
     }
     /// Update the receive window, returning true if the packet is still valid.
     /// This should only be called after the packet is authenticated.
-    #[inline(always)]
     fn update_receive_window(&self, counter: u64) -> bool {
         let slot = &self.counter_antireplay_window[(counter as usize) % self.counter_antireplay_window.len()];
         let counter = counter.wrapping_add(1);
@@ -2311,7 +2296,6 @@ impl<Application: ApplicationLayer> Drop for Session<Application> {
 impl<Application: ApplicationLayer> NoiseXKAliceHandshake<Application> {
     /// Can only fail with `OpenError::InvalidPublicKey` because of remote_s_public_key.
     /// Corresponds to Noise `Initialize`.
-    #[inline]
     fn initialize(
         local_key_id: NonZeroU32,
         remote_s_public_key: &Application::PublicKey,
@@ -2446,7 +2430,6 @@ fn process_timer(timer: &AtomicI64, wait_time: i64, current_time: i64) -> Option
 }
 
 /// Corresponds to Noise `EncryptAndHash`.
-#[inline]
 fn encrypt_and_hash<Application: ApplicationLayer>(
     sha512: &mut Application::Hash,
     noise_k: &Secret<AES_GCM_KEY_SIZE>,
@@ -2467,7 +2450,6 @@ fn encrypt_and_hash<Application: ApplicationLayer>(
     mix_hash(sha512, noise_h, message)
 }
 /// Corresponds to Noise `DecryptAndHash`.
-#[inline]
 fn decrypt_and_hash<Application: ApplicationLayer>(
     sha512: &mut Application::Hash,
     noise_k: &Secret<AES_GCM_KEY_SIZE>,
@@ -2487,7 +2469,6 @@ fn decrypt_and_hash<Application: ApplicationLayer>(
     (gcm.finish_decrypt((&message[auth_start..]).try_into().unwrap()), noise_h_c)
 }
 /// Encrypt a standardized control packet.
-#[inline]
 fn encrypt_control(
     c: &mut impl AesGcmEnc,
     header_cipher: &impl AesEnc,
@@ -2509,7 +2490,6 @@ fn encrypt_control(
     header_cipher.encrypt_in_place((&mut fragment[HEADER_PROTECT_ENC_START..HEADER_PROTECT_ENC_END]).try_into().unwrap());
     (fragment, fragment_len)
 }
-#[inline]
 fn decrypt_control<'a, IoError>(
     c: &mut impl AesGcmDec,
     packet_type: u8,
@@ -2530,7 +2510,6 @@ fn decrypt_control<'a, IoError>(
     Ok(&mut fragment[HEADER_SIZE..fragment_len - AES_GCM_TAG_SIZE])
 }
 
-#[inline(always)]
 fn set_packet_header(packet: &mut [u8], fragment_count: u8, fragment_no: u8, packet_type: u8, remote_key_id: u32, counter_or_id: u64) {
     debug_assert!(packet.len() >= MIN_PACKET_SIZE);
     debug_assert!(fragment_count > 0);
@@ -2558,7 +2537,6 @@ fn set_packet_header(packet: &mut [u8], fragment_count: u8, fragment_no: u8, pac
 /// it as effectively AAD. Other elements of the header are either not authenticated,
 /// like fragmentation info, or their authentication is implied via key exchange like
 /// the key id.
-#[inline(always)]
 fn create_message_nonce(packet_type: u8, counter: u64) -> [u8; AES_GCM_IV_SIZE] {
     let mut ret = [0u8; AES_GCM_IV_SIZE];
     ret[3] = packet_type;
@@ -2567,7 +2545,6 @@ fn create_message_nonce(packet_type: u8, counter: u64) -> [u8; AES_GCM_IV_SIZE] 
     ret
 }
 /// returns `(fragment_count, fragment_no, packet_type, counter, header_nonce)`.
-#[inline(always)]
 fn parse_packet_header(packet: &[u8]) -> (u8, u8, u8, u64, [u8; 10]) {
     let header_nonce = packet[6..16].try_into().unwrap();
     let counter = packet[8..16].try_into().unwrap();
@@ -2658,7 +2635,6 @@ fn generate_key_id<Application: ApplicationLayer>(
 }
 
 impl<Application: ApplicationLayer> SessionKey<Application> {
-    #[inline(always)]
     fn new(
         hmac: &mut Application::HmacHash,
         ck: SymmetricState,
@@ -2685,7 +2661,6 @@ impl<Application: ApplicationLayer> SessionKey<Application> {
         }
     }
 
-    #[inline(always)]
     fn get_send_cipher(&self, counter: u64) -> Result<MutexGuard<Application::AeadEnc>, SendError> {
         if counter < self.expire_at_counter {
             Ok(self.send_cipher_pool[(counter as usize) % self.send_cipher_pool.len()].lock().unwrap())
@@ -2694,7 +2669,6 @@ impl<Application: ApplicationLayer> SessionKey<Application> {
         }
     }
 
-    #[inline(always)]
     fn get_receive_cipher(&self, counter: u64) -> MutexGuard<Application::AeadDec> {
         let idx = (counter as usize) % self.receive_cipher_pool.len();
         self.receive_cipher_pool[idx].lock().unwrap()
@@ -2702,7 +2676,6 @@ impl<Application: ApplicationLayer> SessionKey<Application> {
 }
 
 /// MixHash to update 'h' during negotiation.
-#[inline(always)]
 fn mix_hash(hasher: &mut impl Sha512, h: &[u8; NOISE_HASHLEN], m: &[u8]) -> [u8; NOISE_HASHLEN] {
     let mut output = [0u8; NOISE_HASHLEN];
     hasher.reset();
@@ -2713,7 +2686,6 @@ fn mix_hash(hasher: &mut impl Sha512, h: &[u8; NOISE_HASHLEN], m: &[u8]) -> [u8;
 }
 /// Check if the proof of work attached to the first message contains the correct number of leading
 /// zeros.
-#[inline(always)]
 fn verify_pow<Application: ApplicationLayer>(hasher: &mut Application::Hash, response: &[u8]) -> bool {
     if Application::PROOF_OF_WORK_BIT_DIFFICULTY == 0 {
         return true;
@@ -2725,7 +2697,6 @@ fn verify_pow<Application: ApplicationLayer>(hasher: &mut Application::Hash, res
     let n = u32::from_be_bytes(output[..4].try_into().unwrap());
     n.leading_zeros() >= Application::PROOF_OF_WORK_BIT_DIFFICULTY
 }
-#[inline(always)]
 fn from_bytes_agreement<Application: ApplicationLayer>(
     public: &[u8],
     private: &Application::KeyPair,

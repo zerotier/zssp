@@ -30,13 +30,11 @@ impl<Fragment> Assembled<Fragment> {
     }
 }
 impl<Fragment> AsRef<[Fragment]> for Assembled<Fragment> {
-    #[inline(always)]
     fn as_ref(&self) -> &[Fragment] {
         unsafe { &*slice_from_raw_parts(self.0.as_ptr().cast::<Fragment>(), self.1) }
     }
 }
 impl<Fragment> Drop for Assembled<Fragment> {
-    #[inline(always)]
     fn drop(&mut self) {
         self.empty()
     }
@@ -52,7 +50,6 @@ pub struct Fragged<Fragment, const MAX_FRAGMENTS: usize> {
 }
 
 impl<Fragment, const MAX_FRAGMENTS: usize> Fragged<Fragment, MAX_FRAGMENTS> {
-    #[inline(always)]
     pub fn new() -> Self {
         debug_assert!(MAX_FRAGMENTS <= 64);
         unsafe { zeroed() }
@@ -64,7 +61,6 @@ impl<Fragment, const MAX_FRAGMENTS: usize> Fragged<Fragment, MAX_FRAGMENTS> {
     /// be reused to assemble another packet.
     ///
     /// Will check that aad is the same for all fragments.
-    #[inline]
     pub(crate) fn assemble(
         &mut self,
         nonce: [u8; 10],
@@ -107,7 +103,6 @@ impl<Fragment, const MAX_FRAGMENTS: usize> Fragged<Fragment, MAX_FRAGMENTS> {
     }
 
     /// Drops any remaining fragments and resets this object.
-    #[inline(always)]
     pub fn drop_in_place(&mut self) {
         if needs_drop::<Fragment>() {
             let mut have = self.have;
@@ -129,7 +124,6 @@ impl<Fragment, const MAX_FRAGMENTS: usize> Fragged<Fragment, MAX_FRAGMENTS> {
 }
 
 impl<Fragment, const MAX_FRAGMENTS: usize> Drop for Fragged<Fragment, MAX_FRAGMENTS> {
-    #[inline(always)]
     fn drop(&mut self) {
         self.drop_in_place();
     }

@@ -33,7 +33,6 @@ impl SymmetricState {
         // `InitializeKey` would be completely pointless.
     }
     /// Corresponds to Noise `MixKey` followed by `InitializeKey`.
-    #[inline(always)]
     pub(crate) fn mix_key_initialize_key(&mut self, hm: &mut impl HmacSha512, input_key_material: &[u8]) -> Secret<AES_256_KEY_SIZE> {
         let mut next_ck = Secret::new();
         let mut temp_k = [0u8; NOISE_HASHLEN];
@@ -83,7 +82,6 @@ impl SymmetricState {
     /// is forward secrect and is cryptographically independent from all other produced keys.
     /// Based on Noise's unstable ASK mechanism, using KBKDF instead of HKDF.
     /// https://github.com/noiseprotocol/noise_wiki/wiki/Additional-Symmetric-Keys.
-    #[inline(always)]
     pub(crate) fn get_ask2(
         &self,
         hm: &mut impl HmacSha512,
@@ -99,7 +97,6 @@ impl SymmetricState {
         )
     }
     /// Corresponds to Noise `Split`.
-    #[inline(always)]
     pub(crate) fn split(self, hm: &mut impl HmacSha512) -> (Secret<AES_256_KEY_SIZE>, Secret<AES_256_KEY_SIZE>) {
         let mut temp_k1 = [0u8; NOISE_HASHLEN];
         let mut temp_k2 = [0u8; NOISE_HASHLEN];
@@ -111,7 +108,6 @@ impl SymmetricState {
             Secret::from_bytes_then_delete(&mut temp_k2[..AES_256_KEY_SIZE]),
         )
     }
-    #[inline(always)]
     fn label(&self) -> [u8; 4] {
         [b'Z', b'S', b'S', self.token_counter]
     }
@@ -126,7 +122,6 @@ impl SymmetricState {
     /// * L = `num_outputs*512u16`
     /// We have intentionally made every input small and fixed size to avoid unnecessary complexity
     /// and data representation ambiguity.
-    #[inline(always)]
     fn kbkdf(
         &self,
         hm: &mut impl HmacSha512,

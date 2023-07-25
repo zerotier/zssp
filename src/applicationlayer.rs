@@ -191,6 +191,5 @@ pub trait ApplicationLayer: Sized {
     ) -> Result<(), Self::IoError>;
 
     #[allow(unused)]
-    #[inline]
     fn event_log(&self, event: LogEvent<Self>, current_time: i64) {}
 }
