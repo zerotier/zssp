@@ -1,5 +1,5 @@
 // (c) 2020-2022 ZeroTier, Inc. -- currently proprietary pending actual release and licensing. See LICENSE.md.
-use std::convert::TryInto;
+use std::{convert::TryInto, ptr::write_volatile};
 
 /// Constant time byte slice equality.
 #[inline]
@@ -88,14 +88,18 @@ impl<const L: usize> Secret<L> {
 
 impl<const L: usize> Drop for Secret<L> {
     fn drop(&mut self) {
-        self.0.fill(0);
+        unsafe {
+            for v in self.0.iter_mut() {
+                write_volatile(v, 0u8);
+            }
+        }
     }
 }
 
 impl<const L: usize> Default for Secret<L> {
     #[inline(always)]
     fn default() -> Self {
-        Self([0_u8; L])
+        Self([0u8; L])
     }
 }
 
