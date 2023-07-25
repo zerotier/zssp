@@ -628,8 +628,7 @@ impl<Application: ApplicationLayer> Context<Application> {
         let mut assembled_packet = Assembled::new(); // needs to outlive the block below
         let mut incoming = None;
         let (session, packet_type, fragments) = {
-            let mut local_key_id = [0u8; SESSION_ID_SIZE];
-            local_key_id.copy_from_slice(&incoming_physical_packet[0..SESSION_ID_SIZE]);
+            let local_key_id = incoming_physical_packet[0..SESSION_ID_SIZE].try_into().unwrap();
             // `from_ne_bytes` because this id was generated locally.
             if let Some(local_key_id) = NonZeroU32::new(u32::from_ne_bytes(local_key_id)) {
                 let session_map = self.0.session_map.read().unwrap();
@@ -902,9 +901,7 @@ impl<Application: ApplicationLayer> Context<Application> {
                         IncomingSessionAction::Allow => {}
                         IncomingSessionAction::Challenge => {
                             let response: &ChallengeResponse = byte_array_as_proto_buffer(&message[p_auth_end..message_size]);
-                            let mut counter = 0u64.to_ne_bytes();
-                            counter.copy_from_slice(&response.challenge_counter);
-                            let counter = u64::from_be_bytes(counter);
+                            let counter = u64::from_be_bytes(response.challenge_counter.try_into().unwrap());
 
                             sha512.reset();
                             let mut hasher = ShaHasher(sha512);
@@ -2572,10 +2569,8 @@ fn create_message_nonce(packet_type: u8, counter: u64) -> [u8; AES_GCM_IV_SIZE] 
 /// returns `(fragment_count, fragment_no, packet_type, counter, header_nonce)`.
 #[inline(always)]
 fn parse_packet_header(packet: &[u8]) -> (u8, u8, u8, u64, [u8; 10]) {
-    let mut header_nonce = [0; 10];
-    let mut counter = 0u64.to_ne_bytes();
-    header_nonce.copy_from_slice(&packet[6..16]);
-    counter.copy_from_slice(&packet[8..16]);
+    let header_nonce = packet[6..16].try_into().unwrap();
+    let counter = packet[8..16].try_into().unwrap();
     // We intentionally ignore the version number for future revisions.
     (packet[4], packet[5], packet[7], u64::from_be_bytes(counter), header_nonce)
 }
