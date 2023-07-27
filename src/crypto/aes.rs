@@ -11,10 +11,6 @@ pub const AES_256_KEY_SIZE: usize = 32;
 pub trait AesEnc: Send + Sync {
     fn new(key: &[u8; AES_256_KEY_SIZE]) -> Self;
 
-    /// Change the encryption key to `key` so that all future encryption is performed with it.
-    /// This function is very rarely called so it does not have to be particularly efficient.
-    fn reset(&self, key: &[u8; AES_256_KEY_SIZE]);
-
     /// Decrypt the given `block` of plaintext directly using the AES block cipher
     /// (i.e. AES-256 in zero-padding ECB mode).
     /// The ciphertext should be written directly back out to `block`.
@@ -26,10 +22,6 @@ pub trait AesEnc: Send + Sync {
 /// Instances must securely delete their keys when dropped or reset.
 pub trait AesDec: Send + Sync {
     fn new(key: &[u8; AES_256_KEY_SIZE]) -> Self;
-
-    /// Change the decryption key to `key` so that all future decryption is performed with it.
-    /// This function is very rarely called so it does not have to be particularly efficient.
-    fn reset(&self, key: &[u8; AES_256_KEY_SIZE]);
 
     /// Decrypt the given `block` of ciphertext directly using the AES 256 block cipher
     /// (i.e. AES-256 in zero-padding ECB mode).

@@ -64,7 +64,7 @@ pub(crate) const LABEL_HEADER_KEY: u8 = b'H';
 pub(crate) const LABEL_KEX_KEY: u8 = b'K';
 
 /// Size of keys used during derivation, mixing, etc.
-pub(crate) const NOISE_HASHLEN: usize = SHA512_HASH_SIZE;
+pub(crate) const HASHLEN: usize = SHA512_HASH_SIZE;
 
 pub(crate) const HEADER_SIZE: usize = 16;
 pub(crate) const HEADER_PROTECT_ENC_START: usize = 4;

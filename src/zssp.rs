@@ -145,8 +145,8 @@ pub struct Session<Application: ApplicationLayer> {
     kex_receive_cipher: Mutex<Option<Application::AeadDec>>,
     /// Pre-computed rekeying values.
     noise_kk_ss: Secret<P384_ECDH_SHARED_SECRET_SIZE>,
-    noise_kk_local_init_h: [u8; NOISE_HASHLEN],
-    noise_kk_remote_init_h: [u8; NOISE_HASHLEN],
+    noise_kk_local_init_h: [u8; HASHLEN],
+    noise_kk_remote_init_h: [u8; HASHLEN],
 }
 /// `AesGcm` is not threadsafe, but it is threadsafe when inside a `Mutex`.
 unsafe impl<Application: ApplicationLayer> Send for Session<Application> {}
@@ -181,7 +181,7 @@ enum OfferStateMachine<Application: ApplicationLayer> {
         noise_e_secret: Application::KeyPair,
         noise_message: [u8; NoiseKKPattern1or2::SIZE],
         noise_ck: SymmetricState,
-        noise_h_pskep: [u8; NOISE_HASHLEN],
+        noise_h_pskep: [u8; HASHLEN],
     }, // -> NoiseKKPattern2, KeyConfirm
     NoiseKKPattern2 {
         next_retry_time: AtomicI64,
@@ -203,7 +203,7 @@ pub(crate) struct NoiseXKBobHandshakeState<Application: ApplicationLayer> {
     local_key_id: NonZeroU32,
     header_receive_key: Secret<AES_GCM_KEY_SIZE>,
     header_send_key: Secret<AES_GCM_KEY_SIZE>,
-    noise_h_ee1peekem1pskp: [u8; NOISE_HASHLEN],
+    noise_h_ee1peekem1pskp: [u8; HASHLEN],
     noise_e_secret: Application::KeyPair,
     noise_ck_eseeekem1psk: SymmetricState,
     noise_k_eseeekem1psk: Secret<AES_GCM_KEY_SIZE>,
@@ -222,7 +222,7 @@ struct NoiseXKAliceHandshake<Application: ApplicationLayer> {
 
 enum NoiseXKAliceHandshakeState<Application: ApplicationLayer> {
     NoiseXKPattern1 {
-        noise_h_ee1p: [u8; NOISE_HASHLEN],
+        noise_h_ee1p: [u8; HASHLEN],
         noise_e_secret: Application::KeyPair,
         noise_e1_secret: Secret<KYBER_SECRETKEYBYTES>,
         noise_ck_es: SymmetricState,
@@ -902,7 +902,7 @@ impl<Application: ApplicationLayer> Context<Application> {
 
                             sha512.reset();
                             let mut hasher = ShaHasher(sha512);
-                            let mut output = [0u8; NOISE_HASHLEN];
+                            let mut output = [0u8; HASHLEN];
                             hasher.0.update(&response.challenge_counter);
                             remote_address.hash(&mut hasher);
                             hasher.0.update(&self.0.challenge_salt);
@@ -2433,11 +2433,11 @@ fn process_timer(timer: &AtomicI64, wait_time: i64, current_time: i64) -> Option
 fn encrypt_and_hash<Application: ApplicationLayer>(
     sha512: &mut Application::Hash,
     noise_k: &Secret<AES_GCM_KEY_SIZE>,
-    noise_h: &[u8; NOISE_HASHLEN],
+    noise_h: &[u8; HASHLEN],
     packet_type: u8,
     noise_k_uses: u64,
     message: &mut [u8],
-) -> [u8; NOISE_HASHLEN] {
+) -> [u8; HASHLEN] {
     let auth_start = message.len() - AES_GCM_TAG_SIZE;
     let mut gcm = Application::AeadEnc::new(noise_k.as_ref());
     // Encrypt and add authentication tag.
@@ -2453,11 +2453,11 @@ fn encrypt_and_hash<Application: ApplicationLayer>(
 fn decrypt_and_hash<Application: ApplicationLayer>(
     sha512: &mut Application::Hash,
     noise_k: &Secret<AES_GCM_KEY_SIZE>,
-    noise_h: &[u8; NOISE_HASHLEN],
+    noise_h: &[u8; HASHLEN],
     packet_type: u8,
     noise_k_uses: u64,
     message: &mut [u8],
-) -> (bool, [u8; NOISE_HASHLEN]) {
+) -> (bool, [u8; HASHLEN]) {
     let auth_start = message.len() - AES_GCM_TAG_SIZE;
     let noise_h_c = mix_hash(sha512, noise_h, message);
     let mut gcm = Application::AeadDec::new(noise_k.as_ref());
@@ -2676,8 +2676,8 @@ impl<Application: ApplicationLayer> SessionKey<Application> {
 }
 
 /// MixHash to update 'h' during negotiation.
-fn mix_hash(hasher: &mut impl Sha512, h: &[u8; NOISE_HASHLEN], m: &[u8]) -> [u8; NOISE_HASHLEN] {
-    let mut output = [0u8; NOISE_HASHLEN];
+fn mix_hash(hasher: &mut impl Sha512, h: &[u8; HASHLEN], m: &[u8]) -> [u8; HASHLEN] {
+    let mut output = [0u8; HASHLEN];
     hasher.reset();
     hasher.update(h);
     hasher.update(m);
@@ -2692,7 +2692,7 @@ fn verify_pow<Application: ApplicationLayer>(hasher: &mut Application::Hash, res
     }
     hasher.reset();
     hasher.update(response);
-    let mut output = [0u8; NOISE_HASHLEN];
+    let mut output = [0u8; HASHLEN];
     hasher.finish(&mut output);
     let n = u32::from_be_bytes(output[..4].try_into().unwrap());
     n.leading_zeros() >= Application::PROOF_OF_WORK_BIT_DIFFICULTY

@@ -14,3 +14,9 @@ doc = true
 pqc_kyber = { version = "0.6.0", default-features = false, features = ["kyber1024", "std"] }
 rand_core = "0.6.4"
 hex-literal = "0.4.1"
+
+aes-gcm = "0.10.2"
+aes = "0.8.3"
+p384 = "0.13.0"
+sha2 = "0.10.7"
+hmac = "0.12.1"

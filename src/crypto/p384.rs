@@ -16,7 +16,7 @@ pub trait P384PublicKey: Sized + Send + Sync {
     /// Get the raw bytes that uniquely define the public key.
     ///
     /// This must output the standard 49 byte NIST encoding of P384 public keys.
-    fn as_bytes(&self) -> &[u8; P384_PUBLIC_KEY_SIZE];
+    fn to_bytes(&self, output: &mut [u8; P384_PUBLIC_KEY_SIZE]);
 }
 
 /// A NIST P-384 ECDH/ECDSA public/private key pair.
@@ -33,7 +33,7 @@ pub trait P384KeyPair: Send + Sync {
     /// Get the raw bytes that uniquely define the public key.
     ///
     /// This must output the standard 49 byte NIST encoding of P384 public keys.
-    fn public_key_bytes(&self) -> &[u8; P384_PUBLIC_KEY_SIZE];
+    fn public_key_bytes(&self, output: &mut [u8; P384_PUBLIC_KEY_SIZE]);
 
     /// Perform ECDH key agreement, writing the raw (un-hashed!) ECDH secret to `output`.
     ///
