@@ -2530,16 +2530,3 @@ fn mix_hash(hasher: &mut impl Sha512, h: &[u8; HASHLEN], m: &[u8]) -> [u8; HASHL
     hasher.finish(&mut output);
     output
 }
-/// Check if the proof of work attached to the first message contains the correct number of leading
-/// zeros.
-fn verify_pow<Application: ApplicationLayer>(hasher: &mut Application::Hash, response: &[u8]) -> bool {
-    if Application::PROOF_OF_WORK_BIT_DIFFICULTY == 0 {
-        return true;
-    }
-    hasher.reset();
-    hasher.update(response);
-    let mut output = [0u8; HASHLEN];
-    hasher.finish(&mut output);
-    let n = u32::from_be_bytes(output[..4].try_into().unwrap());
-    n.leading_zeros() >= Application::PROOF_OF_WORK_BIT_DIFFICULTY
-}
