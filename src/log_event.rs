@@ -7,36 +7,36 @@
  */
 use std::sync::Arc;
 
-use crate::{ApplicationLayer, Session};
+use crate::{ApplicationLayer, Zeta};
 
 /// ZSSP events that might be interesting to log or aggregate into metrics.
 pub enum LogEvent<'a, Application: ApplicationLayer> {
-    ServiceXK1Resend(&'a Arc<Session<Application>>),
-    ServiceXK3Resend(&'a Arc<Session<Application>>),
-    ServiceXKTimeout(&'a Arc<Session<Application>>),
-    ServiceKKStart(&'a Arc<Session<Application>>),
-    ServiceKK1Resend(&'a Arc<Session<Application>>),
-    ServiceKK2Resend(&'a Arc<Session<Application>>),
-    ServiceKKTimeout(&'a Arc<Session<Application>>),
-    ServiceKeyConfirmResend(&'a Arc<Session<Application>>),
-    ServiceKeyConfirmTimeout(&'a Arc<Session<Application>>),
+    ServiceXK1Resend(&'a Arc<Zeta<Application>>),
+    ServiceXK3Resend(&'a Arc<Zeta<Application>>),
+    ServiceXKTimeout(&'a Arc<Zeta<Application>>),
+    ServiceKKStart(&'a Arc<Zeta<Application>>),
+    ServiceKK1Resend(&'a Arc<Zeta<Application>>),
+    ServiceKK2Resend(&'a Arc<Zeta<Application>>),
+    ServiceKKTimeout(&'a Arc<Zeta<Application>>),
+    ServiceKeyConfirmResend(&'a Arc<Zeta<Application>>),
+    ServiceKeyConfirmTimeout(&'a Arc<Zeta<Application>>),
     /// `(fragment_count, fragment_no, packet_type)`
     ReceiveUnassociatedFragment(u8, u8, u8),
     ReceiveUncheckedXK1,
     ReceiveCheckXK1Challenge(bool),
     ReceiveValidXK1,
     ReceiveUncheckedDOSChallenge,
-    ReceiveValidDOSChallenge(&'a Arc<Session<Application>>),
+    ReceiveValidDOSChallenge(&'a Arc<Zeta<Application>>),
     ReceiveUncheckedXK2,
-    ReceiveValidXK2(&'a Arc<Session<Application>>),
+    ReceiveValidXK2(&'a Arc<Zeta<Application>>),
     ReceiveUncheckedXK3,
     ReceiveValidXK3(&'a Application::Data),
     ReceiveUncheckedKK1,
-    ReceiveValidKK1(&'a Arc<Session<Application>>),
+    ReceiveValidKK1(&'a Arc<Zeta<Application>>),
     ReceiveUncheckedKK2,
-    ReceiveValidKK2(&'a Arc<Session<Application>>),
-    ReceiveValidKeyConfirm(&'a Arc<Session<Application>>),
-    ReceiveValidAck(&'a Arc<Session<Application>>),
+    ReceiveValidKK2(&'a Arc<Zeta<Application>>),
+    ReceiveValidKeyConfirm(&'a Arc<Zeta<Application>>),
+    ReceiveValidAck(&'a Arc<Zeta<Application>>),
 }
 impl<'a, Application: ApplicationLayer> std::fmt::Debug for LogEvent<'a, Application> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

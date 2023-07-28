@@ -13,7 +13,7 @@ use crate::crypto::p384::{P384KeyPair, P384PublicKey};
 use crate::crypto::rand_core::{CryptoRng, RngCore};
 use crate::crypto::sha512::{HmacSha512, Sha512};
 use crate::RatchetState;
-use crate::{log_event::LogEvent, Session, RATCHET_SIZE};
+use crate::{log_event::LogEvent, Zeta, RATCHET_SIZE};
 
 /// Trait to implement to integrate the session into an application.
 ///

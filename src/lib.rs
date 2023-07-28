@@ -27,4 +27,4 @@ pub use crate::ratchet_state::RatchetState;
 
 //pub mod crypto_impl;
 mod session;
-pub use session::Session;
+pub use session::Zeta;

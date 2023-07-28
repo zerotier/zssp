@@ -29,10 +29,7 @@ pub fn nonce(packet_type: u8, counter: u64) -> [u8; AES_GCM_IV_SIZE] {
     ret
 }
 
-/// ZeroTier Secure Session Protocol (ZSSP) Session
-///
-/// A FIPS/NIST compliant variant of Noise_XK with hybrid Kyber1024 PQ data forward secrecy.
-pub struct Session<App: ApplicationLayer> {
+pub struct Zeta<App: ApplicationLayer> {
     /// An arbitrary application defined object associated with each session.
     pub application_data: App::Data,
     /// Is true if the local peer acted as Bob, the responder in the initial key exchange.
@@ -75,9 +72,9 @@ pub struct DualKeys {
 }
 #[derive(Default)]
 pub struct Keys {
-    kek: Secret<AES_256_KEY_SIZE>,
-    nk: Secret<AES_256_KEY_SIZE>,
-    kid: u32,
+    kek: Option<Secret<AES_256_KEY_SIZE>>,
+    nk: Option<Secret<AES_256_KEY_SIZE>>,
+    kid: Option<NonZeroU32>,
 }
 
 enum ZsspAutomata<App: ApplicationLayer> {
@@ -105,7 +102,7 @@ enum ZsspAutomata<App: ApplicationLayer> {
 
 pub struct Packet(u32, [u8; AES_GCM_IV_SIZE], Vec<u8>);
 
-impl<App: ApplicationLayer> Session<App> {
+impl<App: ApplicationLayer> Zeta<App> {
     pub fn key_ref(&self, is_next: bool) -> &DualKeys {
         &self.keys[(self.key_index ^ is_next) as usize]
     }
@@ -161,8 +158,8 @@ impl<App: ApplicationLayer> Session<App> {
         let c = u64::from_be_bytes(x1[x1.len() - 8..].try_into().unwrap());
 
         let keys = DualKeys {
-            send: Keys { kek: Secret::new(), nk: Secret::new(), kid: 0 },
-            recv: Keys { kek: Secret::new(), nk: Secret::new(), kid: kid_recv.get() },
+            send: Keys { kek: None, nk: None, kid: None },
+            recv: Keys { kek: None, nk: None, kid: Some(kid_recv) },
         };
         let current_time = app.time();
         Ok((
@@ -332,7 +329,7 @@ impl<App: ApplicationLayer> Session<App> {
             return Err(FailedAuthentication);
         }
 
-        if kid.get() != self.key_ref(false).recv.kid {
+        if Some(kid) != self.key_ref(false).recv.kid {
             return Err(FailedAuthentication);
         }
         if let ZsspAutomata::A1 { state, e_secret, e1_secret, .. } = &self.beta {
@@ -451,11 +448,11 @@ impl<App: ApplicationLayer> Session<App> {
             let (nk_recv, nk_send) = state.split();
 
             let keys = &mut self.keys[self.key_index as usize];
-            keys.send.kid = kid_send.get();
-            keys.send.kek = kek_send;
-            keys.send.nk = nk_send;
-            keys.recv.kek = kek_recv;
-            keys.recv.nk = nk_recv;
+            keys.send.kid = Some(kid_send);
+            keys.send.kek = Some(kek_send);
+            keys.send.nk = Some(nk_send);
+            keys.recv.kek = Some(kek_recv);
+            keys.recv.nk = Some(nk_recv);
             self.ratchet_states[1] = self.ratchet_states[ratchet_i].clone();
             self.ratchet_states[0] = new_ratchet_state;
             let current_time = app.time();
@@ -561,8 +558,8 @@ impl<App: ApplicationLayer> Session<App> {
 
                     let (nk1, nk2) = state.split();
                     let keys = DualKeys {
-                        send: Keys { kek: kek_send, nk: nk1, kid: zeta.kid_send.get() },
-                        recv: Keys { kek: kek_recv, nk: nk2, kid: zeta.kid_recv.get() },
+                        send: Keys { kek: Some(kek_send), nk: Some(nk1), kid: Some(zeta.kid_send) },
+                        recv: Keys { kek: Some(kek_recv), nk: Some(nk2), kid: Some(zeta.kid_recv) },
                     };
                     let current_time = app.time();
                     let session = Self {
@@ -584,7 +581,12 @@ impl<App: ApplicationLayer> Session<App> {
                     };
 
                     let mut c1 = Vec::new();
-                    let tag = App::Aead::encrypt_in_place(session.key_ref(false).send.kek.as_ref(), nonce(PACKET_TYPE_KEY_CONFIRM, c), None, &mut []);
+                    let tag = App::Aead::encrypt_in_place(
+                        session.key_ref(false).send.kek.as_ref().unwrap().as_ref(),
+                        nonce(PACKET_TYPE_KEY_CONFIRM, c),
+                        None,
+                        &mut [],
+                    );
                     c1.extend(&tag);
 
                     Ok((session, Packet(zeta.kid_send.get(), nonce(PACKET_TYPE_KEY_CONFIRM, c), c1)))
@@ -608,16 +610,22 @@ impl<App: ApplicationLayer> Session<App> {
             return Err(FailedAuthentication);
         }
 
-        let is_other = if kid.get() == self.key_ref(true).recv.kid {
+        let is_other = if Some(kid) == self.key_ref(true).recv.kid {
             true
-        } else if kid.get() == self.key_ref(false).recv.kid {
+        } else if Some(kid) == self.key_ref(false).recv.kid {
             false
         } else {
             return Err(OutOfSequence);
         };
 
         let tag = c1[..].try_into().unwrap();
-        if !App::Aead::decrypt_in_place(self.key_ref(is_other).recv.kek.as_ref(), n, None, &mut [], tag) {
+        if !App::Aead::decrypt_in_place(
+            self.key_ref(is_other).recv.kek.as_ref().ok_or(OutOfSequence)?.as_ref(),
+            n,
+            None,
+            &mut [],
+            tag,
+        ) {
             return Err(FailedAuthentication);
         }
 
@@ -649,10 +657,10 @@ impl<App: ApplicationLayer> Session<App> {
         let c = self.send_counter;
         self.send_counter += 1;
         let n = nonce(PACKET_TYPE_ACK, c);
-        let tag = App::Aead::encrypt_in_place(self.key_ref(false).send.kek.as_ref(), n, None, &mut []);
+        let tag = App::Aead::encrypt_in_place(self.key_ref(false).send.kek.as_ref().ok_or(OutOfSequence)?.as_ref(), n, None, &mut []);
         c2.extend(&tag);
 
-        Ok(Packet(self.key_ref(false).send.kid, n, c2))
+        Ok(Packet(self.key_ref(false).send.kid.unwrap().get(), n, c2))
     }
     pub fn trans_s1_to_s2(
         &mut self,
@@ -668,7 +676,7 @@ impl<App: ApplicationLayer> Session<App> {
             return Err(FailedAuthentication);
         }
 
-        if kid.get() != self.key_ref(false).recv.kid {
+        if Some(kid) != self.key_ref(false).recv.kid {
             return Err(OutOfSequence);
         }
         if !matches!(&self.beta, ZsspAutomata::S1) {
@@ -676,7 +684,7 @@ impl<App: ApplicationLayer> Session<App> {
         }
 
         let tag = c2[..].try_into().unwrap();
-        if !App::Aead::decrypt_in_place(self.keys[key_index as usize].recv.kek.as_ref(), n, None, &mut [], tag) {
+        if !App::Aead::decrypt_in_place(self.key_ref(false).recv.kek.as_ref().unwrap().as_ref(), n, None, &mut [], tag) {
             return Err(FailedAuthentication);
         }
         self.timeout_timer = app.time() + (rng.next_u64() as i64 % App::REKEY_AFTER_TIME_MAX_JITTER_MS);
@@ -731,16 +739,16 @@ impl<App: ApplicationLayer> Session<App> {
         let c = self.send_counter;
         self.send_counter += 1;
         let n = nonce(PACKET_TYPE_REKEY_INIT, c);
-        let tag = App::Aead::encrypt_in_place(self.key_ref(false).send.kek.as_ref(), n, None, &mut k1);
+        let tag = App::Aead::encrypt_in_place(self.key_ref(false).send.kek.as_ref().unwrap().as_ref(), n, None, &mut k1);
         k1.extend(&tag);
 
-        self.key_mut(true).recv.kid = kid_recv.get();
+        self.key_mut(true).recv.kid = Some(kid_recv);
         let current_time = app.time();
         self.timeout_timer = current_time + App::EXPIRATION_TIMEOUT_MS;
         self.resend_timer = current_time + App::RETRY_INTERVAL_MS;
         self.beta = ZsspAutomata::R1 { state, e_secret, k1: k1.clone() };
 
-        Ok(Packet(self.key_ref(false).send.kid, n, k1))
+        Ok(Packet(self.key_ref(false).send.kid.unwrap().get(), n, k1))
     }
     pub fn trans_to_r2(
         &mut self,
@@ -757,7 +765,7 @@ impl<App: ApplicationLayer> Session<App> {
             return Err(FailedAuthentication);
         }
 
-        if kid.get() != self.key_ref(false).recv.kid {
+        if Some(kid) != self.key_ref(false).recv.kid {
             return Err(OutOfSequence);
         }
         let should_rekey_as_bob = match &self.beta {
@@ -771,7 +779,7 @@ impl<App: ApplicationLayer> Session<App> {
 
         let i = k1.len() - AES_GCM_TAG_SIZE;
         let tag = k1[i..].try_into().unwrap();
-        if !App::Aead::decrypt_in_place(self.key_ref(false).recv.kek.as_ref(), n, None, &mut k1[..i], tag) {
+        if !App::Aead::decrypt_in_place(self.key_ref(false).recv.kek.as_ref().unwrap().as_ref(), n, None, &mut k1[..i], tag) {
             return Err(FailedAuthentication);
         }
 
@@ -840,7 +848,7 @@ impl<App: ApplicationLayer> Session<App> {
         let c = self.send_counter;
         self.send_counter += 1;
         let n = nonce(PACKET_TYPE_REKEY_INIT, c);
-        let tag = App::Aead::encrypt_in_place(self.key_ref(false).send.kek.as_ref(), n, None, &mut k2);
+        let tag = App::Aead::encrypt_in_place(self.key_ref(false).send.kek.as_ref().unwrap().as_ref(), n, None, &mut k2);
         k2.extend(&tag);
 
         let (rk, rf) = state.get_ask(LABEL_RATCHET_STATE);
@@ -857,12 +865,12 @@ impl<App: ApplicationLayer> Session<App> {
         let (kek_send, kek_recv) = state.get_ask(LABEL_KEX_KEY);
         let (nk_send, nk_recv) = state.split();
 
-        self.key_mut(true).send.kid = kid_send.get();
-        self.key_mut(true).send.kek = kek_send;
-        self.key_mut(true).send.nk = nk_send;
-        self.key_mut(true).recv.kid = kid_recv.get();
-        self.key_mut(true).recv.kek = kek_recv;
-        self.key_mut(true).recv.nk = nk_recv;
+        self.key_mut(true).send.kid = Some(kid_send);
+        self.key_mut(true).send.kek = Some(kek_send);
+        self.key_mut(true).send.nk = Some(nk_send);
+        self.key_mut(true).recv.kid = Some(kid_recv);
+        self.key_mut(true).recv.kek = Some(kek_recv);
+        self.key_mut(true).recv.nk = Some(nk_recv);
         self.ratchet_states[1] = self.ratchet_states[0].clone();
         self.ratchet_states[0] = new_ratchet_state;
         let current_time = app.time();
@@ -871,7 +879,7 @@ impl<App: ApplicationLayer> Session<App> {
         self.resend_timer = current_time + App::RETRY_INTERVAL_MS;
         self.beta = ZsspAutomata::R2 { k2: k2.clone() };
 
-        Ok(Packet(self.key_ref(false).send.kid, n, k2))
+        Ok(Packet(self.key_ref(false).send.kid.unwrap().get(), n, k2))
     }
     pub fn trans_r1_to_s1(
         &mut self,
@@ -885,13 +893,13 @@ impl<App: ApplicationLayer> Session<App> {
             return Err(FailedAuthentication);
         }
 
-        if kid.get() != self.key_ref(false).recv.kid {
+        if Some(kid) != self.key_ref(false).recv.kid {
             return Err(OutOfSequence);
         }
         if let ZsspAutomata::R1 { state, e_secret, .. } = &self.beta {
             let i = k2.len() - AES_GCM_TAG_SIZE;
             let tag = k2[i..].try_into().unwrap();
-            if !App::Aead::decrypt_in_place(self.key_ref(false).recv.kek.as_ref(), n, None, &mut k2[..i], tag) {
+            if !App::Aead::decrypt_in_place(self.key_ref(false).recv.kek.as_ref().unwrap().as_ref(), n, None, &mut k2[..i], tag) {
                 return Err(FailedAuthentication);
             }
 
@@ -940,11 +948,11 @@ impl<App: ApplicationLayer> Session<App> {
             let (kek_recv, kek_send) = state.get_ask(LABEL_KEX_KEY);
             let (nk_recv, nk_send) = state.split();
 
-            self.key_mut(true).send.kid = kid_send.get();
-            self.key_mut(true).send.kek = kek_send;
-            self.key_mut(true).send.nk = nk_send;
-            self.key_mut(true).recv.kek = kek_recv;
-            self.key_mut(true).recv.nk = nk_recv;
+            self.key_mut(true).send.kid = Some(kid_send);
+            self.key_mut(true).send.kek = Some(kek_send);
+            self.key_mut(true).send.nk = Some(nk_send);
+            self.key_mut(true).recv.kek = Some(kek_recv);
+            self.key_mut(true).recv.nk = Some(nk_recv);
             self.ratchet_states[0] = new_ratchet_state;
             self.key_index ^= true;
             let current_time = app.time();
@@ -957,10 +965,10 @@ impl<App: ApplicationLayer> Session<App> {
             let c = self.send_counter;
             self.send_counter += 1;
             let n = nonce(PACKET_TYPE_KEY_CONFIRM, c);
-            let tag = App::Aead::encrypt_in_place(self.key_ref(false).send.kek.as_ref(), n, None, &mut []);
+            let tag = App::Aead::encrypt_in_place(self.key_ref(false).send.kek.as_ref().unwrap().as_ref(), n, None, &mut []);
             c1.extend(&tag);
 
-            Ok(Packet(self.key_ref(false).send.kid, n, c1))
+            Ok(Packet(self.key_ref(false).send.kid.unwrap().get(), n, c1))
         } else {
             Err(OutOfSequence)
         }
@@ -985,10 +993,10 @@ impl<App: ApplicationLayer> Session<App> {
 
         self.send_counter += 1;
         let n = nonce(PACKET_TYPE_DATA, c);
-        let tag = App::Aead::encrypt_in_place(self.key_ref(false).send.kek.as_ref(), n, None, &mut payload);
+        let tag = App::Aead::encrypt_in_place(self.key_ref(false).send.nk.as_ref().unwrap().as_ref(), n, None, &mut payload);
         payload.extend(&tag);
 
-        Ok(Packet(self.key_ref(false).send.kid, n, payload))
+        Ok(Packet(self.key_ref(false).send.kid.unwrap().get(), n, payload))
     }
     pub fn recv(&self, kid: NonZeroU32, n: [u8; AES_GCM_IV_SIZE], mut payload: Vec<u8>) -> Result<Vec<u8>, ReceiveError<App::IoError>> {
         use ReceiveError::*;
@@ -996,9 +1004,9 @@ impl<App: ApplicationLayer> Session<App> {
             return Err(FailedAuthentication);
         }
 
-        let is_other = if kid.get() == self.key_ref(true).recv.kid {
+        let is_other = if Some(kid) == self.key_ref(true).recv.kid {
             true
-        } else if kid.get() == self.key_ref(false).recv.kid {
+        } else if Some(kid) == self.key_ref(false).recv.kid {
             false
         } else {
             return Err(OutOfSequence);
@@ -1006,7 +1014,13 @@ impl<App: ApplicationLayer> Session<App> {
 
         let i = payload.len() - AES_GCM_TAG_SIZE;
         let tag = payload[i..].try_into().unwrap();
-        if !App::Aead::decrypt_in_place(self.key_ref(is_other).recv.kek.as_ref(), n, None, &mut payload[..i], tag) {
+        if !App::Aead::decrypt_in_place(
+            self.key_ref(is_other).recv.nk.as_ref().ok_or(OutOfSequence)?.as_ref(),
+            n,
+            None,
+            &mut payload[..i],
+            tag,
+        ) {
             return Err(FailedAuthentication);
         }
 
