@@ -16,21 +16,20 @@ use std::ops::DerefMut;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, Weak};
 
-use crate::crypto::aes::{AesDec, AesEnc};
-use crate::crypto::aes_gcm::{AesGcmDec, AesGcmEnc, AES_GCM_IV_SIZE, AES_GCM_KEY_SIZE, AES_GCM_TAG_SIZE};
+use crate::crypto::aes::{AesPrp, AES_256_KEY_SIZE};
+use crate::crypto::aes_gcm::{AesGcmAead, AES_GCM_IV_SIZE, AES_GCM_KEY_SIZE, AES_GCM_TAG_SIZE};
 use crate::crypto::p384::{P384KeyPair, P384PublicKey, P384_ECDH_SHARED_SECRET_SIZE, P384_PUBLIC_KEY_SIZE};
 use crate::crypto::pqc_kyber::KYBER_SECRETKEYBYTES;
 use crate::crypto::rand_core::RngCore;
 use crate::crypto::secret::{secure_eq, Secret};
-use crate::crypto::sha512::{HmacSha512, Sha512};
+use crate::crypto::sha512::Sha512;
 
-use crate::error::{FaultType, OpenError, ReceiveError, SendError};
+use crate::error::{OpenError, ReceiveError, SendError};
 use crate::frag_cache::UnassociatedFragCache;
 use crate::fragged::{Assembled, Fragged};
 use crate::handshake_cache::UnassociatedHandshakeCache;
-use crate::indexed_heap::{BinaryHeapIndex, IndexedBinaryHeap};
 use crate::log_event::LogEvent;
-use crate::proto::*;
+use crate::{proto::*, Session};
 use crate::symmetric_state::SymmetricState;
 use crate::{applicationlayer::*, RatchetState};
 
@@ -51,7 +50,6 @@ pub struct ContextInner<Application: ApplicationLayer> {
     unassociated_defrag_cache: Mutex<UnassociatedFragCache<Application::IncomingPacketBuffer>>,
     unassociated_handshake_states: UnassociatedHandshakeCache<Application>,
     /// `session_queue -> state_machine_lock -> state -> session_map`
-    session_queue: Mutex<IndexedBinaryHeap<Weak<Session<Application>>, Reverse<i64>>>,
     session_map: RwLock<HashMap<NonZeroU32, (Weak<Session<Application>>, bool)>>,
     challenge_counter: AtomicU64,
     challenge_antireplay_window: [AtomicU64; CHALLENGE_COUNTER_WINDOW_MAX_OOO],
@@ -111,90 +109,7 @@ pub enum IncomingSessionAction {
     Drop,
 }
 
-/// ZeroTier Secure Session Protocol (ZSSP) Session
-///
-/// A FIPS/NIST compliant variant of Noise_XK with hybrid Kyber1024 PQ data forward secrecy.
-pub struct Session<Application: ApplicationLayer> {
-    /// An arbitrary application defined object associated with each session.
-    pub application_data: Application::Data,
-    /// Is true if the local peer acted as Bob, the responder in the initial key exchange.
-    pub was_bob: bool,
-    /// The receive context associated with this session,
-    /// only this context can receive messages from the remote peer.
-    context: Weak<ContextInner<Application>>,
-    /// Handle into the session queue for changing the update timer.
-    queue_idx: BinaryHeapIndex,
 
-    remote_static_key: Application::PublicKey,
-    send_counter: AtomicU64,
-    /// This bool signals to all threads to stop incrementing the counter and instead error out.
-    session_has_expired: AtomicBool,
-    /// The following is a ring buffer of previously seen counter values, where we use the counter's
-    /// value as the index of the head of the ring buffer.
-    counter_antireplay_window: [AtomicU64; COUNTER_WINDOW_MAX_OOO],
-    /// Enforces atomicity of state machine transitions.
-    /// There is a standard locking sequence,
-    /// it goes `session_queue -> state_machine_lock -> state -> session_map`.
-    /// Any lock can be skipped but they must be locked in that order.
-    state_machine_lock: Mutex<()>,
-    state: RwLock<SessionMutableState<Application>>,
-    defrag: [Mutex<Fragged<Application::IncomingPacketBuffer, MAX_FRAGMENTS>>; SESSION_MAX_FRAGMENTS_OOO],
-    header_send_cipher: Application::PrpEnc,
-    header_receive_cipher: Application::PrpDec,
-    kex_send_cipher: Mutex<Option<Application::AeadEnc>>,
-    kex_receive_cipher: Mutex<Option<Application::AeadDec>>,
-    /// Pre-computed rekeying values.
-    noise_kk_ss: Secret<P384_ECDH_SHARED_SECRET_SIZE>,
-    noise_kk_local_init_h: [u8; HASHLEN],
-    noise_kk_remote_init_h: [u8; HASHLEN],
-}
-/// `AesGcm` is not threadsafe, but it is threadsafe when inside a `Mutex`.
-unsafe impl<Application: ApplicationLayer> Send for Session<Application> {}
-unsafe impl<Application: ApplicationLayer> Sync for Session<Application> {}
-
-/// Session state may only be mutated during atomic transitions of the offer state machine.
-struct SessionMutableState<Application: ApplicationLayer> {
-    ratchet_states: [RatchetState; 2],
-    /// For OOO rekeying reliability we allow our version of Noise CipherState to hold the last two
-    /// session keys, instead of just the most recent one.
-    cipher_states: [Option<SessionKey<Application>>; 2],
-    /// This is the index of `noise_cipher_state` that contains the most recent key.
-    /// It will be attached to fragment headers to help with OOO transport.
-    current_key: usize,
-    /// This defines the exact state of the offer state machine we are in.
-    outgoing_offer: OfferStateMachine<Application>,
-}
-
-/// These offer enums form a state machine.
-/// Documented below are the only legal transitions for this state machine.
-/// A session is initialized with an `outgoing_offer` of either NoiseXKPattern1 or Normal.
-enum OfferStateMachine<Application: ApplicationLayer> {
-    Normal {
-        timeout: i64,
-    }, // -> NoiseKKPattern1, NoiseKKPattern2
-    /// This state uses a lot of memory so we put it on the heap.
-    NoiseXKPattern1or3(Box<NoiseXKAliceHandshake<Application>>), // -> Normal
-    NoiseKKPattern1 {
-        next_retry_time: AtomicI64,
-        timeout: i64,
-        new_key_id: NonZeroU32,
-        noise_e_secret: Application::KeyPair,
-        noise_message: [u8; NoiseKKPattern1or2::SIZE],
-        noise_ck: SymmetricState,
-        noise_h_pskep: [u8; HASHLEN],
-    }, // -> NoiseKKPattern2, KeyConfirm
-    NoiseKKPattern2 {
-        next_retry_time: AtomicI64,
-        timeout: i64,
-        noise_message: [u8; NoiseKKPattern1or2::SIZE],
-        kex_send_key: Secret<AES_GCM_KEY_SIZE>,
-    }, // -> Normal
-    KeyConfirm {
-        next_retry_time: AtomicI64,
-        timeout: i64,
-    }, // -> Normal
-    Null,
-}
 
 pub(crate) struct NoiseXKBobHandshakeState<Application: ApplicationLayer> {
     /// Can never be Null.
@@ -238,29 +153,6 @@ enum NoiseXKAliceHandshakeState<Application: ApplicationLayer> {
     },
 }
 
-struct SessionKey<Application: ApplicationLayer> {
-    remote_key_id: NonZeroU32,
-    local_key_id: NonZeroU32,
-    /// Pool of reusable sending ciphers.
-    receive_cipher_pool: [Mutex<Application::AeadDec>; 8],
-    /// Pool of reusable receiving ciphers.
-    send_cipher_pool: [Mutex<Application::AeadEnc>; 8],
-    /// Rekey at or after this counter.
-    rekey_at_counter: u64,
-    /// Hard error when this counter value is reached or exceeded.
-    expire_at_counter: u64,
-}
-
-macro_rules! byzantine_fault {
-    ($name:expr, $is_natural:ident) => {
-        ReceiveError::ByzantineFault {
-            file: file!(),
-            line: line!(),
-            error: $name,
-            is_naturally_occurring: $is_natural,
-        }
-    };
-}
 
 impl<Application: ApplicationLayer> Context<Application> {
     /// Create a new session context.
@@ -273,7 +165,6 @@ impl<Application: ApplicationLayer> Context<Application> {
             unassociated_defrag_cache: Mutex::new(UnassociatedFragCache::new()),
             unassociated_handshake_states: UnassociatedHandshakeCache::new(),
             session_map: RwLock::new(HashMap::new()),
-            session_queue: Mutex::new(IndexedBinaryHeap::new()),
             challenge_counter: AtomicU64::new(INIT_COUNTER),
             challenge_antireplay_window: std::array::from_fn(|_| AtomicU64::new(0)),
             challenge_salt,
@@ -318,7 +209,7 @@ impl<Application: ApplicationLayer> Context<Application> {
                 }
             };
             let state = session.state.read().unwrap();
-            use OfferStateMachine::*;
+            use ZsspAutomata::*;
             let next_timer = match &state.outgoing_offer {
                 Normal { timeout, .. } => {
                     if *timeout <= current_time {
@@ -542,7 +433,7 @@ impl<Application: ApplicationLayer> Context<Application> {
                         cipher_states: [None, None],
                         // Points at 1 until the first key is confirmed.
                         current_key: 1,
-                        outgoing_offer: OfferStateMachine::NoiseXKPattern1or3(handshake_state),
+                        outgoing_offer: ZsspAutomata::NoiseXKPattern1or3(handshake_state),
                     }),
                     header_send_cipher: Application::PrpEnc::new(a2b_header_key.as_ref()),
                     header_receive_cipher: Application::PrpDec::new(b2a_header_key.as_ref()),
@@ -674,7 +565,7 @@ impl<Application: ApplicationLayer> Context<Application> {
                         // We need to reject fragments marked with this type if they are sent out
                         // of sequence, since an attacker is able to replay them.
                         match &session.state.read().unwrap().outgoing_offer {
-                            OfferStateMachine::NoiseXKPattern1or3(handshake_state) => match &handshake_state.offer {
+                            ZsspAutomata::NoiseXKPattern1or3(handshake_state) => match &handshake_state.offer {
                                 NoiseXKAliceHandshakeState::NoiseXKPattern1 { .. } => {
                                     if incoming_counter >= COUNTER_WINDOW_MAX_SKIP_AHEAD {
                                         return Err(byzantine_fault!(FaultType::FailedAuthentication, false));
@@ -864,7 +755,7 @@ impl<Application: ApplicationLayer> Context<Application> {
             return Err(byzantine_fault!(FaultType::InvalidPacket, false));
         }
 
-        use OfferStateMachine::*;
+        use ZsspAutomata::*;
         match packet_type {
             PACKET_TYPE_NOISE_XK_PATTERN_1 => {
                 // Alice (remote) --> Bob (local)
@@ -1715,7 +1606,7 @@ impl<Application: ApplicationLayer> Context<Application> {
         }
         drop(c);
         if counter >= key.rekey_at_counter {
-            if let OfferStateMachine::Normal { .. } = &state.outgoing_offer {
+            if let ZsspAutomata::Normal { .. } = &state.outgoing_offer {
                 drop(state);
                 if let Ok(timer) = initiate_rekey(&self.0, session, send, current_time) {
                     self.0.session_queue.lock().unwrap().change_priority(session.queue_idx, Reverse(timer));
@@ -1753,7 +1644,7 @@ fn initiate_rekey<Application: ApplicationLayer>(
     let state = session.state.read().unwrap();
     // We may only attempt to rekey if we are not already doing so.
     match &state.outgoing_offer {
-        OfferStateMachine::Normal { .. } => (),
+        ZsspAutomata::Normal { .. } => (),
         _ => return Err(()),
     }
     let sha512 = &mut Application::Hash::new();
@@ -1800,7 +1691,7 @@ fn initiate_rekey<Application: ApplicationLayer>(
 
     drop(state);
     let mut state = session.state.write().unwrap();
-    state.outgoing_offer = OfferStateMachine::NoiseKKPattern1 {
+    state.outgoing_offer = ZsspAutomata::NoiseKKPattern1 {
         next_retry_time: AtomicI64::new(current_time.saturating_add(Application::RETRY_INTERVAL_MS)),
         timeout: current_time.saturating_add(Application::EXPIRATION_TIMEOUT_MS),
         new_key_id,
@@ -1835,13 +1726,13 @@ fn receive_control_fragment<'a, Application: ApplicationLayer, SendFn: FnMut(&mu
     )?;
     drop(c);
     session.update_receive_window(counter);
-    use OfferStateMachine::*;
+    use ZsspAutomata::*;
     return match packet_type {
         PACKET_TYPE_SESSION_REJECTED => {
             if let NoiseXKPattern1or3(_) = &state.outgoing_offer {
                 drop(state);
                 let mut state = session.state.write().unwrap();
-                state.outgoing_offer = OfferStateMachine::Null;
+                state.outgoing_offer = ZsspAutomata::Null;
                 drop(state);
                 drop(kex_lock);
                 Ok(ReceiveResult::Session(session, SessionEvent::Rejected))
@@ -2205,7 +2096,7 @@ impl<Application: ApplicationLayer> Session<Application> {
     /// Check whether this session is established.
     pub fn established(&self) -> bool {
         let state = self.state.read().unwrap();
-        !matches!(&state.outgoing_offer, OfferStateMachine::NoiseXKPattern1or3(_) | OfferStateMachine::Null)
+        !matches!(&state.outgoing_offer, ZsspAutomata::NoiseXKPattern1or3(_) | ZsspAutomata::Null)
     }
     /// The static public key of the remote peer.
     pub fn remote_s_public_key(&self) -> &Application::PublicKey {
@@ -2245,13 +2136,13 @@ impl<Application: ApplicationLayer> Session<Application> {
                 session_map.remove(&pre_id);
             }
         }
-        use OfferStateMachine::*;
+        use ZsspAutomata::*;
         match &state.outgoing_offer {
             NoiseXKPattern1or3(handshake_state) => session_map.remove(&handshake_state.local_key_id),
             NoiseKKPattern1 { new_key_id, .. } => session_map.remove(new_key_id),
             _ => None,
         };
-        state.outgoing_offer = OfferStateMachine::Null;
+        state.outgoing_offer = ZsspAutomata::Null;
     }
 
     /// Get the next outgoing counter value.
@@ -2412,8 +2303,8 @@ impl<Application: ApplicationLayer> NoiseXKAliceHandshake<Application> {
 }
 
 /// Create the normal state of the offer state machine, with the correct timestamps.
-fn new_normal_state<Application: ApplicationLayer>(rand: u64, current_time: i64) -> OfferStateMachine<Application> {
-    OfferStateMachine::Normal {
+fn new_normal_state<Application: ApplicationLayer>(rand: u64, current_time: i64) -> ZsspAutomata<Application> {
+    ZsspAutomata::Normal {
         timeout: current_time
             .saturating_add(Application::REKEY_AFTER_TIME_MS)
             .saturating_sub(rand as i64 % Application::REKEY_AFTER_TIME_MAX_JITTER_MS),

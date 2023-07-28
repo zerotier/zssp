@@ -19,6 +19,13 @@ pub enum RatchetState {
 }
 use RatchetState::*;
 impl RatchetState {
+    pub fn new_incr(key: Secret<RATCHET_SIZE>, fingerprint: Secret<RATCHET_SIZE>, pre_chain_len: u64) -> Self {
+        NonEmpty(NonEmptyRatchetState {
+            key,
+            fingerprint,
+            chain_len: NonZeroU64::new(pre_chain_len + 1).unwrap(),
+        })
+    }
     pub fn new_nonempty(key: Secret<RATCHET_SIZE>, fingerprint: Secret<RATCHET_SIZE>, chain_len: NonZeroU64) -> Self {
         NonEmpty(NonEmptyRatchetState { key, fingerprint, chain_len })
     }

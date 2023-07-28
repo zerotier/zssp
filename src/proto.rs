@@ -6,13 +6,10 @@
  * https://www.zerotier.com/
  */
 
-use std::hash::Hasher;
-use std::mem::size_of;
-
 use crate::crypto::aes_gcm::AES_GCM_TAG_SIZE;
 use crate::crypto::p384::P384_PUBLIC_KEY_SIZE;
 use crate::crypto::pqc_kyber::{KYBER_CIPHERTEXTBYTES, KYBER_PUBLICKEYBYTES};
-use crate::crypto::sha512::{Sha512, SHA512_HASH_SIZE};
+use crate::crypto::sha512::SHA512_HASH_SIZE;
 use hex_literal::hex;
 
 /// Minimum size of a valid physical ZSSP packet of any type. Anything smaller is discarded.
@@ -29,7 +26,7 @@ pub const RATCHET_SIZE: usize = 32;
 /// The combined size of both in bytes must be at most this value.
 ///
 /// If not ZSSP will return `OpenError::DataTooLarge` and refuse to create a session object.
-pub const MAX_IDENTITY_BLOB_SIZE: usize = NoiseXKPattern3::MAX_SIZE - NoiseXKPattern3::MIN_SIZE;
+//pub const MAX_IDENTITY_BLOB_SIZE: usize = NoiseXKPattern3::MAX_SIZE - NoiseXKPattern3::MIN_SIZE;
 
 /// Initial value of 'h'.
 /// echo -n 'Noise_XKhfs+psk2_P384+Kyber1024_AESGCM_SHA512' | shasum -a 512
@@ -42,13 +39,13 @@ pub(crate) const INITIAL_H_REKEY: [u8; SHA512_HASH_SIZE] =
 
 pub(crate) const SESSION_ID_SIZE: usize = 4;
 
-pub(crate) const PACKET_TYPE_NOISE_XK_PATTERN_1: u8 = 0;
-pub(crate) const PACKET_TYPE_NOISE_XK_PATTERN_2: u8 = 1;
-pub(crate) const PACKET_TYPE_NOISE_XK_PATTERN_3: u8 = 2;
+pub(crate) const PACKET_TYPE_HANDSHAKE_HELLO: u8 = 0;
+pub(crate) const PACKET_TYPE_HANDSHAKE_RESPONSE: u8 = 1;
+pub(crate) const PACKET_TYPE_HANDSHAKE_COMPLETION: u8 = 2;
 pub(crate) const PACKET_TYPE_KEY_CONFIRM: u8 = 3;
 pub(crate) const PACKET_TYPE_ACK: u8 = 4;
-pub(crate) const PACKET_TYPE_NOISE_KK_PATTERN_1: u8 = 5;
-pub(crate) const PACKET_TYPE_NOISE_KK_PATTERN_2: u8 = 6;
+pub(crate) const PACKET_TYPE_REKEY_INIT: u8 = 5;
+pub(crate) const PACKET_TYPE_REKEY_COMPLETE: u8 = 6;
 pub(crate) const PACKET_TYPE_SESSION_REJECTED: u8 = 7;
 pub(crate) const PACKET_TYPE_DATA: u8 = 8;
 pub(crate) const PACKET_TYPE_BOB_DOS_CHALLENGE: u8 = 9;
@@ -59,9 +56,9 @@ pub(crate) const PACKET_TYPE_RANGE_TRANSPORT: std::ops::Range<u8> = 3..9;
 /// Since with unreliable transport the first counter could always end up dropped this is
 /// functionally equivalent to initializing to 0.
 pub(crate) const INIT_COUNTER: u64 = 0;
-pub(crate) const LABEL_RATCHET_STATE: u8 = b'R';
-pub(crate) const LABEL_HEADER_KEY: u8 = b'H';
-pub(crate) const LABEL_KEX_KEY: u8 = b'K';
+pub(crate) const LABEL_RATCHET_STATE: &[u8; 4] = b"ASKR";
+pub(crate) const LABEL_HEADER_KEY: &[u8; 4] = b"ASKH";
+pub(crate) const LABEL_KEX_KEY: &[u8; 4] = b"ASKK";
 
 /// Size of keys used during derivation, mixing, etc.
 pub(crate) const HASHLEN: usize = SHA512_HASH_SIZE;
@@ -75,7 +72,6 @@ pub(crate) const CHALLENGE_POW_SIZE: usize = 8;
 pub(crate) const CHALLENGE_SALT_SIZE: usize = 32;
 
 pub(crate) const MAX_NOISE_HANDSHAKE_SIZE: usize = MAX_FRAGMENTS * MIN_TRANSPORT_MTU;
-pub(crate) const CONTROL_PACKET_MAX_SIZE: usize = HEADER_SIZE + NoiseKKPattern1or2::SIZE + AES_GCM_TAG_SIZE;
 pub(crate) const CONTROL_PACKET_MIN_SIZE: usize = HEADER_SIZE + AES_GCM_TAG_SIZE;
 
 /// Determines the number of counters a session will remember. If a counter arrives over
@@ -122,10 +118,6 @@ pub(crate) const MAX_UNASSOCIATED_FRAGMENTS: usize = 32 * 32;
 /// Larger values consume more memory but provide better reliability and DDOS resistance.
 pub(crate) const MAX_UNASSOCIATED_HANDSHAKE_STATES: usize = 32;
 
-/// The maximum size a packet that is not associated to a session may be.
-/// Excludes the size of headers for fragmentation.
-pub(crate) const MAX_UNASSOCIATED_PACKET_SIZE: usize = NoiseXKPattern1::MAX_SIZE - HEADER_SIZE;
-
 /*
 XKhfs+psk2:
     <- s
@@ -153,144 +145,27 @@ Header:
     [7]      packet type
     [8..16]  64-bit counter or packet id
 */
-/// The first packet in Noise_XK exchange containing Alice's ephemeral keys, key id,
-/// and a random symmetric key to protect header fragmentation fields for this session.
-#[repr(C, packed)]
-pub(crate) struct NoiseXKPattern1 {
-    pub header: [u8; HEADER_SIZE],
-    /// -- start prologue --
+pub(crate) const HANDSHAKE_HELLO_MIN_SIZE: usize =
+    SESSION_ID_SIZE + P384_PUBLIC_KEY_SIZE + KYBER_PUBLICKEYBYTES + AES_GCM_TAG_SIZE + AES_GCM_TAG_SIZE;
+pub(crate) const HANDSHAKE_HELLO_MAX_SIZE: usize = HANDSHAKE_HELLO_MIN_SIZE + RATCHET_SIZE;
+
+pub(crate) const HANDSHAKE_RESPONSE_SIZE: usize =
+    P384_PUBLIC_KEY_SIZE + KYBER_CIPHERTEXTBYTES + AES_GCM_TAG_SIZE + SESSION_ID_SIZE + AES_GCM_TAG_SIZE;
+
+pub(crate) const HANDSHAKE_COMPLETION_MIN_SIZE: usize = P384_PUBLIC_KEY_SIZE + AES_GCM_TAG_SIZE + 0 + AES_GCM_TAG_SIZE;
+
+pub(crate) const KEY_CONFIRMATION_SIZE: usize = AES_GCM_TAG_SIZE;
+pub(crate) const ACKNOWLEDGEMENT_SIZE: usize = AES_GCM_TAG_SIZE;
+
+pub(crate) const REKEY_SIZE: usize = P384_PUBLIC_KEY_SIZE + SESSION_ID_SIZE + AES_GCM_TAG_SIZE + AES_GCM_TAG_SIZE;
+
+pub struct Challenge {
     pub alice_key_id: [u8; SESSION_ID_SIZE],
-    /// -- end prologue --
-    pub noise_e: [u8; P384_PUBLIC_KEY_SIZE],
-    /// -- start AES-GCM(k_es) encrypted section
-    pub noise_e1: [u8; KYBER_PUBLICKEYBYTES],
-    /// -- end encrypted section
-    pub e1_gcm_tag: [u8; AES_GCM_TAG_SIZE],
-    pub payload: [u8; RATCHET_SIZE + RATCHET_SIZE + AES_GCM_TAG_SIZE + ChallengeResponse::SIZE],
+    pub challenge: Response,
 }
 
-#[repr(C, packed)]
-pub(crate) struct ChallengeResponse {
+pub struct Response {
     pub challenge_counter: [u8; CHALLENGE_COUNTER_SIZE],
     pub challenge_mac: [u8; CHALLENGE_MAC_SIZE],
     pub challenge_pow: [u8; CHALLENGE_POW_SIZE],
-}
-
-impl NoiseXKPattern1 {
-    pub const PROLOGUE_START: usize = HEADER_SIZE;
-    pub const PROLOGUE_END: usize = Self::PROLOGUE_START + SESSION_ID_SIZE;
-    pub const E1_ENC_START: usize = Self::PROLOGUE_END + P384_PUBLIC_KEY_SIZE;
-    pub const E1_AUTH_START: usize = Self::E1_ENC_START + KYBER_PUBLICKEYBYTES;
-    pub const P_ENC_START: usize = Self::E1_AUTH_START + AES_GCM_TAG_SIZE;
-
-    pub const MIN_SIZE: usize = Self::P_ENC_START + AES_GCM_TAG_SIZE + ChallengeResponse::SIZE;
-    pub const MAX_SIZE: usize = Self::MIN_SIZE + RATCHET_SIZE + RATCHET_SIZE;
-}
-impl ChallengeResponse {
-    pub const SIZE: usize = CHALLENGE_COUNTER_SIZE + CHALLENGE_MAC_SIZE + CHALLENGE_POW_SIZE;
-}
-
-#[repr(C, packed)]
-pub(crate) struct BobDOSChallenge {
-    pub header: [u8; HEADER_SIZE],
-    pub alice_key_id: [u8; SESSION_ID_SIZE],
-    pub challenge_counter: [u8; CHALLENGE_COUNTER_SIZE],
-    pub challenge_mac: [u8; CHALLENGE_MAC_SIZE],
-    pub prior_challenge_pow: [u8; CHALLENGE_POW_SIZE],
-}
-
-impl BobDOSChallenge {
-    pub const SIZE: usize = HEADER_SIZE + SESSION_ID_SIZE + CHALLENGE_COUNTER_SIZE + CHALLENGE_MAC_SIZE + CHALLENGE_POW_SIZE;
-}
-
-/// The response to NoiseXKPattern1 containing Bob's ephemeral keys.
-#[repr(C, packed)]
-pub(crate) struct NoiseXKPattern2 {
-    pub header: [u8; HEADER_SIZE],
-    pub noise_e: [u8; P384_PUBLIC_KEY_SIZE],
-    /// -- start AES-GCM(k_es_ee) encrypted section
-    pub noise_ekem1: [u8; KYBER_CIPHERTEXTBYTES],
-    /// -- end encrypted section
-    pub ekem1_gcm_tag: [u8; AES_GCM_TAG_SIZE],
-    /// -- start AES-GCM(k_es_ee_ekem1_psk) encrypted section
-    pub bob_key_id: [u8; SESSION_ID_SIZE],
-    /// -- end encrypted section
-    pub p_gcm_tag: [u8; AES_GCM_TAG_SIZE],
-}
-
-impl NoiseXKPattern2 {
-    pub const EKEM1_ENC_START: usize = HEADER_SIZE + P384_PUBLIC_KEY_SIZE;
-    pub const EKEM1_AUTH_START: usize = Self::EKEM1_ENC_START + KYBER_CIPHERTEXTBYTES;
-    pub const P_ENC_START: usize = Self::EKEM1_AUTH_START + AES_GCM_TAG_SIZE;
-    pub const P_AUTH_START: usize = Self::P_ENC_START + SESSION_ID_SIZE;
-    pub const P_AUTH_END: usize = Self::P_AUTH_START + AES_GCM_TAG_SIZE;
-    pub const SIZE: usize = Self::P_AUTH_END;
-}
-
-/// Alice's final response containing her identity (she already knows Bob's) and meta-data.
-/// While Alice's response does match what is described in this struct,
-/// this struct is unused because it would contain variable length fields.
-/// It is present here for documentation purposes.
-#[repr(C, packed)]
-pub(crate) struct NoiseXKPattern3 {
-    pub header: [u8; HEADER_SIZE],
-    /// -- start AES-GCM(k_es_ee_ekem1_psk) encrypted section
-    pub noise_s: [u8; P384_PUBLIC_KEY_SIZE],
-    /// -- end encrypted section
-    pub s_gcm_tag: [u8; AES_GCM_TAG_SIZE],
-    /// -- start AES-GCM(k_es_ee_ekem1_psk_se) encrypted section
-    pub alice_blob: [u8; 0],
-    /// -- end encrypted section
-    pub p_gcm_tag: [u8; AES_GCM_TAG_SIZE],
-}
-impl NoiseXKPattern3 {
-    pub const MIN_SIZE: usize = HEADER_SIZE + P384_PUBLIC_KEY_SIZE + AES_GCM_TAG_SIZE + AES_GCM_TAG_SIZE;
-    pub const MAX_SIZE: usize = MAX_NOISE_HANDSHAKE_SIZE;
-}
-
-#[repr(C, packed)]
-pub(crate) struct NoiseKKPattern1or2 {
-    pub header: [u8; HEADER_SIZE],
-    pub noise_e: [u8; P384_PUBLIC_KEY_SIZE],
-    pub key_id: [u8; SESSION_ID_SIZE],
-    pub gcm_tag: [u8; AES_GCM_TAG_SIZE],
-    pub kek_tag: [u8; AES_GCM_TAG_SIZE],
-}
-impl NoiseKKPattern1or2 {
-    pub const ENC_START: usize = HEADER_SIZE + P384_PUBLIC_KEY_SIZE;
-    pub const AUTH_START: usize = Self::ENC_START + SESSION_ID_SIZE;
-    pub const AUTH_END: usize = Self::AUTH_START + AES_GCM_TAG_SIZE;
-    pub const SIZE: usize = Self::AUTH_END + AES_GCM_TAG_SIZE;
-}
-
-// Annotate only these structs as being compatible with byte_array_as_proto_buffer(). These structs
-// are packed flat buffers containing only byte or byte array fields, making them safe to treat
-// this way even on architectures that require type size aligned access.
-pub(crate) trait ProtocolFlatBuffer {}
-impl ProtocolFlatBuffer for NoiseXKPattern1 {}
-impl ProtocolFlatBuffer for NoiseXKPattern2 {}
-impl ProtocolFlatBuffer for NoiseKKPattern1or2 {}
-impl ProtocolFlatBuffer for BobDOSChallenge {}
-impl ProtocolFlatBuffer for ChallengeResponse {}
-
-#[inline(always)]
-pub(crate) fn byte_array_as_proto_buffer<B: ProtocolFlatBuffer>(b: &[u8]) -> &B {
-    assert!(b.len() >= size_of::<B>());
-    unsafe { &*b.as_ptr().cast() }
-}
-
-#[inline(always)]
-pub(crate) fn byte_array_as_proto_buffer_mut<B: ProtocolFlatBuffer>(b: &mut [u8]) -> &mut B {
-    assert!(b.len() >= size_of::<B>());
-    unsafe { &mut *b.as_mut_ptr().cast() }
-}
-/// Trick rust into letting us use a hasher that returns more than 64 bits.
-pub(crate) struct ShaHasher<'a, ShaImpl: Sha512>(pub &'a mut ShaImpl);
-impl<'a, ShaImpl: Sha512> Hasher for ShaHasher<'a, ShaImpl> {
-    fn finish(&self) -> u64 {
-        panic!()
-    }
-    fn write(&mut self, bytes: &[u8]) {
-        self.0.update(bytes)
-    }
 }

@@ -11,7 +11,7 @@ use std::hash::{BuildHasher, Hash, Hasher};
 use std::mem::MaybeUninit;
 
 use crate::fragged::Assembled;
-use crate::proto::{MAX_FRAGMENTS, MAX_UNASSOCIATED_FRAGMENTS, MAX_UNASSOCIATED_PACKETS, MAX_UNASSOCIATED_PACKET_SIZE};
+use crate::proto::{MAX_FRAGMENTS, MAX_UNASSOCIATED_FRAGMENTS, MAX_UNASSOCIATED_PACKETS};
 
 struct PacketMetadata {
     key: u64,
@@ -66,7 +66,7 @@ impl<Fragment> UnassociatedFragCache<Fragment> {
         ret_assembled: &mut Assembled<Fragment>,
     ) {
         debug_assert!(MAX_FRAGMENTS < MAX_UNASSOCIATED_FRAGMENTS);
-        if fragment_no >= fragment_count || (fragment_count as usize) > MAX_FRAGMENTS || fragment_size > MAX_UNASSOCIATED_PACKET_SIZE {
+        if fragment_no >= fragment_count || (fragment_count as usize) > MAX_FRAGMENTS {
             return;
         }
 
@@ -143,7 +143,7 @@ impl<Fragment> UnassociatedFragCache<Fragment> {
 
         let new_size = entry.packet_size + fragment_size as u32;
         let got = 1u64.wrapping_shl(fragment_no as u32);
-        if got & entry.fragment_have == 0 && fragment_count == entry.fragment_count as u8 && new_size <= MAX_UNASSOCIATED_PACKET_SIZE as u32 {
+        if got & entry.fragment_have == 0 && fragment_count == entry.fragment_count as u8 {
             entry.packet_size = new_size;
             entry.fragment_have |= got;
 

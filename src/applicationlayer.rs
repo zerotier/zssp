@@ -7,8 +7,8 @@
  */
 use std::sync::Arc;
 
-use crate::crypto::aes::{AesDec, AesEnc};
-use crate::crypto::aes_gcm::{AesGcmDec, AesGcmEnc};
+use crate::crypto::aes::AesPrp;
+use crate::crypto::aes_gcm::AesGcmAead;
 use crate::crypto::p384::{P384KeyPair, P384PublicKey};
 use crate::crypto::rand_core::{CryptoRng, RngCore};
 use crate::crypto::sha512::{HmacSha512, Sha512};
@@ -24,7 +24,7 @@ use crate::{log_event::LogEvent, Session, RATCHET_SIZE};
 /// and negotiation timeout behavior. Both sides of a ZSSP session **must** have these constants
 /// set to the same values. Changing these constants is generally discouraged unless you know
 /// what you are doing.
-pub trait ApplicationLayer: Sized {
+pub trait ApplicationLayer: Sized + Clone + Copy {
     /// Retry interval for outgoing connection initiation or rekey attempts.
     ///
     /// Retry attempts will be no more often than this, but the delay may end up being
@@ -86,11 +86,9 @@ pub trait ApplicationLayer: Sized {
 
     type Rng: CryptoRng + RngCore;
 
-    type PrpEnc: AesEnc;
-    type PrpDec: AesDec;
+    type Prp: AesPrp;
 
-    type AeadEnc: AesGcmEnc;
-    type AeadDec: AesGcmDec;
+    type Aead: AesGcmAead;
 
     type Hash: Sha512;
     type HmacHash: HmacSha512;
@@ -125,7 +123,7 @@ pub trait ApplicationLayer: Sized {
     /// If this function is configured to always return true, it means peers will not be able to
     /// connect to us unless they had a prior-established ratchet key with us. This is the best way
     /// for the paranoid to enforce a manual allow-list.
-    fn hello_requires_recognized_ratchet(&self, current_time: i64) -> bool;
+    fn hello_requires_recognized_ratchet(&self) -> bool;
     /// This function is called if we, as Alice, attempted to open a session with Bob using a
     /// non-empty ratchet key, but Bob does not have this ratchet key and wants to downgrade
     /// to the zero ratchet key.
@@ -141,7 +139,7 @@ pub trait ApplicationLayer: Sized {
     /// least one party is misconfigured and got their ratchet keys corrupted or lost, or Bob has
     /// been compromised and is being impersonated. An attacker must at least have Bob's private
     /// static key to be able to ask Alice to downgrade.
-    fn initiator_disallows_downgrade(&self, session: &Arc<Session<Self>>, current_time: i64) -> bool;
+    fn initiator_disallows_downgrade(&self) -> bool;
     /// Lookup a specific ratchet state based on its ratchet fingerprint.
     /// This function will be called whenever Alice attempts to connect to us with a non-empty
     /// ratchet fingerprint.
@@ -154,17 +152,12 @@ pub trait ApplicationLayer: Sized {
     /// If `RatchetAction::DowngradeRatchet` is returned we will attempt to convince Alice to downgrade
     /// to the empty ratchet key, restarting the ratchet chain.
     /// If `RatchetAction::FailAuthentication` is returned Alice's connection will be silently dropped.
-    fn restore_by_fingerprint(&self, ratchet_fingerprint: &[u8; RATCHET_SIZE], current_time: i64) -> Result<RatchetState, Self::IoError>;
+    fn restore_by_fingerprint(&self, ratchet_fingerprint: &[u8; RATCHET_SIZE]) -> Result<RatchetState, Self::IoError>;
 
     /// Lookup a specific ratchet state based on the identity of the peer being communicated with.
     /// This function will be called whenever Alice attempts to open a session, or Bob attempts
     /// to verify Alice's identity.
-    fn restore_by_identity(
-        &self,
-        remote_static_key: &Self::PublicKey,
-        application_data: &Self::Data,
-        current_time: i64,
-    ) -> Result<[RatchetState; 2], Self::IoError>;
+    fn restore_by_identity(&self, remote_static_key: &Self::PublicKey, application_data: &Self::Data) -> Result<[RatchetState; 2], Self::IoError>;
     /// Atomically save the given `new_ratchet_states` to persistent storage.
     /// `pre_ratchet_states` contains what should be the previous contents of persistent storage.
     ///
@@ -187,9 +180,11 @@ pub trait ApplicationLayer: Sized {
         application_data: &Self::Data,
         pre_ratchet_states: [&RatchetState; 2],
         new_ratchet_states: [&RatchetState; 2],
-        current_time: i64,
     ) -> Result<(), Self::IoError>;
 
     #[allow(unused)]
     fn event_log(&self, event: LogEvent<Self>, current_time: i64) {}
+
+    fn time(&self) -> i64;
+    fn check_accept_session(&self, remote_static_key: &Self::PublicKey, identity: &[u8]) -> (Option<(bool, Self::Data)>, bool);
 }
