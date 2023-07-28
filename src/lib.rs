@@ -17,6 +17,7 @@ mod ratchet_state;
 //mod packet;
 mod symmetric_state;
 //mod zssp;
+mod challenge;
 
 pub mod error;
 pub use crate::applicationlayer::ApplicationLayer;
