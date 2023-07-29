@@ -27,5 +27,5 @@ pub use crate::ratchet_state::RatchetState;
 //pub use crate::zssp::{Context, ContextInner, IncomingSessionAction, ReceiveResult, SessionEvent};
 
 //pub mod crypto_impl;
-mod session;
-pub use session::Zeta;
+mod zeta;
+pub use zeta::Zeta;

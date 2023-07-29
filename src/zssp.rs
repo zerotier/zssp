@@ -2257,105 +2257,6 @@ impl<Application: ApplicationLayer> NoiseXKAliceHandshake<Application> {
     }
 }
 
-/// Create the normal state of the offer state machine, with the correct timestamps.
-fn new_normal_state<Application: ApplicationLayer>(rand: u64, current_time: i64) -> ZsspAutomata<Application> {
-    ZsspAutomata::Normal {
-        timeout: current_time
-            .saturating_add(Application::REKEY_AFTER_TIME_MS)
-            .saturating_sub(rand as i64 % Application::REKEY_AFTER_TIME_MAX_JITTER_MS),
-    }
-}
-/// Get a timestamp of when this timer should trigger next, or None if it should trigger now.
-fn process_timer(timer: &AtomicI64, wait_time: i64, current_time: i64) -> Option<i64> {
-    let ts = timer.load(Ordering::Relaxed);
-    if ts <= current_time && timer.fetch_max(ts.saturating_add(wait_time), Ordering::Relaxed) == ts {
-        None
-    } else {
-        Some(ts)
-    }
-}
-
-/// Corresponds to Noise `EncryptAndHash`.
-fn encrypt_and_hash<Application: ApplicationLayer>(
-    sha512: &mut Application::Hash,
-    noise_k: &Secret<AES_GCM_KEY_SIZE>,
-    noise_h: &[u8; HASHLEN],
-    packet_type: u8,
-    noise_k_uses: u64,
-    message: &mut [u8],
-) -> [u8; HASHLEN] {
-    let auth_start = message.len() - AES_GCM_TAG_SIZE;
-    let mut gcm = Application::AeadEnc::new(noise_k.as_ref());
-    // Encrypt and add authentication tag.
-    gcm.set_iv(&create_message_nonce(packet_type, INIT_COUNTER + noise_k_uses));
-    gcm.set_aad(noise_h);
-    if auth_start > 0 {
-        gcm.encrypt_in_place(&mut message[..auth_start]);
-    }
-    gcm.finish_encrypt((&mut message[auth_start..]).try_into().unwrap());
-    mix_hash(sha512, noise_h, message)
-}
-/// Corresponds to Noise `DecryptAndHash`.
-fn decrypt_and_hash<Application: ApplicationLayer>(
-    sha512: &mut Application::Hash,
-    noise_k: &Secret<AES_GCM_KEY_SIZE>,
-    noise_h: &[u8; HASHLEN],
-    packet_type: u8,
-    noise_k_uses: u64,
-    message: &mut [u8],
-) -> (bool, [u8; HASHLEN]) {
-    let auth_start = message.len() - AES_GCM_TAG_SIZE;
-    let noise_h_c = mix_hash(sha512, noise_h, message);
-    let mut gcm = Application::AeadDec::new(noise_k.as_ref());
-    gcm.set_iv(&create_message_nonce(packet_type, INIT_COUNTER + noise_k_uses));
-    gcm.set_aad(noise_h);
-    if auth_start > 0 {
-        gcm.decrypt_in_place(&mut message[..auth_start]);
-    }
-    (gcm.finish_decrypt((&message[auth_start..]).try_into().unwrap()), noise_h_c)
-}
-/// Encrypt a standardized control packet.
-fn encrypt_control(
-    c: &mut impl AesGcmEnc,
-    header_cipher: &impl AesEnc,
-    packet_type: u8,
-    counter: u64,
-    remote_key_id: u32,
-    packet: &[u8],
-) -> ([u8; CONTROL_PACKET_MAX_SIZE], usize) {
-    let mut fragment = [0u8; CONTROL_PACKET_MAX_SIZE];
-    let fragment_len = packet.len() + HEADER_SIZE + AES_GCM_TAG_SIZE;
-
-    c.set_iv(&create_message_nonce(packet_type, counter));
-    if !packet.is_empty() {
-        fragment[HEADER_SIZE..fragment_len - AES_GCM_TAG_SIZE].copy_from_slice(packet);
-        c.encrypt_in_place(&mut fragment[HEADER_SIZE..fragment_len - AES_GCM_TAG_SIZE]);
-    }
-    c.finish_encrypt((&mut fragment[fragment_len - AES_GCM_TAG_SIZE..fragment_len]).try_into().unwrap());
-    set_packet_header(&mut fragment, 1, 0, packet_type, remote_key_id, counter);
-    header_cipher.encrypt_in_place((&mut fragment[HEADER_PROTECT_ENC_START..HEADER_PROTECT_ENC_END]).try_into().unwrap());
-    (fragment, fragment_len)
-}
-fn decrypt_control<'a, IoError>(
-    c: &mut impl AesGcmDec,
-    packet_type: u8,
-    counter: u64,
-    fragment: &'a mut [u8],
-) -> Result<&'a mut [u8], ReceiveError<IoError>> {
-    let fragment_len = fragment.len();
-    if !(CONTROL_PACKET_MIN_SIZE..=CONTROL_PACKET_MAX_SIZE).contains(&fragment_len) {
-        return Err(byzantine_fault!(FaultType::InvalidPacket, false));
-    }
-    c.set_iv(&create_message_nonce(packet_type, counter));
-    c.decrypt_in_place(&mut fragment[HEADER_SIZE..fragment_len - AES_GCM_TAG_SIZE]);
-    if !c.finish_decrypt((&fragment[fragment_len - AES_GCM_TAG_SIZE..fragment_len]).try_into().unwrap()) {
-        // This can occur naturally if one of the remote peers resent a
-        // control packet that got delayed and arrived out of order.
-        return Err(byzantine_fault!(FaultType::FailedAuthentication, true));
-    }
-    Ok(&mut fragment[HEADER_SIZE..fragment_len - AES_GCM_TAG_SIZE])
-}
-
 fn set_packet_header(packet: &mut [u8], fragment_count: u8, fragment_no: u8, packet_type: u8, remote_key_id: u32, counter_or_id: u64) {
     debug_assert!(packet.len() >= MIN_PACKET_SIZE);
     debug_assert!(fragment_count > 0);
@@ -2375,20 +2276,6 @@ fn set_packet_header(packet: &mut [u8], fragment_count: u8, fragment_no: u8, pac
     packet[4] = fragment_count;
     packet[5] = fragment_no;
     packet[6] = 0;
-}
-/// Create a 96-bit AES-GCM nonce.
-///
-/// The primary information that we want to be contained here is the counter and the
-/// packet type. The former makes this unique and the latter's inclusion authenticates
-/// it as effectively AAD. Other elements of the header are either not authenticated,
-/// like fragmentation info, or their authentication is implied via key exchange like
-/// the key id.
-fn create_message_nonce(packet_type: u8, counter: u64) -> [u8; AES_GCM_IV_SIZE] {
-    let mut ret = [0u8; AES_GCM_IV_SIZE];
-    ret[3] = packet_type;
-    // Noise requires a big endian counter at the end of the Nonce
-    ret[4..].copy_from_slice(&counter.to_be_bytes());
-    ret
 }
 /// returns `(fragment_count, fragment_no, packet_type, counter, header_nonce)`.
 fn parse_packet_header(packet: &[u8]) -> (u8, u8, u8, u64, [u8; 10]) {
@@ -2478,55 +2365,4 @@ fn generate_key_id<Application: ApplicationLayer>(
             }
         }
     }
-}
-
-impl<Application: ApplicationLayer> SessionKey<Application> {
-    fn new(
-        hmac: &mut Application::HmacHash,
-        ck: SymmetricState,
-        local_key_id: NonZeroU32,
-        remote_key_id: NonZeroU32,
-        current_counter: u64,
-        is_bob: bool,
-    ) -> Self {
-        let (b2a, a2b) = ck.split(hmac);
-        let (receive_key, send_key) = if is_bob {
-            (&a2b, &b2a)
-        } else {
-            (&b2a, &a2b)
-        };
-        let send_cipher_pool = std::array::from_fn(|_| Mutex::new(Application::AeadEnc::new(send_key.as_ref())));
-        let receive_cipher_pool = std::array::from_fn(|_| Mutex::new(Application::AeadDec::new(receive_key.as_ref())));
-        Self {
-            local_key_id,
-            remote_key_id,
-            send_cipher_pool,
-            receive_cipher_pool,
-            rekey_at_counter: current_counter.saturating_add(Application::REKEY_AFTER_USES),
-            expire_at_counter: current_counter.saturating_add(Application::EXPIRE_AFTER_USES),
-        }
-    }
-
-    fn get_send_cipher(&self, counter: u64) -> Result<MutexGuard<Application::AeadEnc>, SendError> {
-        if counter < self.expire_at_counter {
-            Ok(self.send_cipher_pool[(counter as usize) % self.send_cipher_pool.len()].lock().unwrap())
-        } else {
-            Err(SendError::SessionExpired)
-        }
-    }
-
-    fn get_receive_cipher(&self, counter: u64) -> MutexGuard<Application::AeadDec> {
-        let idx = (counter as usize) % self.receive_cipher_pool.len();
-        self.receive_cipher_pool[idx].lock().unwrap()
-    }
-}
-
-/// MixHash to update 'h' during negotiation.
-fn mix_hash(hasher: &mut impl Sha512, h: &[u8; HASHLEN], m: &[u8]) -> [u8; HASHLEN] {
-    let mut output = [0u8; HASHLEN];
-    hasher.reset();
-    hasher.update(h);
-    hasher.update(m);
-    hasher.finish(&mut output);
-    output
 }
