@@ -105,7 +105,7 @@ impl<App: ApplicationLayer> SymmetricState<App> {
         )
     }
     /// Get an additional symmetric key (ASK) that is a collision resistant hash of the transcript,
-    /// is forward secrect and is cryptographically independent from all other produced keys.
+    /// is forward secret and is cryptographically independent from all other produced keys.
     /// Based on Noise's unstable ASK mechanism, using KBKDF instead of HKDF.
     /// https://github.com/noiseprotocol/noise_wiki/wiki/Additional-Symmetric-Keys.
     pub fn get_ask(&self, label: &[u8; 4]) -> (Secret<AES_256_KEY_SIZE>, Secret<AES_256_KEY_SIZE>) {

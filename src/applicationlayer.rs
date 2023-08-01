@@ -128,7 +128,7 @@ pub trait ApplicationLayer: Sized + Clone + Copy {
     /// non-empty ratchet key, but Bob does not have this ratchet key and wants to downgrade
     /// to the zero ratchet key.
     ///
-    /// If it returns true Alice will downgrade their ratchet state to emtpy, potentially ending
+    /// If it returns true Alice will downgrade their ratchet state to empty, potentially ending
     /// their current ratchet chain.
     /// If it returns false then we will consider Bob as having failed authentication, and this
     /// packet will be dropped. The session will continue attempting to connect to Bob.
