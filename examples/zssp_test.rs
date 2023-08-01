@@ -7,6 +7,7 @@
  */
 
 use std::iter::ExactSizeIterator;
+use std::ops::Deref;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Mutex};
@@ -64,7 +65,7 @@ impl zssp_proto::ApplicationLayer for &TestApplication {
     fn restore_by_fingerprint(&self, ratchet_fingerprint: &[u8; RATCHET_SIZE]) -> Result<RatchetState, Self::IoError> {
         let ratchets = self.ratchets.lock().unwrap();
         for rs in ratchets.iter() {
-            if rs.nonempty().map_or(false, |rs| rs.fingerprint.eq_bytes(ratchet_fingerprint)) {
+            if rs.nonempty().map_or(false, |rs| rs.fingerprint.deref().eq(ratchet_fingerprint)) {
                 return Ok(rs.clone());
             }
         }

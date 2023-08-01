@@ -6,9 +6,8 @@
  * https://www.zerotier.com/
  */
 
-use std::num::NonZeroU64;
+use std::{num::NonZeroU64, ops::Deref};
 
-use crate::crypto::Secret;
 use crate::proto::*;
 
 #[derive(Clone, PartialEq, Eq)]
@@ -17,16 +16,17 @@ pub enum RatchetState {
     Empty,
     NonEmpty(NonEmptyRatchetState),
 }
+use zeroize::Zeroizing;
 use RatchetState::*;
 impl RatchetState {
-    pub fn new_incr(key: Secret<RATCHET_SIZE>, fingerprint: Secret<RATCHET_SIZE>, pre_chain_len: u64) -> Self {
+    pub fn new_incr(key: Zeroizing<[u8; RATCHET_SIZE]>, fingerprint: Zeroizing<[u8; RATCHET_SIZE]>, pre_chain_len: u64) -> Self {
         NonEmpty(NonEmptyRatchetState {
             key,
             fingerprint,
             chain_len: NonZeroU64::new(pre_chain_len + 1).unwrap(),
         })
     }
-    pub fn new_nonempty(key: Secret<RATCHET_SIZE>, fingerprint: Secret<RATCHET_SIZE>, chain_len: NonZeroU64) -> Self {
+    pub fn new_nonempty(key: Zeroizing<[u8; RATCHET_SIZE]>, fingerprint: Zeroizing<[u8; RATCHET_SIZE]>, chain_len: NonZeroU64) -> Self {
         NonEmpty(NonEmptyRatchetState { key, fingerprint, chain_len })
     }
     pub fn new_initial_states() -> [RatchetState; 2] {
@@ -48,14 +48,14 @@ impl RatchetState {
         self.nonempty().map_or(0, |rs| rs.chain_len.get())
     }
     pub fn fingerprint(&self) -> Option<&[u8; RATCHET_SIZE]> {
-        self.nonempty().map(|rs| rs.fingerprint.as_ref())
+        self.nonempty().map(|rs| rs.fingerprint.deref())
     }
     pub fn key(&self) -> Option<&[u8; RATCHET_SIZE]> {
         const ZERO_KEY: [u8; RATCHET_SIZE] = [0u8; RATCHET_SIZE];
         match self {
             Null => None,
             Empty => Some(&ZERO_KEY),
-            NonEmpty(rs) => Some(rs.key.as_ref()),
+            NonEmpty(rs) => Some(rs.key.deref()),
         }
     }
 }
@@ -63,7 +63,7 @@ impl RatchetState {
 /// along with the length of the ratchet chain the keys were derived from.
 #[derive(Clone, PartialEq, Eq)]
 pub struct NonEmptyRatchetState {
-    pub key: Secret<RATCHET_SIZE>,
-    pub fingerprint: Secret<RATCHET_SIZE>,
+    pub key: Zeroizing<[u8; RATCHET_SIZE]>,
+    pub fingerprint: Zeroizing<[u8; RATCHET_SIZE]>,
     pub chain_len: NonZeroU64,
 }

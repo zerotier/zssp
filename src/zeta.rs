@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Mutex, Weak};
+use zeroize::Zeroizing;
 
 use crate::challenge::{gen_null_response, respond_to_challenge_in_place};
 use crate::context::{ContextInner, SessionMap};
@@ -50,7 +51,7 @@ pub(crate) struct Zeta<App: ApplicationLayer> {
     key_index: bool,
     keys: [DuplexKey; 2],
     ratchet_states: [RatchetState; 2],
-    pub hk_send: Secret<AES_256_KEY_SIZE>,
+    pub hk_send: Zeroizing<[u8; AES_256_KEY_SIZE]>,
 
     resend_timer: i64,
     timeout_timer: i64,
@@ -66,7 +67,7 @@ pub(crate) struct StateB2<App: ApplicationLayer> {
     ratchet_state: RatchetState,
     kid_send: NonZeroU32,
     pub kid_recv: NonZeroU32,
-    pub hk_send: Secret<AES_256_KEY_SIZE>,
+    pub hk_send: Zeroizing<[u8; AES_256_KEY_SIZE]>,
     e_secret: App::KeyPair,
     noise: SymmetricState<App>,
     pub defrag: DefragBuffer,
@@ -80,8 +81,8 @@ pub(crate) struct DuplexKey {
 
 #[derive(Default)]
 pub(crate) struct Keys {
-    kek: Option<Secret<AES_256_KEY_SIZE>>,
-    nk: Option<Secret<AES_256_KEY_SIZE>>,
+    kek: Option<Zeroizing<[u8; AES_256_KEY_SIZE]>>,
+    nk: Option<Zeroizing<[u8; AES_256_KEY_SIZE]>>,
     kid: Option<NonZeroU32>,
 }
 
@@ -134,7 +135,7 @@ impl<App: ApplicationLayer> SymmetricState<App> {
         App::PublicKey::from_bytes((pub_key).try_into().unwrap())
     }
     fn mix_dh(&mut self, secret: &App::KeyPair, remote: &App::PublicKey) -> Option<()> {
-        if let Some(ecdh) = secret.agree(&remote).map(Secret) {
+        if let Some(ecdh) = secret.agree(&remote).map(Zeroizing::new) {
             self.mix_key(ecdh.as_ref());
             Some(())
         } else {
@@ -372,7 +373,7 @@ pub(crate) fn recv_x1_trans<App: ApplicationLayer>(
     // X2 process ekem1 token.
     let i = x2.len();
     let (ekem1, ekem1_secret) = App::Kem::encapsulate(ctx.rng.lock().unwrap().deref_mut(), (&x1[e1_start..e1_end]).try_into().unwrap())
-        .map(|(ct, secret)| (ct, Secret(secret)))
+        .map(|(ct, secret)| (ct, Zeroizing::new(secret)))
         .ok_or(byzantine_fault!(FailedAuth, true))?;
     x2.extend(ekem1);
     noise.encrypt_and_hash_in_place(to_nonce(PACKET_TYPE_HANDSHAKE_RESPONSE, 0), i, &mut x2);
@@ -408,7 +409,7 @@ pub(crate) fn recv_x1_trans<App: ApplicationLayer>(
         },
     );
 
-    send(&Packet(kid_send.get(), to_nonce(PACKET_TYPE_HANDSHAKE_RESPONSE, c), x2), hk_send.as_ref());
+    send(&Packet(kid_send.get(), to_nonce(PACKET_TYPE_HANDSHAKE_RESPONSE, c), x2), &hk_send);
     Ok(())
 }
 pub(crate) fn recv_x2_trans<App: ApplicationLayer>(
@@ -448,7 +449,7 @@ pub(crate) fn recv_x2_trans<App: ApplicationLayer>(
         }
         let ekem1_secret = e1_secret
             .decapsulate((&x2[i..j]).try_into().unwrap())
-            .map(Secret)
+            .map(Zeroizing::new)
             .ok_or(byzantine_fault!(FailedAuth, true))?;
         noise.mix_key(ekem1_secret.as_ref());
         drop(ekem1_secret);
@@ -547,7 +548,7 @@ pub(crate) fn recv_x2_trans<App: ApplicationLayer>(
         let packet = Packet(kid_send.get(), n, x3);
         zeta.beta = ZsspAutomata::A3 { identity, packet: packet.clone() };
 
-        send(&packet, zeta.hk_send.as_ref());
+        send(&packet, &zeta.hk_send);
         Ok(ReceiveOk::Unassociated)
     } else {
         Err(byzantine_fault!(FailedAuth, true))
@@ -600,7 +601,7 @@ pub(crate) fn recv_x3_trans<App: ApplicationLayer>(
     let create_reject = || {
         let mut d = Vec::<u8>::new();
         let n = to_nonce(PACKET_TYPE_SESSION_REJECTED, c);
-        let tag = App::Aead::encrypt_in_place(kek_send.as_ref(), n, None, &mut []);
+        let tag = App::Aead::encrypt_in_place(&kek_send, n, None, &mut []);
         d.extend(&tag);
         // We just used a counter with this key, but we are not storing
         // the fact we used it in memory. This is currently ok because the
@@ -622,7 +623,7 @@ pub(crate) fn recv_x3_trans<App: ApplicationLayer>(
                         // TODO: add some kind of warning callback or signal.
                     } else {
                         if !responder_silently_rejects {
-                            send(&create_reject(), zeta.hk_send.as_ref())
+                            send(&create_reject(), &zeta.hk_send)
                         }
                         return Err(byzantine_fault!(FailedAuth, true));
                     }
@@ -643,7 +644,7 @@ pub(crate) fn recv_x3_trans<App: ApplicationLayer>(
 
                 let mut c1 = Vec::new();
                 let n = to_nonce(PACKET_TYPE_KEY_CONFIRM, c);
-                let tag = App::Aead::encrypt_in_place(kek_send.as_ref(), n, None, &mut []);
+                let tag = App::Aead::encrypt_in_place(&kek_send, n, None, &mut []);
                 c1.extend(&tag);
 
                 let (nk1, nk2) = noise.split();
@@ -681,14 +682,14 @@ pub(crate) fn recv_x3_trans<App: ApplicationLayer>(
                 entry.insert(Arc::downgrade(&session));
                 ctx.sessions.lock().unwrap().insert(Arc::as_ptr(&session), Arc::downgrade(&session));
 
-                send(&Packet(zeta.kid_send.get(), n, c1), zeta.hk_send.as_ref());
+                send(&Packet(zeta.kid_send.get(), n, c1), &zeta.hk_send);
                 Ok(session)
             }
             Err(e) => Err(ReceiveError::RatchetIoError(e)),
         }
     } else {
         if !responder_silently_rejects {
-            send(&create_reject(), zeta.hk_send.as_ref())
+            send(&create_reject(), &zeta.hk_send)
         }
         Err(byzantine_fault!(FailedAuth, true))
     }
@@ -719,7 +720,7 @@ pub(crate) fn recv_c1_trans<App: ApplicationLayer>(
 
     let specified_key = zeta.key_ref(is_other).recv.kek.as_ref().ok_or(byzantine_fault!(OutOfSequence, true))?;
     let tag = c1[..].try_into().unwrap();
-    if !App::Aead::decrypt_in_place(specified_key.as_ref(), n, None, &mut [], tag) {
+    if !App::Aead::decrypt_in_place(&specified_key, n, None, &mut [], tag) {
         return Err(byzantine_fault!(FailedAuth, true));
     }
     let (_, c) = from_nonce(&n);
@@ -758,10 +759,10 @@ pub(crate) fn recv_c1_trans<App: ApplicationLayer>(
     zeta.send_counter += 1;
     let n = to_nonce(PACKET_TYPE_ACK, c);
     let latest_confirmed_key = zeta.key_ref(false).send.kek.as_ref().ok_or(byzantine_fault!(OutOfSequence, true))?;
-    let tag = App::Aead::encrypt_in_place(latest_confirmed_key.as_ref(), n, None, &mut []);
+    let tag = App::Aead::encrypt_in_place(&latest_confirmed_key, n, None, &mut []);
     c2.extend(&tag);
 
-    send(&Packet(zeta.key_ref(false).send.kid.unwrap().get(), n, c2), zeta.hk_send.as_ref());
+    send(&Packet(zeta.key_ref(false).send.kid.unwrap().get(), n, c2), &zeta.hk_send);
     Ok(just_establised)
 }
 pub(crate) fn recv_c2_trans<App: ApplicationLayer>(
@@ -787,7 +788,7 @@ pub(crate) fn recv_c2_trans<App: ApplicationLayer>(
     }
 
     let tag = c2[..].try_into().unwrap();
-    if !App::Aead::decrypt_in_place(zeta.key_ref(false).recv.kek.as_ref().unwrap().as_ref(), n, None, &mut [], tag) {
+    if !App::Aead::decrypt_in_place(&zeta.key_ref(false).recv.kek.as_ref().unwrap(), n, None, &mut [], tag) {
         return Err(byzantine_fault!(FailedAuth, true));
     }
     let (_, c) = from_nonce(&n);
@@ -819,7 +820,7 @@ pub(crate) fn recv_d_trans<App: ApplicationLayer>(
     }
 
     let tag = d[..].try_into().unwrap();
-    if !App::Aead::decrypt_in_place(zeta.key_ref(true).recv.kek.as_ref().unwrap().as_ref(), n, None, &mut [], tag) {
+    if !App::Aead::decrypt_in_place(&zeta.key_ref(true).recv.kek.as_ref().unwrap(), n, None, &mut [], tag) {
         return Err(byzantine_fault!(FailedAuth, true));
     }
     let (_, c) = from_nonce(&n);
@@ -851,7 +852,7 @@ pub(crate) fn service<App: ApplicationLayer>(
             }
             ZsspAutomata::A3 { packet, .. } => {
                 log!(app, ResentX3(session));
-                return send(packet, Some(zeta.hk_send.as_ref()));
+                return send(packet, Some(&zeta.hk_send));
             }
             ZsspAutomata::S1 => {
                 log!(app, ResentKeyConfirm(session));
@@ -870,11 +871,11 @@ pub(crate) fn service<App: ApplicationLayer>(
         let c = zeta.send_counter;
         zeta.send_counter += 1;
         let n = to_nonce(p, c);
-        let tag = App::Aead::encrypt_in_place(zeta.key_ref(false).send.kek.as_ref().unwrap().as_ref(), n, None, &mut control_payload);
+        let tag = App::Aead::encrypt_in_place(&zeta.key_ref(false).send.kek.as_ref().unwrap(), n, None, &mut control_payload);
         control_payload.extend(&tag);
         send(
             &Packet(zeta.key_ref(false).send.kid.unwrap().get(), n, control_payload),
-            Some(zeta.hk_send.as_ref()),
+            Some(&zeta.hk_send),
         );
     }
 }
@@ -961,10 +962,10 @@ fn timeout_trans<App: ApplicationLayer>(
             let c = zeta.send_counter;
             zeta.send_counter += 1;
             let n = to_nonce(PACKET_TYPE_REKEY_INIT, c);
-            let tag = App::Aead::encrypt_in_place(zeta.key_ref(false).send.kek.as_ref().unwrap().as_ref(), n, None, &mut k1);
+            let tag = App::Aead::encrypt_in_place(&zeta.key_ref(false).send.kek.as_ref().unwrap(), n, None, &mut k1);
             k1.extend(&tag);
 
-            send(&Packet(zeta.key_ref(false).send.kid.unwrap().get(), n, k1), Some(zeta.hk_send.as_ref()));
+            send(&Packet(zeta.key_ref(false).send.kid.unwrap().get(), n, k1), Some(&zeta.hk_send));
         }
         ZsspAutomata::S1 { .. } => {
             log!(app, TimeoutKeyConfirm(session));
@@ -1013,7 +1014,7 @@ pub(crate) fn recv_k1_trans<App: ApplicationLayer>(
 
     let i = k1.len() - AES_GCM_TAG_SIZE;
     let tag = k1[i..].try_into().unwrap();
-    if !App::Aead::decrypt_in_place(zeta.key_ref(false).recv.kek.as_ref().unwrap().as_ref(), n, None, &mut k1[..i], tag) {
+    if !App::Aead::decrypt_in_place(&zeta.key_ref(false).recv.kek.as_ref().unwrap(), n, None, &mut k1[..i], tag) {
         return Err(byzantine_fault!(FailedAuth, true));
     }
     let (_, c) = from_nonce(&n);
@@ -1088,10 +1089,10 @@ pub(crate) fn recv_k1_trans<App: ApplicationLayer>(
     let c = zeta.send_counter;
     zeta.send_counter += 1;
     let n = to_nonce(PACKET_TYPE_REKEY_COMPLETE, c);
-    let tag = App::Aead::encrypt_in_place(zeta.key_ref(false).send.kek.as_ref().unwrap().as_ref(), n, None, &mut k2);
+    let tag = App::Aead::encrypt_in_place(&zeta.key_ref(false).send.kek.as_ref().unwrap(), n, None, &mut k2);
     k2.extend(&tag);
 
-    send(&Packet(zeta.key_ref(false).send.kid.unwrap().get(), n, k2), zeta.hk_send.as_ref());
+    send(&Packet(zeta.key_ref(false).send.kid.unwrap().get(), n, k2), &zeta.hk_send);
     Ok(())
 }
 pub(crate) fn recv_k2_trans<App: ApplicationLayer>(
@@ -1118,7 +1119,7 @@ pub(crate) fn recv_k2_trans<App: ApplicationLayer>(
 
     let i = k2.len() - AES_GCM_TAG_SIZE;
     let tag = k2[i..].try_into().unwrap();
-    if !App::Aead::decrypt_in_place(zeta.key_ref(false).recv.kek.as_ref().unwrap().as_ref(), n, None, &mut k2[..i], tag) {
+    if !App::Aead::decrypt_in_place(&zeta.key_ref(false).recv.kek.as_ref().unwrap(), n, None, &mut k2[..i], tag) {
         return Err(byzantine_fault!(FailedAuth, true));
     }
     let (_, c) = from_nonce(&n);
@@ -1176,10 +1177,10 @@ pub(crate) fn recv_k2_trans<App: ApplicationLayer>(
         let c = zeta.send_counter;
         zeta.send_counter += 1;
         let n = to_nonce(PACKET_TYPE_KEY_CONFIRM, c);
-        let tag = App::Aead::encrypt_in_place(zeta.key_ref(false).send.kek.as_ref().unwrap().as_ref(), n, None, &mut []);
+        let tag = App::Aead::encrypt_in_place(&zeta.key_ref(false).send.kek.as_ref().unwrap(), n, None, &mut []);
         c1.extend(&tag);
 
-        send(&Packet(zeta.key_ref(false).send.kid.unwrap().get(), n, c1), zeta.hk_send.as_ref());
+        send(&Packet(zeta.key_ref(false).send.kid.unwrap().get(), n, c1), &zeta.hk_send);
         Ok(())
     } else {
         unreachable!()
@@ -1213,10 +1214,10 @@ pub(crate) fn send_payload<App: ApplicationLayer>(
     }
 
     let n = to_nonce(PACKET_TYPE_DATA, c);
-    let tag = App::Aead::encrypt_in_place(zeta.key_ref(false).send.nk.as_ref().unwrap().as_ref(), n, None, &mut payload);
+    let tag = App::Aead::encrypt_in_place(&zeta.key_ref(false).send.nk.as_ref().unwrap(), n, None, &mut payload);
     payload.extend(&tag);
 
-    send(&Packet(zeta.key_ref(false).send.kid.unwrap().get(), n, payload), zeta.hk_send.as_ref());
+    send(&Packet(zeta.key_ref(false).send.kid.unwrap().get(), n, payload), &zeta.hk_send);
     Ok(())
 }
 pub(crate) fn recv_payload_in_place<App: ApplicationLayer>(
@@ -1243,7 +1244,7 @@ pub(crate) fn recv_payload_in_place<App: ApplicationLayer>(
     let i = payload.len() - AES_GCM_TAG_SIZE;
     let specified_key = zeta.key_ref(is_other).recv.nk.as_ref().ok_or(byzantine_fault!(OutOfSequence, true))?;
     let tag = payload[i..].try_into().unwrap();
-    if !App::Aead::decrypt_in_place(specified_key.as_ref(), n, None, &mut payload[..i], tag) {
+    if !App::Aead::decrypt_in_place(&specified_key, n, None, &mut payload[..i], tag) {
         return Err(byzantine_fault!(FailedAuth, true));
     }
     let (_, c) = from_nonce(&n);
