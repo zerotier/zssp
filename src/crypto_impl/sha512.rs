@@ -1,36 +1,25 @@
-use sha2::{Sha512, Digest};
+// (c) 2020-2022 ZeroTier, Inc. -- currently proprietary pending actual release and licensing. See LICENSE.md.
 use hmac::{Hmac, Mac};
+use sha2::{Digest, Sha512};
 
-use crate::crypto::sha512::{self, SHA512_HASH_SIZE};
+use crate::crypto::*;
 
-
-
-
-impl sha512::Sha512 for Sha512 {
+impl HashSha512 for Sha512 {
     fn new() -> Self {
         Digest::new()
     }
 
-    fn update(&mut self, input: &[u8]) {
-        Digest::update(self, input)
+    fn update(&mut self, data: &[u8]) {
+        Digest::update(self, data)
     }
 
-    fn finish(&mut self, output: &mut [u8; SHA512_HASH_SIZE]) {
-        output.copy_from_slice(&self.finalize())
-    }
-}
-
-pub type HmacSha512 = Hmac<Sha512>;
-impl sha512::HmacSha512 for HmacSha512 {
-    fn new(key: &[u8]) -> Self {
-        HmacSha512::new_from_slice(key).unwrap()
+    fn finish(self) -> [u8; SHA512_HASH_SIZE] {
+        self.finalize().into()
     }
 
-    fn update(&mut self, input: &[u8]) {
-        Mac::update(self, input)
-    }
-
-    fn finish(&mut self, output: &mut [u8; SHA512_HASH_SIZE]) {
-        output.copy_from_slice(&self.finalize().into_bytes())
+    fn hmac(key: &[u8], data: &[u8]) -> [u8; SHA512_HASH_SIZE] {
+        let mut hm = Hmac::<Sha512>::new_from_slice(key).unwrap();
+        hm.update(data);
+        hm.finalize().into_bytes().into()
     }
 }

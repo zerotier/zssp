@@ -42,17 +42,17 @@ impl<const L: usize> Secret<L> {
     /// Moves bytes into secret, will panic if the slice does not match the size of this secret.
     /// This is unsafe because it will not destroy the contents of its input.
     /// # Safety
-    /// Make sure the contents of the input are securely deleted.
+    /// Make sure the contents of the input are either securely deleted or
+    /// for certain don't need to be deleted.
     pub unsafe fn from_bytes(b: &[u8]) -> Self {
         Self(b.try_into().unwrap())
+    }
+    pub fn as_bytes(&self) -> &[u8] {
+        self.as_ref()
     }
 
     pub fn as_ptr(&self) -> *const u8 {
         self.0.as_ptr()
-    }
-
-    pub fn as_bytes(&self) -> &[u8; L] {
-        &self.0
     }
 
     /// Get the first N bytes of this secret as a fixed length array.

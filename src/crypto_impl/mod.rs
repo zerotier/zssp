@@ -1,6 +1,11 @@
-// (c) 2020-2022 ZeroTier, Inc. -- currently proprietary pending actual release and licensing. See LICENSE.md.
-
-pub mod aes;
-pub mod aes_gcm;
-pub mod p384;
+pub mod aes_impl;
+pub mod kyber1024;
+pub mod p384_impl;
 pub mod sha512;
+
+pub use aes;
+pub use aes_gcm;
+pub use hmac;
+pub use p384;
+pub use pqc_kyber;
+pub use sha2;

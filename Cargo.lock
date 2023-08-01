@@ -233,12 +233,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hex-literal"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6fe2267d4ed49bc07b63801559be28c718ea06c4738b7a03c94df7386d2cde46"
-
-[[package]]
 name = "hkdf"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -448,7 +442,6 @@ version = "0.1.0"
 dependencies = [
  "aes",
  "aes-gcm",
- "hex-literal",
  "hmac",
  "p384",
  "pqc_kyber",

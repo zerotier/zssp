@@ -9,56 +9,79 @@
 use std::iter::ExactSizeIterator;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use zerotier_crypto::p384::{P384KeyPair, P384PublicKey};
-use zerotier_crypto::random;
-use zssp::{IncomingSessionAction, LogEvent, RatchetState, Session, RATCHET_SIZE};
+use aes::Aes256;
+use aes_gcm::Aes256Gcm;
+use p384::{ecdh::EphemeralSecret, PublicKey};
+use rand_core::OsRng;
+use rand_core::RngCore;
+use sha2::Sha512;
+
+use zssp_proto::ratchet_state::RatchetState;
+use zssp_proto::RATCHET_SIZE;
 
 const TEST_MTU: usize = 1500;
 
 struct TestApplication {
+    time: Instant,
     name: &'static str,
     ratchets: Mutex<[RatchetState; 2]>,
 }
 
-impl zssp::ApplicationLayer for TestApplication {
-    type PrpEnc = zerotier_crypto::aes::Aes<true>;
-    type PrpDec = zerotier_crypto::aes::Aes<false>;
+#[allow(unused)]
+impl zssp_proto::ApplicationLayer for &TestApplication {
+    const SETTINGS: zssp_proto::Settings = zssp_proto::Settings {
+        initial_offer_timeout: 10 * 1000,
+        rekey_timeout: 60 * 1000,
+        rekey_after_time: 4000,
+        rekey_after_key_uses: 1 << 30,
+        rekey_time_max_jitter: 1000,
+        resend_time: 250,
+        fragment_assembly_timeout: 10 * 1000,
+    };
+    type Rng = OsRng;
+    type Prp = Aes256;
+    type Aead = Aes256Gcm;
+    type Hash = Sha512;
+    type PublicKey = PublicKey;
+    type KeyPair = EphemeralSecret;
+    type Kem = [u8; pqc_kyber::KYBER_SECRETKEYBYTES];
 
-    type AeadEnc = zerotier_crypto::aes::AesGcm<true>;
-    type AeadDec = zerotier_crypto::aes::AesGcm<false>;
-
-    type Hash = zerotier_crypto::hash::SHA512;
-    type HmacHash = zerotier_crypto::hash::HMACSHA512;
-
-    type KeyPair = zerotier_crypto::p384::P384KeyPair;
-    type PublicKey = zerotier_crypto::p384::P384PublicKey;
-
-    type Rng = zerotier_crypto::random::SecureRandom;
     type IoError = ();
-
-    const REKEY_AFTER_TIME_MS: i64 = 1500;
-    const REKEY_AFTER_TIME_MAX_JITTER_MS: i64 = 1000;
-
-    const RETRY_INTERVAL_MS: i64 = 30;
-    const INITIAL_OFFER_TIMEOUT_MS: i64 = 300;
-    const EXPIRATION_TIMEOUT_MS: i64 = 10000;
-
     type Data = ();
-    type IncomingPacketBuffer = Vec<u8>;
-    type LocalIdentityBlob = [u8; 0];
+
+    fn hello_requires_recognized_ratchet(&self) -> bool {
+        false
+    }
+
+    fn initiator_disallows_downgrade(&self) -> bool {
+        false
+    }
+
+    fn restore_by_fingerprint(&self, ratchet_fingerprint: &[u8; RATCHET_SIZE]) -> Result<RatchetState, Self::IoError> {
+        let ratchets = self.ratchets.lock().unwrap();
+        for rs in ratchets.iter() {
+            if rs.nonempty().map_or(false, |rs| rs.fingerprint.eq_bytes(ratchet_fingerprint)) {
+                return Ok(rs.clone());
+            }
+        }
+        Ok(RatchetState::Null)
+    }
+
+    fn restore_by_identity(&self, remote_static_key: &Self::PublicKey, application_data: &Self::Data) -> Result<[RatchetState; 2], Self::IoError> {
+        Ok(self.ratchets.lock().unwrap().clone())
+    }
 
     fn save_ratchet_state(
         &self,
-        _: &P384PublicKey,
-        _: &Self::Data,
+        remote_static_key: &Self::PublicKey,
+        application_data: &Self::Data,
         pre_ratchet_states: [&RatchetState; 2],
         new_ratchet_states: [&RatchetState; 2],
-        _: i64,
-    ) -> Result<(), ()> {
+    ) -> Result<(), Self::IoError> {
         let mut ratchets = self.ratchets.lock().unwrap();
         ratchets[0] = new_ratchet_states[0].clone();
         ratchets[1] = new_ratchet_states[1].clone();
@@ -68,30 +91,17 @@ impl zssp::ApplicationLayer for TestApplication {
         }
         Ok(())
     }
-    fn restore_by_fingerprint(&self, ratchet_fingerprint: &[u8; RATCHET_SIZE], _: i64) -> Result<RatchetState, ()> {
-        let ratchets = self.ratchets.lock().unwrap();
-        for rs in ratchets.iter() {
-            if rs.nonempty().map_or(false, |rs| rs.fingerprint.eq_bytes(ratchet_fingerprint)) {
-                return Ok(rs.clone());
-            }
-        }
-        Ok(RatchetState::Null)
+
+    fn time(&self) -> i64 {
+        self.time.elapsed().as_millis() as i64
     }
-    fn restore_by_identity(&self, _: &Self::PublicKey, _: &Self::Data, _: i64) -> Result<[RatchetState; 2], ()> {
-        Ok(self.ratchets.lock().unwrap().clone())
+
+    fn check_accept_session(&self, remote_static_key: &Self::PublicKey, identity: &[u8]) -> (Option<(bool, Self::Data)>, bool) {
+        (Some((false, ())), false)
     }
-    fn hello_requires_recognized_ratchet(&self, _: i64) -> bool {
-        false
-    }
-    fn initiator_disallows_downgrade(&self, _: &Arc<Session<Self>>, _: i64) -> bool {
-        true
-    }
-    fn event_log(&self, event: LogEvent<'_, Self>, _: i64) {
-        println!("> [{}] {:?}", self.name, event);
-        match event {
-            LogEvent::ServiceKKTimeout(_) => panic!(),
-            _ => (),
-        }
+
+    fn event_log(&self, event: zssp_proto::LogEvent<Self>) {
+        println!(">[{}] {:?}", self.name, event);
     }
 }
 
@@ -101,12 +111,11 @@ fn alice_main(
     alice_app: &TestApplication,
     alice_out: mpsc::SyncSender<Vec<u8>>,
     alice_in: mpsc::Receiver<Vec<u8>>,
-    alice_keypair: P384KeyPair,
-    bob_pubkey: P384PublicKey,
+    alice_keypair: EphemeralSecret,
+    bob_pubkey: PublicKey,
 ) {
     let startup_time = std::time::Instant::now();
-    let context = zssp::Context::<TestApplication>::new(alice_keypair, random::SecureRandom);
-    let mut data_buf = [0u8; 65536];
+    let context = zssp_proto::Context::<&TestApplication>::new(alice_keypair, OsRng);
     let mut next_service = startup_time.elapsed().as_millis() as i64 + 500;
     let test_data = [1u8; TEST_MTU * 10];
     let mut up = false;
@@ -123,8 +132,7 @@ fn alice_main(
                         TEST_MTU,
                         bob_pubkey.clone(),
                         (),
-                        [],
-                        startup_time.elapsed().as_millis() as i64,
+                        Vec::new(),
                     )
                     .unwrap(),
             );
@@ -134,24 +142,22 @@ fn alice_main(
         loop {
             let pkt = alice_in.try_recv();
             if let Ok(pkt) = pkt {
-                if (random::xorshift64_random() as u32) <= packet_success_rate {
-                    use zssp::SessionEvent::*;
+                if OsRng.next_u32() <= packet_success_rate {
+                    use zssp_proto::result::ReceiveError::*;
+                    use zssp_proto::result::ReceiveOk::*;
+                    use zssp_proto::result::SessionEvent::*;
                     match context.receive(
                         alice_app,
-                        || panic!(),
-                        |_, _, _| panic!(),
                         |b| alice_out.send(b.to_vec()).is_ok(),
                         TEST_MTU,
                         |_| Some((|b: &mut [u8]| alice_out.send(b.to_vec()).is_ok(), TEST_MTU)),
                         &0,
-                        &mut data_buf,
                         pkt,
-                        current_time,
                     ) {
-                        Ok(zssp::ReceiveResult::Unassociated) => {
+                        Ok(Unassociated) => {
                             //println!("[alice] ok");
                         }
-                        Ok(zssp::ReceiveResult::Session(_, event)) => match event {
+                        Ok(Session(_, event)) => match event {
                             Established => {
                                 up = true;
                             }
@@ -163,11 +169,10 @@ fn alice_main(
                             Rejected => panic!(),
                             Control => (),
                         },
-                        Ok(zssp::ReceiveResult::Rejected) => panic!(),
                         Err(e) => {
                             println!("[alice] ERROR {:?}", e);
-                            if let zssp::error::ReceiveError::ByzantineFault { is_naturally_occurring, .. } = e {
-                                assert!(is_naturally_occurring)
+                            if let ByzantineFault { unnatural, .. } = e {
+                                assert!(!unnatural)
                             }
                         }
                     }
@@ -182,26 +187,20 @@ fn alice_main(
                 .send(
                     alice_session.as_ref().unwrap(),
                     |b| alice_out.send(b.to_vec()).is_ok(),
-                    &mut data_buf[..TEST_MTU],
-                    &test_data[..1400 + ((random::xorshift64_random() as usize) % (test_data.len() - 1400))],
-                    current_time,
+                    TEST_MTU,
+                    test_data[..1400 + ((OsRng.next_u64() as usize) % (test_data.len() - 1400))].to_vec(),
                 )
                 .unwrap();
         } else {
             thread::sleep(Duration::from_millis(10));
         }
         // TODO: we need to more comprehensively test if re-opening the session works
-        if (random::xorshift64_random() as u32) <= ((u32::MAX as f64) * 0.0000025) as u32 {
+        if OsRng.next_u32() <= ((u32::MAX as f64) * 0.0000025) as u32 {
             alice_session = None;
         }
 
         if current_time >= next_service {
-            next_service = current_time
-                + context.service(
-                    alice_app,
-                    |_| Some((|b: &mut [u8]| alice_out.send(b.to_vec()).is_ok(), TEST_MTU)),
-                    current_time,
-                );
+            next_service = current_time + context.service(alice_app, |_| Some((|b: &mut [u8]| alice_out.send(b.to_vec()).is_ok(), TEST_MTU)));
         }
     }
 }
@@ -212,12 +211,10 @@ fn bob_main(
     bob_app: &TestApplication,
     bob_out: mpsc::SyncSender<Vec<u8>>,
     bob_in: mpsc::Receiver<Vec<u8>>,
-    bob_keypair: P384KeyPair,
+    bob_keypair: EphemeralSecret,
 ) {
     let startup_time = std::time::Instant::now();
-    let context = zssp::Context::<TestApplication>::new(bob_keypair, random::SecureRandom);
-    let mut data_buf = [0u8; 65536];
-    let mut data_buf_2 = [0u8; TEST_MTU];
+    let context = zssp_proto::Context::<&TestApplication>::new(bob_keypair, OsRng);
     let mut last_speed_metric = startup_time.elapsed().as_millis() as i64;
     let mut next_service = last_speed_metric + 500;
     let mut transferred = 0u64;
@@ -229,22 +226,20 @@ fn bob_main(
         let current_time = startup_time.elapsed().as_millis() as i64;
 
         if let Ok(pkt) = pkt {
-            if (random::xorshift64_random() as u32) <= packet_success_rate {
-                use zssp::SessionEvent::*;
+            if OsRng.next_u32() <= packet_success_rate {
+                use zssp_proto::result::ReceiveError::*;
+                use zssp_proto::result::ReceiveOk::*;
+                use zssp_proto::result::SessionEvent::*;
                 match context.receive(
                     bob_app,
-                    || IncomingSessionAction::Allow,
-                    |_, _, _| (Some((true, ())), false),
                     |b| bob_out.send(b.to_vec()).is_ok(),
                     TEST_MTU,
                     |_| Some((|b: &mut [u8]| bob_out.send(b.to_vec()).is_ok(), TEST_MTU)),
                     &0,
-                    &mut data_buf,
                     pkt,
-                    current_time,
                 ) {
-                    Ok(zssp::ReceiveResult::Unassociated) => {}
-                    Ok(zssp::ReceiveResult::Session(s, event)) => match event {
+                    Ok(Unassociated) => {}
+                    Ok(Session(s, event)) => match event {
                         NewSession => {
                             println!("[bob] new session, took {}s", current_time as f32 / 1000.0);
                             let _ = bob_session.replace(s);
@@ -252,20 +247,17 @@ fn bob_main(
                         Data(data) => {
                             assert!(!data.is_empty());
                             //println!("[bob] received {}", data.len());
-                            context
-                                .send(&s, |b| bob_out.send(b.to_vec()).is_ok(), &mut data_buf_2, data.as_mut(), current_time)
-                                .unwrap();
                             transferred += data.len() as u64 * 2; // *2 because we are also sending this many bytes back
+                            context.send(&s, |b| bob_out.send(b.to_vec()).is_ok(), TEST_MTU, data).unwrap();
                         }
                         Established => panic!(),
                         Rejected => panic!(),
                         Control => (),
                     },
-                    Ok(zssp::ReceiveResult::Rejected) => panic!(),
                     Err(e) => {
                         println!("[bob] ERROR {:?}", e);
-                        if let zssp::error::ReceiveError::ByzantineFault { is_naturally_occurring, .. } = e {
-                            assert!(is_naturally_occurring)
+                        if let ByzantineFault { unnatural, .. } = e {
+                            assert!(!unnatural)
                         }
                     }
                 }
@@ -283,12 +275,7 @@ fn bob_main(
         }
 
         if current_time >= next_service {
-            next_service = current_time
-                + context.service(
-                    bob_app,
-                    |_| Some((|b: &mut [u8]| bob_out.send(b.to_vec()).is_ok(), TEST_MTU)),
-                    current_time,
-                );
+            next_service = current_time + context.service(bob_app, |_| Some((|b: &mut [u8]| bob_out.send(b.to_vec()).is_ok(), TEST_MTU)));
         }
     }
 }
@@ -297,14 +284,19 @@ fn core(time: u64, packet_success_rate: u32) {
     let run = &AtomicBool::new(true);
 
     let shared_ratchet_states = RatchetState::new_initial_states();
-    let alice_keypair = P384KeyPair::generate();
+    let alice_keypair = EphemeralSecret::random(&mut OsRng);
     let alice_app = TestApplication {
+        time: Instant::now(),
         name: "alice",
         ratchets: Mutex::new(shared_ratchet_states.clone()),
     };
-    let bob_keypair = P384KeyPair::generate();
-    let bob_pubkey = bob_keypair.to_public_key();
-    let bob_app = TestApplication { name: "bob", ratchets: Mutex::new(shared_ratchet_states) };
+    let bob_keypair = EphemeralSecret::random(&mut OsRng);
+    let bob_pubkey = bob_keypair.public_key();
+    let bob_app = TestApplication {
+        time: Instant::now(),
+        name: "bob",
+        ratchets: Mutex::new(shared_ratchet_states),
+    };
 
     let (alice_out, bob_in) = mpsc::sync_channel::<Vec<u8>>(256);
     let (bob_out, alice_in) = mpsc::sync_channel::<Vec<u8>>(256);
@@ -323,7 +315,7 @@ fn core(time: u64, packet_success_rate: u32) {
 fn main() {
     let args = std::env::args();
     let packet_success_rate = if args.len() <= 1 {
-        let default_success_rate = 1.0;
+        let default_success_rate = 0.5;
         ((u32::MAX as f64) * default_success_rate) as u32
     } else {
         ((u32::MAX as f64) * f64::from_str(args.last().unwrap().as_str()).unwrap()) as u32

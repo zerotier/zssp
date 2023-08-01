@@ -10,11 +10,16 @@ name = "zssp_proto"
 path = "src/lib.rs"
 doc = true
 
-[dependencies]
-pqc_kyber = { version = "0.6.0", default-features = false, features = ["kyber1024", "std"] }
-rand_core = "0.6.4"
-hex-literal = "0.4.1"
+[features]
+default = ["debug"]
+logging = []
+debug = ["logging"]
 
+
+[dependencies]
+rand_core = "0.6.4"
+
+pqc_kyber = { version = "0.6.0", default-features = false, features = ["kyber1024", "std"] }
 aes-gcm = "0.10.2"
 aes = "0.8.3"
 p384 = "0.13.0"

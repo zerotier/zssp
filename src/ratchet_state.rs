@@ -8,8 +8,8 @@
 
 use std::num::NonZeroU64;
 
-use crate::crypto::secret::Secret;
-use crate::RATCHET_SIZE;
+use crate::crypto::Secret;
+use crate::proto::*;
 
 #[derive(Clone, PartialEq, Eq)]
 pub enum RatchetState {

@@ -5,15 +5,42 @@
  * (c) ZeroTier, Inc.
  * https://www.zerotier.com/
  */
-use std::sync::Arc;
+use rand_core::{CryptoRng, RngCore};
 
-use crate::crypto::aes::AesPrp;
-use crate::crypto::aes_gcm::AesGcmAead;
-use crate::crypto::p384::{P384KeyPair, P384PublicKey};
-use crate::crypto::rand_core::{CryptoRng, RngCore};
-use crate::crypto::sha512::{HmacSha512, Sha512};
-use crate::RatchetState;
-use crate::{log_event::LogEvent, Zeta, RATCHET_SIZE};
+use crate::crypto::{AeadAesGcm, HashSha512, KeyPairP384, PrivateKeyKyber1024, PrpAes256, PublicKeyP384};
+use crate::proto::RATCHET_SIZE;
+use crate::ratchet_state::RatchetState;
+
+#[cfg(feature = "logging")]
+use crate::LogEvent;
+
+pub struct Settings {
+    pub initial_offer_timeout: i64,
+    pub rekey_timeout: i64,
+    pub rekey_after_time: i64,
+    pub rekey_after_key_uses: u64,
+    pub rekey_time_max_jitter: i64,
+    pub resend_time: i64,
+    pub fragment_assembly_timeout: i64,
+}
+impl Default for Settings {
+    fn default() -> Self {
+        Self::new_ms()
+    }
+}
+impl Settings {
+    pub const fn new_ms() -> Self {
+        Self {
+            initial_offer_timeout: 10 * 1000,
+            rekey_timeout: 60 * 1000,
+            rekey_after_time: 60 * 60 * 1000,
+            rekey_after_key_uses: 1 << 30,
+            rekey_time_max_jitter: 10 * 60 * 1000,
+            resend_time: 1000,
+            fragment_assembly_timeout: 10 * 1000,
+        }
+    }
+}
 
 /// Trait to implement to integrate the session into an application.
 ///
@@ -24,95 +51,26 @@ use crate::{log_event::LogEvent, Zeta, RATCHET_SIZE};
 /// and negotiation timeout behavior. Both sides of a ZSSP session **must** have these constants
 /// set to the same values. Changing these constants is generally discouraged unless you know
 /// what you are doing.
-pub trait ApplicationLayer: Sized + Clone + Copy {
-    /// Retry interval for outgoing connection initiation or rekey attempts.
-    ///
-    /// Retry attempts will be no more often than this, but the delay may end up being
-    /// slightly more in some cases depending on where in the cycle the initial attempt
-    /// falls.
-    ///
-    /// Default value is 1 second.
-    const RETRY_INTERVAL_MS: i64 = 1000;
-    /// Timeout for how long Alice should wait for Bob to confirm that the Noise_XK handshake
-    /// was completed successfully. The handshake attempt will be assumed as failed and
-    /// restarted if Bob does not respond by this cut-off.
-    ///
-    /// Default is 10 seconds.
-    const INITIAL_OFFER_TIMEOUT_MS: i64 = 10 * 1000;
-    /// Timeout for how long ZSSP should wait before expiring and closing a session when it has
-    /// lingered in certain states for too long, primarily the rekeying states.
-    /// If a remote peer does not send the correct information to rekey a session before this
-    /// timeout then the session will close.
-    ///
-    /// Default is 1 minute.
-    const EXPIRATION_TIMEOUT_MS: i64 = 60 * 1000;
-    /// Start attempting to rekey after a key has been in use for this many milliseconds.
-    ///
-    /// Default is 1 hour.
-    const REKEY_AFTER_TIME_MS: i64 = 1000 * 60 * 60;
-    /// Maximum random jitter to subtract from the rekey after time timer.
-    /// Must be greater than 0 and less than u32::MAX.
-    /// This prevents rekeying from occurring predictably on the hour, so traffic analysis is harder.
-    ///
-    /// Default is 10 minutes.
-    const REKEY_AFTER_TIME_MAX_JITTER_MS: i64 = 1000 * 60 * 10;
-    /// Rekey after this many key uses.
-    ///
-    /// The default is 1/4 the recommended NIST limit for AES-GCM. Unless you are transferring
-    /// a massive amount of data REKEY_AFTER_TIME_MS is probably going to kick in first.
-    const REKEY_AFTER_USES: u64 = 1073741824;
-
-    /// Hard expiration of a key after this many uses.
-    ///
-    /// Attempting to encrypt more than this many messages with a key will cause a hard error
-    /// and prevent all encryption.
-    /// This should basically never occur in practice because of rekeying.
-    ///
-    /// Default value is 2^32 - 1, one less than NIST's recommended limit.
-    /// https://nvlpubs.nist.gov/nistpubs/Legacy/SP/nistspecialpublication800-38d.pdf
-    const EXPIRE_AFTER_USES: u64 = 4294967295;
-
-    /// Determines how computationally difficult the proof of work is when Bob challenges Alice.
-    /// It is extremely computationally expensive on Bob to process Alice's initiation packet. So
-    /// Bob has the option to challenge Alice to prove ownership of address and to prove work before
-    /// they attempt process Alice's initiation packet.
-    /// The amount of computational work Alice has to prove increases exponentially with this value.
-    ///
-    /// This value must be between 0 and 32 (inclusive).
-    ///
-    /// Default is 13, which, on a modern processor, ensures Alice will have to do about as much
-    /// computational work as Bob will when they process Alice's initiation packet.
-    const PROOF_OF_WORK_BIT_DIFFICULTY: u32 = 13;
+pub trait ApplicationLayer: Sized {
+    const SETTINGS: Settings = Settings::new_ms();
 
     type Rng: CryptoRng + RngCore;
 
-    type Prp: AesPrp;
+    type Prp: PrpAes256;
 
-    type Aead: AesGcmAead;
+    type Aead: AeadAesGcm;
 
-    type Hash: Sha512;
-    type HmacHash: HmacSha512;
+    type Hash: HashSha512;
 
-    type PublicKey: P384PublicKey;
-    type KeyPair: P384KeyPair<PublicKey = Self::PublicKey, Rng = Self::Rng>;
+    type PublicKey: PublicKeyP384;
+    type KeyPair: KeyPairP384<Self::Rng, PublicKey = Self::PublicKey>;
+    type Kem: PrivateKeyKyber1024<Self::Rng>;
 
     type IoError: std::fmt::Debug;
 
     /// Type for arbitrary opaque object for use by the application that is attached to
     /// each session.
     type Data;
-
-    /// Data type for incoming packet buffers.
-    ///
-    /// This can be something like `Vec<u8>` or `Box<[u8]>` or it can be something like a pooled
-    /// reusable buffer that automatically returns to its pool when ZSSP is done with it. ZSSP may
-    /// hold these for a short period of time when assembling fragmented packets on the receive
-    /// path.
-    type IncomingPacketBuffer: AsRef<[u8]> + AsMut<[u8]>;
-    /// Data type for giving ZSSP temporary ownership of a buffer containing the local party's
-    /// identity.
-    /// It will be dropped as soon as the session is established.
-    type LocalIdentityBlob: AsRef<[u8]>;
 
     /// This function will be called whenever Alice's initial Hello packet contains the empty ratchet
     /// fingerprint. Brand new peers will always connect to Bob with the empty ratchet, but from
@@ -128,7 +86,7 @@ pub trait ApplicationLayer: Sized + Clone + Copy {
     /// non-empty ratchet key, but Bob does not have this ratchet key and wants to downgrade
     /// to the zero ratchet key.
     ///
-    /// If it returns true Alice will downgrade their ratchet state to empty, potentially ending
+    /// If it returns true Alice will downgrade their ratchet state to emtpy, potentially ending
     /// their current ratchet chain.
     /// If it returns false then we will consider Bob as having failed authentication, and this
     /// packet will be dropped. The session will continue attempting to connect to Bob.
@@ -182,8 +140,8 @@ pub trait ApplicationLayer: Sized + Clone + Copy {
         new_ratchet_states: [&RatchetState; 2],
     ) -> Result<(), Self::IoError>;
 
-    #[allow(unused)]
-    fn event_log(&self, event: LogEvent<Self>, current_time: i64) {}
+    #[cfg(feature = "logging")]
+    fn event_log(&self, event: LogEvent<Self>);
 
     fn time(&self) -> i64;
     fn check_accept_session(&self, remote_static_key: &Self::PublicKey, identity: &[u8]) -> (Option<(bool, Self::Data)>, bool);
