@@ -76,12 +76,12 @@ impl<App: ApplicationLayer> Context<App> {
     pub fn open(
         &self,
         app: App,
-        send: impl FnMut(&mut [u8]) -> bool,
+        send: impl FnMut(Vec<u8>) -> bool,
         mut mtu: usize,
         static_remote_key: App::PublicKey,
         application_data: App::Data,
         identity: Vec<u8>,
-    ) -> Result<Arc<Session<App>>, OpenError<App::IoError>> {
+    ) -> Result<Arc<Session<App>>, OpenError<App::DiskError>> {
         mtu = mtu.max(MIN_TRANSPORT_MTU);
         let ctx = &self.0;
 
@@ -99,15 +99,15 @@ impl<App: ApplicationLayer> Context<App> {
         )
     }
 
-    pub fn receive<'a, SendFn: FnMut(&mut [u8]) -> bool>(
+    pub fn receive<'a, SendFn: FnMut(Vec<u8>) -> bool>(
         &self,
         app: App,
-        send_unassociated_reply: impl FnMut(&mut [u8]) -> bool,
+        send_unassociated_reply: impl FnMut(Vec<u8>) -> bool,
         mut send_unassociated_mtu: usize,
         send_to: impl FnOnce(&Arc<Session<App>>) -> Option<(SendFn, usize)>,
         remote_address: &impl Hash,
         raw_fragment: Vec<u8>,
-    ) -> Result<ReceiveOk<App>, ReceiveError<App::IoError>> {
+    ) -> Result<ReceiveOk<App>, ReceiveError<App::DiskError>> {
         use crate::result::FaultType::*;
         send_unassociated_mtu = send_unassociated_mtu.max(MIN_TRANSPORT_MTU);
         let ctx = &self.0;
@@ -136,7 +136,9 @@ impl<App: ApplicationLayer> Context<App> {
                         Ok(())
                     } else if PACKET_TYPE_USES_COUNTER_RANGE.contains(&p) {
                         if !zeta.check_counter_window(c) {
-                            return Err(byzantine_fault!(ExpiredCounter, true));
+                            // The counter window has finite memory and so will occasionally give
+                            // false positives on very out-of-order packets.
+                            return Err(byzantine_fault!(ExpiredCounter, false));
                         }
                         Ok(())
                     } else if p == PACKET_TYPE_HANDSHAKE_COMPLETION {
@@ -148,10 +150,10 @@ impl<App: ApplicationLayer> Context<App> {
                 })?;
                 if let Some((pn, mut assembled_packet)) = result {
                     // Process recv zeta layer.
-                    let send_associated = |Packet(kid, nonce, payload): &Packet, hk: &[u8; AES_256_KEY_SIZE]| {
+                    let send_associated = |Packet(kid, nonce, payload): &Packet, hk: Option<&[u8; AES_256_KEY_SIZE]>| {
                         if let Some((send_fragment, mut mtu)) = send_to(&session) {
                             mtu = mtu.max(MIN_TRANSPORT_MTU);
-                            send_with_fragmentation::<App>(send_fragment, mtu, *kid, to_packet_nonce(&nonce), payload, Some(hk));
+                            send_with_fragmentation::<App>(send_fragment, mtu, *kid, to_packet_nonce(&nonce), payload, hk);
                         }
                     };
 
@@ -165,11 +167,12 @@ impl<App: ApplicationLayer> Context<App> {
                             log!(app, ReceivedRawX2);
                             recv_x2_trans(
                                 &mut zeta,
+                                &session,
                                 &app,
+                                &ctx,
                                 kid_recv,
                                 to_aes_nonce(&pn),
                                 assembled_packet,
-                                &ctx.s_secret,
                                 send_associated,
                             )?;
                             log!(app, X2IsAuthSentX3(&session));
@@ -251,7 +254,7 @@ impl<App: ApplicationLayer> Context<App> {
                                 *kid,
                                 to_packet_nonce(&nonce),
                                 payload,
-                                Some(hk),
+                                hk,
                             );
                         })?;
                         log!(app, X3IsAuthSentKeyConfirm(&session));
@@ -349,15 +352,15 @@ impl<App: ApplicationLayer> Context<App> {
         }
     }
 
-    pub fn send(&self, session: &Arc<Session<App>>, send: impl FnMut(&mut [u8]) -> bool, mut mtu: usize, payload: Vec<u8>) -> Result<(), SendError> {
+    pub fn send(&self, session: &Arc<Session<App>>, send: impl FnMut(Vec<u8>) -> bool, mut mtu: usize, payload: Vec<u8>) -> Result<(), SendError> {
         mtu = mtu.max(MIN_TRANSPORT_MTU);
         let mut zeta = session.0.lock().unwrap();
         send_payload(&mut zeta, payload, |Packet(kid, nonce, payload), hk| {
-            send_with_fragmentation::<App>(send, mtu, *kid, to_packet_nonce(nonce), &payload, Some(hk));
+            send_with_fragmentation::<App>(send, mtu, *kid, to_packet_nonce(nonce), &payload, hk);
         })
     }
 
-    pub fn service<SendFn: FnMut(&mut [u8]) -> bool>(&self, app: App, mut send_to: impl FnMut(&Arc<Session<App>>) -> Option<(SendFn, usize)>) -> i64 {
+    pub fn service<SendFn: FnMut(Vec<u8>) -> bool>(&self, app: App, mut send_to: impl FnMut(&Arc<Session<App>>) -> Option<(SendFn, usize)>) -> i64 {
         let ctx = &self.0;
         let sessions = ctx.sessions.lock().unwrap();
         let current_time = app.time();
@@ -383,6 +386,6 @@ impl<App: ApplicationLayer> Context<App> {
             }
         }
         ctx.hello_defrag.lock().unwrap().service::<App>(current_time);
-        App::SETTINGS.resend_time.min(next_timer - current_time)
+        (App::SETTINGS.resend_time as i64).min(next_timer - current_time)
     }
 }

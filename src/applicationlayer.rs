@@ -15,13 +15,13 @@ use crate::ratchet_state::RatchetState;
 use crate::LogEvent;
 
 pub struct Settings {
-    pub initial_offer_timeout: i64,
-    pub rekey_timeout: i64,
-    pub rekey_after_time: i64,
+    pub initial_offer_timeout: u64,
+    pub rekey_timeout: u64,
+    pub rekey_after_time: u64,
+    pub rekey_time_max_jitter: u64,
     pub rekey_after_key_uses: u64,
-    pub rekey_time_max_jitter: i64,
-    pub resend_time: i64,
-    pub fragment_assembly_timeout: i64,
+    pub resend_time: u64,
+    pub fragment_assembly_timeout: u64,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -29,15 +29,22 @@ impl Default for Settings {
     }
 }
 impl Settings {
+    pub const INITIAL_OFFER_TIMEOUT_MS: u64 = 10 * 1000;
+    pub const REKEY_TIMEOUT_MS: u64 = 60 * 1000;
+    pub const REKEY_AFTER_TIME_MS: u64 = 60 * 60 * 1000;
+    pub const REKEY_AFTER_TIME_MAX_JITTER_MS: u64 = 10 * 60 * 1000;
+    pub const REKEY_AFTER_KEY_USES: u64 = 1 << 30;
+    pub const RESEND_TIME: u64 = 1000;
+    pub const FRAGMENT_ASSEMBLY_TIMEOUT_MS: u64 = 5 * 1000;
     pub const fn new_ms() -> Self {
         Self {
-            initial_offer_timeout: 10 * 1000,
-            rekey_timeout: 60 * 1000,
-            rekey_after_time: 60 * 60 * 1000,
-            rekey_after_key_uses: 1 << 30,
-            rekey_time_max_jitter: 10 * 60 * 1000,
-            resend_time: 1000,
-            fragment_assembly_timeout: 10 * 1000,
+            initial_offer_timeout: Self::INITIAL_OFFER_TIMEOUT_MS,
+            rekey_timeout: Self::REKEY_TIMEOUT_MS,
+            rekey_after_time: Self::REKEY_AFTER_TIME_MS,
+            rekey_time_max_jitter: Self::REKEY_AFTER_TIME_MAX_JITTER_MS,
+            rekey_after_key_uses: Self::REKEY_AFTER_KEY_USES,
+            resend_time: Self::RESEND_TIME,
+            fragment_assembly_timeout: Self::FRAGMENT_ASSEMBLY_TIMEOUT_MS,
         }
     }
 }
@@ -66,7 +73,7 @@ pub trait ApplicationLayer: Sized {
     type KeyPair: KeyPairP384<Self::Rng, PublicKey = Self::PublicKey>;
     type Kem: PrivateKeyKyber1024<Self::Rng>;
 
-    type IoError: std::fmt::Debug;
+    type DiskError: std::fmt::Debug;
 
     /// Type for arbitrary opaque object for use by the application that is attached to
     /// each session.
@@ -110,12 +117,12 @@ pub trait ApplicationLayer: Sized {
     /// If `RatchetAction::DowngradeRatchet` is returned we will attempt to convince Alice to downgrade
     /// to the empty ratchet key, restarting the ratchet chain.
     /// If `RatchetAction::FailAuthentication` is returned Alice's connection will be silently dropped.
-    fn restore_by_fingerprint(&self, ratchet_fingerprint: &[u8; RATCHET_SIZE]) -> Result<RatchetState, Self::IoError>;
+    fn restore_by_fingerprint(&self, ratchet_fingerprint: &[u8; RATCHET_SIZE]) -> Result<RatchetState, Self::DiskError>;
 
     /// Lookup a specific ratchet state based on the identity of the peer being communicated with.
     /// This function will be called whenever Alice attempts to open a session, or Bob attempts
     /// to verify Alice's identity.
-    fn restore_by_identity(&self, remote_static_key: &Self::PublicKey, application_data: &Self::Data) -> Result<[RatchetState; 2], Self::IoError>;
+    fn restore_by_identity(&self, remote_static_key: &Self::PublicKey, application_data: &Self::Data) -> Result<[RatchetState; 2], Self::DiskError>;
     /// Atomically save the given `new_ratchet_states` to persistent storage.
     /// `pre_ratchet_states` contains what should be the previous contents of persistent storage.
     ///
@@ -138,7 +145,7 @@ pub trait ApplicationLayer: Sized {
         application_data: &Self::Data,
         pre_ratchet_states: [&RatchetState; 2],
         new_ratchet_states: [&RatchetState; 2],
-    ) -> Result<(), Self::IoError>;
+    ) -> Result<(), Self::DiskError>;
 
     #[cfg(feature = "logging")]
     fn event_log(&self, event: LogEvent<Self>);

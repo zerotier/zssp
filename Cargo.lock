@@ -447,5 +447,4 @@ dependencies = [
  "pqc_kyber",
  "rand_core",
  "sha2",
- "zeroize",
 ]

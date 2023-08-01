@@ -3,14 +3,13 @@ use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Mutex, Weak};
-use zeroize::Zeroizing;
 
 use crate::challenge::{gen_null_response, respond_to_challenge_in_place};
 use crate::context::{ContextInner, SessionMap};
 use crate::fragmentation::DefragBuffer;
 use crate::proto::*;
 use crate::ratchet_state::RatchetState;
-use crate::result::{FaultType, OpenError, ReceiveError, ReceiveOk, SendError};
+use crate::result::{FaultType, OpenError, ReceiveError, SendError};
 use crate::symmetric_state::SymmetricState;
 use crate::ApplicationLayer;
 #[cfg(feature = "logging")]
@@ -51,7 +50,7 @@ pub(crate) struct Zeta<App: ApplicationLayer> {
     key_index: bool,
     keys: [DuplexKey; 2],
     ratchet_states: [RatchetState; 2],
-    pub hk_send: Zeroizing<[u8; AES_256_KEY_SIZE]>,
+    pub hk_send: Secret<AES_256_KEY_SIZE>,
 
     resend_timer: i64,
     timeout_timer: i64,
@@ -67,7 +66,7 @@ pub(crate) struct StateB2<App: ApplicationLayer> {
     ratchet_state: RatchetState,
     kid_send: NonZeroU32,
     pub kid_recv: NonZeroU32,
-    pub hk_send: Zeroizing<[u8; AES_256_KEY_SIZE]>,
+    pub hk_send: Secret<AES_256_KEY_SIZE>,
     e_secret: App::KeyPair,
     noise: SymmetricState<App>,
     pub defrag: DefragBuffer,
@@ -81,8 +80,8 @@ pub(crate) struct DuplexKey {
 
 #[derive(Default)]
 pub(crate) struct Keys {
-    kek: Option<Zeroizing<[u8; AES_256_KEY_SIZE]>>,
-    nk: Option<Zeroizing<[u8; AES_256_KEY_SIZE]>>,
+    kek: Option<Secret<AES_256_KEY_SIZE>>,
+    nk: Option<Secret<AES_256_KEY_SIZE>>,
     kid: Option<NonZeroU32>,
 }
 
@@ -135,7 +134,7 @@ impl<App: ApplicationLayer> SymmetricState<App> {
         App::PublicKey::from_bytes((pub_key).try_into().unwrap())
     }
     fn mix_dh(&mut self, secret: &App::KeyPair, remote: &App::PublicKey) -> Option<()> {
-        if let Some(ecdh) = secret.agree(&remote).map(Zeroizing::new) {
+        if let Some(ecdh) = secret.agree(&remote).map(Secret) {
             self.mix_key(ecdh.as_ref());
             Some(())
         } else {
@@ -250,7 +249,7 @@ pub(crate) fn trans_to_a1<App: ApplicationLayer>(
     application_data: App::Data,
     identity: Vec<u8>,
     send: impl FnOnce(&Packet),
-) -> Result<Arc<Session<App>>, OpenError<App::IoError>> {
+) -> Result<Arc<Session<App>>, OpenError<App::DiskError>> {
     let ratchet_states = app
         .restore_by_identity(&s_remote, &application_data)
         .map_err(|e| OpenError::RatchetIoError(e))?;
@@ -277,8 +276,8 @@ pub(crate) fn trans_to_a1<App: ApplicationLayer>(
         keys: [DuplexKey::default(), DuplexKey::default()],
         ratchet_states,
         hk_send,
-        resend_timer: current_time + App::SETTINGS.resend_time,
-        timeout_timer: current_time + App::SETTINGS.initial_offer_timeout,
+        resend_timer: current_time + App::SETTINGS.resend_time as i64,
+        timeout_timer: current_time + App::SETTINGS.initial_offer_timeout as i64,
         beta: ZsspAutomata::A1(a1),
     };
     zeta.key_mut(true).recv.kid = Some(kid_recv);
@@ -307,7 +306,7 @@ pub(crate) fn recv_x1_trans<App: ApplicationLayer>(
     n: [u8; AES_GCM_IV_SIZE],
     mut x1: Vec<u8>,
     send: impl FnOnce(&Packet, &[u8; AES_256_KEY_SIZE]),
-) -> Result<(), ReceiveError<App::IoError>> {
+) -> Result<(), ReceiveError<App::DiskError>> {
     use FaultType::*;
     if !(HANDSHAKE_HELLO_MIN_SIZE..=HANDSHAKE_HELLO_MAX_SIZE).contains(&x1.len()) {
         return Err(byzantine_fault!(InvalidPacket, true));
@@ -373,7 +372,7 @@ pub(crate) fn recv_x1_trans<App: ApplicationLayer>(
     // X2 process ekem1 token.
     let i = x2.len();
     let (ekem1, ekem1_secret) = App::Kem::encapsulate(ctx.rng.lock().unwrap().deref_mut(), (&x1[e1_start..e1_end]).try_into().unwrap())
-        .map(|(ct, secret)| (ct, Zeroizing::new(secret)))
+        .map(|(ct, secret)| (ct, Secret(secret)))
         .ok_or(byzantine_fault!(FailedAuth, true))?;
     x2.extend(ekem1);
     noise.encrypt_and_hash_in_place(to_nonce(PACKET_TYPE_HANDSHAKE_RESPONSE, 0), i, &mut x2);
@@ -409,18 +408,19 @@ pub(crate) fn recv_x1_trans<App: ApplicationLayer>(
         },
     );
 
-    send(&Packet(kid_send.get(), to_nonce(PACKET_TYPE_HANDSHAKE_RESPONSE, c), x2), &hk_send);
+    send(&Packet(kid_send.get(), to_nonce(PACKET_TYPE_HANDSHAKE_RESPONSE, c), x2), hk_send.as_ref());
     Ok(())
 }
 pub(crate) fn recv_x2_trans<App: ApplicationLayer>(
     zeta: &mut Zeta<App>,
+    session: &Arc<Session<App>>,
     app: &App,
+    ctx: &Arc<ContextInner<App>>,
     kid: NonZeroU32,
     n: [u8; AES_GCM_IV_SIZE],
     mut x2: Vec<u8>,
-    s_secret: &App::KeyPair,
-    send: impl FnOnce(&Packet, &[u8; AES_256_KEY_SIZE]),
-) -> Result<ReceiveOk<App>, ReceiveError<App::IoError>> {
+    send: impl FnOnce(&Packet, Option<&[u8; AES_256_KEY_SIZE]>),
+) -> Result<(), ReceiveError<App::DiskError>> {
     use FaultType::*;
 
     if HANDSHAKE_RESPONSE_SIZE != x2.len() {
@@ -433,126 +433,133 @@ pub(crate) fn recv_x2_trans<App: ApplicationLayer>(
     if c >= COUNTER_WINDOW_MAX_SKIP_AHEAD || &n[AES_GCM_IV_SIZE - 3..] != &x2[x2.len() - 3..] {
         return Err(byzantine_fault!(FailedAuth, true));
     }
-    if let ZsspAutomata::A1(StateA1 { noise, e_secret, e1_secret, identity, .. }) = &zeta.beta {
-        let mut noise = noise.clone();
-        let mut i = 0;
-        // X2 process e token.
-        let e_remote = noise.read_e(&mut i, &x2).ok_or(byzantine_fault!(FailedAuth, true))?;
-        // X2 process ee token.
-        noise.mix_dh(e_secret, &e_remote).ok_or(byzantine_fault!(FailedAuth, true))?;
-        // Noise process pattern2 ekem1 token.
-        let j = i + KYBER_CIPHERTEXT_SIZE;
-        let k = j + AES_GCM_TAG_SIZE;
-        let tag = x2[j..k].try_into().unwrap();
-        if !noise.decrypt_and_hash_in_place(to_nonce(PACKET_TYPE_HANDSHAKE_RESPONSE, 0), &mut x2[i..j], tag) {
-            return Err(byzantine_fault!(FailedAuth, true));
-        }
-        let ekem1_secret = e1_secret
-            .decapsulate((&x2[i..j]).try_into().unwrap())
-            .map(Zeroizing::new)
-            .ok_or(byzantine_fault!(FailedAuth, true))?;
-        noise.mix_key(ekem1_secret.as_ref());
-        drop(ekem1_secret);
-        i = k;
-        // We attempt to decrypt the payload at most three times. First two times with
-        // the ratchet key Alice remembers, and final time with a ratchet
-        // key of zero if Alice allows ratchet downgrades.
-        // The following code is not constant time, meaning we leak to an
-        // attacker whether or not we downgraded.
-        // We don't currently consider this sensitive enough information to hide.
-        let j = i + KID_SIZE;
-        let k = j + AES_GCM_TAG_SIZE;
-        let payload: [u8; KID_SIZE] = x2[i..j].try_into().unwrap();
-        let tag = x2[j..k].try_into().unwrap();
-        // Check for which ratchet key Bob wants to use.
-        let test_ratchet_key = |ratchet_key| -> Option<(NonZeroU32, SymmetricState<App>)> {
+    let result = (|| {
+        if let ZsspAutomata::A1(StateA1 { noise, e_secret, e1_secret, identity, .. }) = &zeta.beta {
             let mut noise = noise.clone();
-            let mut payload = payload.clone();
-            // Noise process pattern2 psk token.
-            noise.mix_key_and_hash(ratchet_key);
-            // Noise process pattern2 payload.
-            if !noise.decrypt_and_hash_in_place(to_nonce(PACKET_TYPE_HANDSHAKE_RESPONSE, 0), &mut payload, tag) {
-                return None;
+            let mut i = 0;
+            // X2 process e token.
+            let e_remote = noise.read_e(&mut i, &x2).ok_or(byzantine_fault!(FailedAuth, true))?;
+            // X2 process ee token.
+            noise.mix_dh(e_secret, &e_remote).ok_or(byzantine_fault!(FailedAuth, true))?;
+            // Noise process pattern2 ekem1 token.
+            let j = i + KYBER_CIPHERTEXT_SIZE;
+            let k = j + AES_GCM_TAG_SIZE;
+            let tag = x2[j..k].try_into().unwrap();
+            if !noise.decrypt_and_hash_in_place(to_nonce(PACKET_TYPE_HANDSHAKE_RESPONSE, 0), &mut x2[i..j], tag) {
+                return Err(byzantine_fault!(FailedAuth, true));
             }
-            NonZeroU32::new(u32::from_be_bytes(payload)).map(|kid2| (kid2, noise))
-        };
-        // Check first key.
-        let mut ratchet_i = 0;
-        let mut result = None;
-        let mut chain_len = 0;
-        if let Some(key) = zeta.ratchet_states[0].key() {
-            chain_len = zeta.ratchet_states[0].chain_len();
-            result = test_ratchet_key(key);
-        }
-        // Check second key.
-        if result.is_none() {
-            ratchet_i = 1;
-            if let Some(key) = zeta.ratchet_states[1].key() {
-                chain_len = zeta.ratchet_states[1].chain_len();
+            let ekem1_secret = e1_secret
+                .decapsulate((&x2[i..j]).try_into().unwrap())
+                .map(Secret)
+                .ok_or(byzantine_fault!(FailedAuth, true))?;
+            noise.mix_key(ekem1_secret.as_ref());
+            drop(ekem1_secret);
+            i = k;
+            // We attempt to decrypt the payload at most three times. First two times with
+            // the ratchet key Alice remembers, and final time with a ratchet
+            // key of zero if Alice allows ratchet downgrades.
+            // The following code is not constant time, meaning we leak to an
+            // attacker whether or not we downgraded.
+            // We don't currently consider this sensitive enough information to hide.
+            let j = i + KID_SIZE;
+            let k = j + AES_GCM_TAG_SIZE;
+            let payload: [u8; KID_SIZE] = x2[i..j].try_into().unwrap();
+            let tag = x2[j..k].try_into().unwrap();
+            // Check for which ratchet key Bob wants to use.
+            let test_ratchet_key = |ratchet_key| -> Option<(NonZeroU32, SymmetricState<App>)> {
+                let mut noise = noise.clone();
+                let mut payload = payload.clone();
+                // Noise process pattern2 psk token.
+                noise.mix_key_and_hash(ratchet_key);
+                // Noise process pattern2 payload.
+                if !noise.decrypt_and_hash_in_place(to_nonce(PACKET_TYPE_HANDSHAKE_RESPONSE, 0), &mut payload, tag) {
+                    return None;
+                }
+                NonZeroU32::new(u32::from_be_bytes(payload)).map(|kid2| (kid2, noise))
+            };
+            // Check first key.
+            let mut ratchet_i = 0;
+            let mut result = None;
+            let mut chain_len = 0;
+            if let Some(key) = zeta.ratchet_states[0].key() {
+                chain_len = zeta.ratchet_states[0].chain_len();
                 result = test_ratchet_key(key);
             }
-        }
-        // Check zero key.
-        if result.is_none() && !app.initiator_disallows_downgrade() {
-            chain_len = 0;
-            result = test_ratchet_key(&[0u8; RATCHET_SIZE]);
-            if result.is_some() {
-                // TODO: add some kind of warning callback or signal.
+            // Check second key.
+            if result.is_none() {
+                ratchet_i = 1;
+                if let Some(key) = zeta.ratchet_states[1].key() {
+                    chain_len = zeta.ratchet_states[1].chain_len();
+                    result = test_ratchet_key(key);
+                }
             }
+            // Check zero key.
+            if result.is_none() && !app.initiator_disallows_downgrade() {
+                chain_len = 0;
+                result = test_ratchet_key(&[0u8; RATCHET_SIZE]);
+                if result.is_some() {
+                    // TODO: add some kind of warning callback or signal.
+                }
+            }
+
+            let (kid_send, mut noise) = result.ok_or(byzantine_fault!(FailedAuth, true))?;
+            let mut x3 = Vec::new();
+
+            // Noise process pattern3 s token.
+            let i = x3.len();
+            x3.extend(&ctx.s_secret.public_key_bytes());
+            noise.encrypt_and_hash_in_place(to_nonce(PACKET_TYPE_HANDSHAKE_COMPLETION, 1), i, &mut x3);
+            // Noise process pattern3 se token.
+            noise.mix_dh(&ctx.s_secret, &e_remote).ok_or(byzantine_fault!(FailedAuth, true))?;
+            // Noise process pattern3 payload token.
+            let i = x3.len();
+            x3.extend(identity);
+            noise.encrypt_and_hash_in_place(to_nonce(PACKET_TYPE_HANDSHAKE_COMPLETION, 0), i, &mut x3);
+
+            let (rk, rf) = noise.get_ask(LABEL_RATCHET_STATE);
+            let new_ratchet_state = RatchetState::new_incr(rk, rf, chain_len);
+
+            let ratchet_to_preserve = &zeta.ratchet_states[ratchet_i];
+            let result = app.save_ratchet_state(
+                &zeta.s_remote,
+                &zeta.application_data,
+                [&zeta.ratchet_states[0], &zeta.ratchet_states[1]],
+                [&new_ratchet_state, ratchet_to_preserve],
+            );
+            if let Err(e) = result {
+                return Err(ReceiveError::RatchetIoError(e));
+            }
+
+            let (kek_recv, kek_send) = noise.get_ask(LABEL_KEX_KEY);
+            let (nk_recv, nk_send) = noise.split();
+            let n = to_nonce(PACKET_TYPE_HANDSHAKE_COMPLETION, 0);
+            let identity = identity.clone();
+
+            zeta.key_mut(true).send.kid = Some(kid_send);
+            zeta.key_mut(true).send.kek = Some(kek_send);
+            zeta.key_mut(true).send.nk = Some(nk_send);
+            zeta.key_mut(true).recv.kek = Some(kek_recv);
+            zeta.key_mut(true).recv.nk = Some(nk_recv);
+            zeta.ratchet_states[1] = zeta.ratchet_states[ratchet_i].clone();
+            zeta.ratchet_states[0] = new_ratchet_state;
+            let current_time = app.time();
+            zeta.key_creation_counter = zeta.send_counter;
+            zeta.resend_timer = current_time + App::SETTINGS.resend_time as i64;
+            zeta.timeout_timer = current_time + App::SETTINGS.initial_offer_timeout as i64;
+            let packet = Packet(kid_send.get(), n, x3);
+            zeta.beta = ZsspAutomata::A3 { identity, packet: packet.clone() };
+
+            Ok(packet)
+        } else {
+            Err(byzantine_fault!(FailedAuth, true))
         }
-
-        let (kid_send, mut noise) = result.ok_or(byzantine_fault!(FailedAuth, true))?;
-        let mut x3 = Vec::new();
-
-        // Noise process pattern3 s token.
-        let i = x3.len();
-        x3.extend(&s_secret.public_key_bytes());
-        noise.encrypt_and_hash_in_place(to_nonce(PACKET_TYPE_HANDSHAKE_COMPLETION, 1), i, &mut x3);
-        // Noise process pattern3 se token.
-        noise.mix_dh(&s_secret, &e_remote).ok_or(byzantine_fault!(FailedAuth, true))?;
-        // Noise process pattern3 payload token.
-        let i = x3.len();
-        x3.extend(identity);
-        noise.encrypt_and_hash_in_place(to_nonce(PACKET_TYPE_HANDSHAKE_COMPLETION, 0), i, &mut x3);
-
-        let (rk, rf) = noise.get_ask(LABEL_RATCHET_STATE);
-        let new_ratchet_state = RatchetState::new_incr(rk, rf, chain_len);
-
-        let ratchet_to_preserve = &zeta.ratchet_states[ratchet_i];
-        let result = app.save_ratchet_state(
-            &zeta.s_remote,
-            &zeta.application_data,
-            [&zeta.ratchet_states[0], &zeta.ratchet_states[1]],
-            [&new_ratchet_state, ratchet_to_preserve],
-        );
-        if let Err(e) = result {
-            return Err(ReceiveError::RatchetIoError(e));
-        }
-
-        let (kek_recv, kek_send) = noise.get_ask(LABEL_KEX_KEY);
-        let (nk_recv, nk_send) = noise.split();
-        let n = to_nonce(PACKET_TYPE_HANDSHAKE_COMPLETION, 0);
-        let identity = identity.clone();
-
-        zeta.key_mut(true).send.kid = Some(kid_send);
-        zeta.key_mut(true).send.kek = Some(kek_send);
-        zeta.key_mut(true).send.nk = Some(nk_send);
-        zeta.key_mut(true).recv.kek = Some(kek_recv);
-        zeta.key_mut(true).recv.nk = Some(nk_recv);
-        zeta.ratchet_states[1] = zeta.ratchet_states[ratchet_i].clone();
-        zeta.ratchet_states[0] = new_ratchet_state;
-        let current_time = app.time();
-        zeta.key_creation_counter = zeta.send_counter;
-        zeta.resend_timer = current_time + App::SETTINGS.resend_time;
-        zeta.timeout_timer = current_time + App::SETTINGS.initial_offer_timeout;
-        let packet = Packet(kid_send.get(), n, x3);
-        zeta.beta = ZsspAutomata::A3 { identity, packet: packet.clone() };
-
-        send(&packet, &zeta.hk_send);
-        Ok(ReceiveOk::Unassociated)
-    } else {
-        Err(byzantine_fault!(FailedAuth, true))
+    })();
+    match &result {
+        Err(ReceiveError::ByzantineFault { .. }) => timeout_trans(zeta, session, app, ctx, app.time(), send),
+        Ok(packet) => send(&packet, Some(zeta.hk_send.as_ref())),
+        _ => {}
     }
+    result.map(|_| ())
 }
 pub(crate) fn recv_x3_trans<App: ApplicationLayer>(
     zeta: StateB2<App>,
@@ -560,8 +567,8 @@ pub(crate) fn recv_x3_trans<App: ApplicationLayer>(
     ctx: &Arc<ContextInner<App>>,
     kid: NonZeroU32,
     mut x3: Vec<u8>,
-    send: impl FnOnce(&Packet, &[u8; AES_256_KEY_SIZE]),
-) -> Result<Arc<Session<App>>, ReceiveError<App::IoError>> {
+    send: impl FnOnce(&Packet, Option<&[u8; AES_256_KEY_SIZE]>),
+) -> Result<Arc<Session<App>>, ReceiveError<App::DiskError>> {
     use FaultType::*;
 
     if x3.len() < HANDSHAKE_COMPLETION_MIN_SIZE {
@@ -601,7 +608,7 @@ pub(crate) fn recv_x3_trans<App: ApplicationLayer>(
     let create_reject = || {
         let mut d = Vec::<u8>::new();
         let n = to_nonce(PACKET_TYPE_SESSION_REJECTED, c);
-        let tag = App::Aead::encrypt_in_place(&kek_send, n, None, &mut []);
+        let tag = App::Aead::encrypt_in_place(kek_send.as_ref(), n, None, &mut []);
         d.extend(&tag);
         // We just used a counter with this key, but we are not storing
         // the fact we used it in memory. This is currently ok because the
@@ -623,7 +630,7 @@ pub(crate) fn recv_x3_trans<App: ApplicationLayer>(
                         // TODO: add some kind of warning callback or signal.
                     } else {
                         if !responder_silently_rejects {
-                            send(&create_reject(), &zeta.hk_send)
+                            send(&create_reject(), Some(zeta.hk_send.as_ref()))
                         }
                         return Err(byzantine_fault!(FailedAuth, true));
                     }
@@ -644,7 +651,7 @@ pub(crate) fn recv_x3_trans<App: ApplicationLayer>(
 
                 let mut c1 = Vec::new();
                 let n = to_nonce(PACKET_TYPE_KEY_CONFIRM, c);
-                let tag = App::Aead::encrypt_in_place(&kek_send, n, None, &mut []);
+                let tag = App::Aead::encrypt_in_place(kek_send.as_ref(), n, None, &mut []);
                 c1.extend(&tag);
 
                 let (nk1, nk2) = noise.split();
@@ -673,8 +680,8 @@ pub(crate) fn recv_x3_trans<App: ApplicationLayer>(
                     keys: [keys, DuplexKey::default()],
                     ratchet_states: [new_ratchet_state, RatchetState::Null],
                     hk_send: zeta.hk_send.clone(),
-                    resend_timer: current_time + App::SETTINGS.resend_time,
-                    timeout_timer: current_time + App::SETTINGS.rekey_timeout,
+                    resend_timer: current_time + App::SETTINGS.resend_time as i64,
+                    timeout_timer: current_time + App::SETTINGS.rekey_timeout as i64,
                     beta: ZsspAutomata::S1,
                     counter_antireplay_window: std::array::from_fn(|_| 0),
                     defrag: zeta.defrag,
@@ -682,14 +689,14 @@ pub(crate) fn recv_x3_trans<App: ApplicationLayer>(
                 entry.insert(Arc::downgrade(&session));
                 ctx.sessions.lock().unwrap().insert(Arc::as_ptr(&session), Arc::downgrade(&session));
 
-                send(&Packet(zeta.kid_send.get(), n, c1), &zeta.hk_send);
+                send(&Packet(zeta.kid_send.get(), n, c1), Some(zeta.hk_send.as_ref()));
                 Ok(session)
             }
             Err(e) => Err(ReceiveError::RatchetIoError(e)),
         }
     } else {
         if !responder_silently_rejects {
-            send(&create_reject(), &zeta.hk_send)
+            send(&create_reject(), Some(zeta.hk_send.as_ref()))
         }
         Err(byzantine_fault!(FailedAuth, true))
     }
@@ -701,8 +708,8 @@ pub(crate) fn recv_c1_trans<App: ApplicationLayer>(
     kid: NonZeroU32,
     n: [u8; AES_GCM_IV_SIZE],
     c1: Vec<u8>,
-    send: impl FnOnce(&Packet, &[u8; AES_256_KEY_SIZE]),
-) -> Result<bool, ReceiveError<App::IoError>> {
+    send: impl FnOnce(&Packet, Option<&[u8; AES_256_KEY_SIZE]>),
+) -> Result<bool, ReceiveError<App::DiskError>> {
     use FaultType::*;
 
     if c1.len() != KEY_CONFIRMATION_SIZE {
@@ -720,7 +727,7 @@ pub(crate) fn recv_c1_trans<App: ApplicationLayer>(
 
     let specified_key = zeta.key_ref(is_other).recv.kek.as_ref().ok_or(byzantine_fault!(OutOfSequence, true))?;
     let tag = c1[..].try_into().unwrap();
-    if !App::Aead::decrypt_in_place(&specified_key, n, None, &mut [], tag) {
+    if !App::Aead::decrypt_in_place(specified_key.as_ref(), n, None, &mut [], tag) {
         return Err(byzantine_fault!(FailedAuth, true));
     }
     let (_, c) = from_nonce(&n);
@@ -748,7 +755,7 @@ pub(crate) fn recv_c1_trans<App: ApplicationLayer>(
             zeta.timeout_timer = app.time()
                 + App::SETTINGS
                     .rekey_after_time
-                    .saturating_sub(rng.lock().unwrap().next_u64() as i64 % App::SETTINGS.rekey_time_max_jitter);
+                    .saturating_sub(rng.lock().unwrap().next_u64() % App::SETTINGS.rekey_time_max_jitter) as i64;
             zeta.resend_timer = i64::MAX;
             zeta.beta = ZsspAutomata::S2;
         }
@@ -759,10 +766,10 @@ pub(crate) fn recv_c1_trans<App: ApplicationLayer>(
     zeta.send_counter += 1;
     let n = to_nonce(PACKET_TYPE_ACK, c);
     let latest_confirmed_key = zeta.key_ref(false).send.kek.as_ref().ok_or(byzantine_fault!(OutOfSequence, true))?;
-    let tag = App::Aead::encrypt_in_place(&latest_confirmed_key, n, None, &mut []);
+    let tag = App::Aead::encrypt_in_place(latest_confirmed_key.as_ref(), n, None, &mut []);
     c2.extend(&tag);
 
-    send(&Packet(zeta.key_ref(false).send.kid.unwrap().get(), n, c2), &zeta.hk_send);
+    send(&Packet(zeta.key_ref(false).send.kid.unwrap().get(), n, c2), Some(zeta.hk_send.as_ref()));
     Ok(just_establised)
 }
 pub(crate) fn recv_c2_trans<App: ApplicationLayer>(
@@ -772,7 +779,7 @@ pub(crate) fn recv_c2_trans<App: ApplicationLayer>(
     kid: NonZeroU32,
     n: [u8; AES_GCM_IV_SIZE],
     c2: Vec<u8>,
-) -> Result<(), ReceiveError<App::IoError>> {
+) -> Result<(), ReceiveError<App::DiskError>> {
     use FaultType::*;
 
     if c2.len() != ACKNOWLEDGEMENT_SIZE {
@@ -788,7 +795,7 @@ pub(crate) fn recv_c2_trans<App: ApplicationLayer>(
     }
 
     let tag = c2[..].try_into().unwrap();
-    if !App::Aead::decrypt_in_place(&zeta.key_ref(false).recv.kek.as_ref().unwrap(), n, None, &mut [], tag) {
+    if !App::Aead::decrypt_in_place(zeta.key_ref(false).recv.kek.as_ref().unwrap().as_ref(), n, None, &mut [], tag) {
         return Err(byzantine_fault!(FailedAuth, true));
     }
     let (_, c) = from_nonce(&n);
@@ -799,7 +806,7 @@ pub(crate) fn recv_c2_trans<App: ApplicationLayer>(
     zeta.timeout_timer = app.time()
         + App::SETTINGS
             .rekey_after_time
-            .saturating_sub(rng.lock().unwrap().next_u64() as i64 % App::SETTINGS.rekey_time_max_jitter);
+            .saturating_sub(rng.lock().unwrap().next_u64() % App::SETTINGS.rekey_time_max_jitter) as i64;
     zeta.resend_timer = i64::MAX;
     zeta.beta = ZsspAutomata::S2;
     Ok(())
@@ -809,7 +816,7 @@ pub(crate) fn recv_d_trans<App: ApplicationLayer>(
     kid: NonZeroU32,
     n: [u8; AES_GCM_IV_SIZE],
     d: Vec<u8>,
-) -> Result<(), ReceiveError<App::IoError>> {
+) -> Result<(), ReceiveError<App::DiskError>> {
     use FaultType::*;
 
     if d.len() != SESSION_REJECTED_SIZE {
@@ -820,7 +827,7 @@ pub(crate) fn recv_d_trans<App: ApplicationLayer>(
     }
 
     let tag = d[..].try_into().unwrap();
-    if !App::Aead::decrypt_in_place(&zeta.key_ref(true).recv.kek.as_ref().unwrap(), n, None, &mut [], tag) {
+    if !App::Aead::decrypt_in_place(zeta.key_ref(true).recv.kek.as_ref().unwrap().as_ref(), n, None, &mut [], tag) {
         return Err(byzantine_fault!(FailedAuth, true));
     }
     let (_, c) = from_nonce(&n);
@@ -842,7 +849,7 @@ pub(crate) fn service<App: ApplicationLayer>(
     if zeta.timeout_timer <= current_time {
         timeout_trans(zeta, session, app, ctx, current_time, send);
     } else if zeta.resend_timer <= current_time {
-        zeta.resend_timer = current_time + App::SETTINGS.resend_time;
+        zeta.resend_timer = current_time + App::SETTINGS.resend_time as i64;
 
         let (p, mut control_payload) = match &zeta.beta {
             ZsspAutomata::Null => return,
@@ -852,7 +859,7 @@ pub(crate) fn service<App: ApplicationLayer>(
             }
             ZsspAutomata::A3 { packet, .. } => {
                 log!(app, ResentX3(session));
-                return send(packet, Some(&zeta.hk_send));
+                return send(packet, Some(zeta.hk_send.as_ref()));
             }
             ZsspAutomata::S1 => {
                 log!(app, ResentKeyConfirm(session));
@@ -871,11 +878,11 @@ pub(crate) fn service<App: ApplicationLayer>(
         let c = zeta.send_counter;
         zeta.send_counter += 1;
         let n = to_nonce(p, c);
-        let tag = App::Aead::encrypt_in_place(&zeta.key_ref(false).send.kek.as_ref().unwrap(), n, None, &mut control_payload);
+        let tag = App::Aead::encrypt_in_place(zeta.key_ref(false).send.kek.as_ref().unwrap().as_ref(), n, None, &mut control_payload);
         control_payload.extend(&tag);
         send(
             &Packet(zeta.key_ref(false).send.kid.unwrap().get(), n, control_payload),
-            Some(&zeta.hk_send),
+            Some(zeta.hk_send.as_ref()),
         );
     }
 }
@@ -916,8 +923,8 @@ fn timeout_trans<App: ApplicationLayer>(
                 zeta.hk_send = hk_send;
                 *zeta.key_mut(true) = DuplexKey::default();
                 zeta.key_mut(true).recv.kid = Some(new_kid_recv);
-                zeta.resend_timer = current_time + App::SETTINGS.resend_time;
-                zeta.timeout_timer = current_time + App::SETTINGS.initial_offer_timeout;
+                zeta.resend_timer = current_time + App::SETTINGS.resend_time as i64;
+                zeta.timeout_timer = current_time + App::SETTINGS.initial_offer_timeout as i64;
                 zeta.beta = ZsspAutomata::A1(a1);
                 zeta.defrag = DefragBuffer::new(Some(hk_recv));
 
@@ -955,17 +962,17 @@ fn timeout_trans<App: ApplicationLayer>(
             noise.encrypt_and_hash_in_place(to_nonce(PACKET_TYPE_REKEY_INIT, 0), i, &mut k1);
 
             zeta.key_mut(true).recv.kid = Some(new_kid_recv);
-            zeta.timeout_timer = current_time + App::SETTINGS.rekey_timeout;
-            zeta.resend_timer = current_time + App::SETTINGS.resend_time;
+            zeta.timeout_timer = current_time + App::SETTINGS.rekey_timeout as i64;
+            zeta.resend_timer = current_time + App::SETTINGS.resend_time as i64;
             zeta.beta = ZsspAutomata::R1 { noise, e_secret, k1: k1.clone() };
 
             let c = zeta.send_counter;
             zeta.send_counter += 1;
             let n = to_nonce(PACKET_TYPE_REKEY_INIT, c);
-            let tag = App::Aead::encrypt_in_place(&zeta.key_ref(false).send.kek.as_ref().unwrap(), n, None, &mut k1);
+            let tag = App::Aead::encrypt_in_place(zeta.key_ref(false).send.kek.as_ref().unwrap().as_ref(), n, None, &mut k1);
             k1.extend(&tag);
 
-            send(&Packet(zeta.key_ref(false).send.kid.unwrap().get(), n, k1), Some(&zeta.hk_send));
+            send(&Packet(zeta.key_ref(false).send.kid.unwrap().get(), n, k1), Some(zeta.hk_send.as_ref()));
         }
         ZsspAutomata::S1 { .. } => {
             log!(app, TimeoutKeyConfirm(session));
@@ -991,8 +998,8 @@ pub(crate) fn recv_k1_trans<App: ApplicationLayer>(
     kid: NonZeroU32,
     n: [u8; AES_GCM_IV_SIZE],
     mut k1: Vec<u8>,
-    send: impl FnOnce(&Packet, &[u8; AES_256_KEY_SIZE]),
-) -> Result<(), ReceiveError<App::IoError>> {
+    send: impl FnOnce(&Packet, Option<&[u8; AES_256_KEY_SIZE]>),
+) -> Result<(), ReceiveError<App::DiskError>> {
     use FaultType::*;
 
     if k1.len() != REKEY_SIZE {
@@ -1014,7 +1021,7 @@ pub(crate) fn recv_k1_trans<App: ApplicationLayer>(
 
     let i = k1.len() - AES_GCM_TAG_SIZE;
     let tag = k1[i..].try_into().unwrap();
-    if !App::Aead::decrypt_in_place(&zeta.key_ref(false).recv.kek.as_ref().unwrap(), n, None, &mut k1[..i], tag) {
+    if !App::Aead::decrypt_in_place(zeta.key_ref(false).recv.kek.as_ref().unwrap().as_ref(), n, None, &mut k1[..i], tag) {
         return Err(byzantine_fault!(FailedAuth, true));
     }
     let (_, c) = from_nonce(&n);
@@ -1023,77 +1030,83 @@ pub(crate) fn recv_k1_trans<App: ApplicationLayer>(
     }
     k1.truncate(i);
 
-    let mut i = 0;
-    let mut noise = SymmetricState::<App>::initialize(PROTOCOL_NAME_NOISE_KK);
-    // Noise process prologue.
-    noise.mix_hash(&zeta.s_remote.to_bytes());
-    noise.mix_hash(&s_secret.public_key_bytes());
-    // Noise process pattern1 psk0 token.
-    noise.mix_key_and_hash(zeta.ratchet_states[0].key().unwrap());
-    // Noise process pattern1 e token.
-    let e_remote = noise.read_e(&mut i, &k1).ok_or(byzantine_fault!(FailedAuth, true))?;
-    // Noise process pattern1 es token.
-    noise.mix_dh(s_secret, &e_remote).ok_or(byzantine_fault!(FailedAuth, true))?;
-    // Noise process pattern1 ss token.
-    noise.mix_dh(s_secret, &zeta.s_remote).ok_or(byzantine_fault!(FailedAuth, true))?;
-    // Noise process pattern1 payload.
-    let j = i + KID_SIZE;
-    let k = j + AES_GCM_TAG_SIZE;
-    let tag = k1[j..k].try_into().unwrap();
-    if !noise.decrypt_and_hash_in_place(to_nonce(PACKET_TYPE_REKEY_INIT, 0), &mut k1[i..j], tag) {
-        return Err(byzantine_fault!(FailedAuth, true));
+    let result = (|| {
+        let mut i = 0;
+        let mut noise = SymmetricState::<App>::initialize(PROTOCOL_NAME_NOISE_KK);
+        // Noise process prologue.
+        noise.mix_hash(&zeta.s_remote.to_bytes());
+        noise.mix_hash(&s_secret.public_key_bytes());
+        // Noise process pattern1 psk0 token.
+        noise.mix_key_and_hash(zeta.ratchet_states[0].key().unwrap());
+        // Noise process pattern1 e token.
+        let e_remote = noise.read_e(&mut i, &k1).ok_or(byzantine_fault!(FailedAuth, true))?;
+        // Noise process pattern1 es token.
+        noise.mix_dh(s_secret, &e_remote).ok_or(byzantine_fault!(FailedAuth, true))?;
+        // Noise process pattern1 ss token.
+        noise.mix_dh(s_secret, &zeta.s_remote).ok_or(byzantine_fault!(FailedAuth, true))?;
+        // Noise process pattern1 payload.
+        let j = i + KID_SIZE;
+        let k = j + AES_GCM_TAG_SIZE;
+        let tag = k1[j..k].try_into().unwrap();
+        if !noise.decrypt_and_hash_in_place(to_nonce(PACKET_TYPE_REKEY_INIT, 0), &mut k1[i..j], tag) {
+            return Err(byzantine_fault!(FailedAuth, true));
+        }
+        let kid_send = NonZeroU32::new(u32::from_be_bytes(k1[i..j].try_into().unwrap())).ok_or(byzantine_fault!(FailedAuth, true))?;
+
+        let mut k2 = Vec::new();
+        // Noise process pattern2 e token.
+        let e_secret = noise.write_e(rng, &mut k2);
+        // Noise process pattern2 ee token.
+        noise.mix_dh(&e_secret, &e_remote).ok_or(byzantine_fault!(FailedAuth, true))?;
+        // Noise process pattern2 se token.
+        noise.mix_dh(&s_secret, &e_remote).ok_or(byzantine_fault!(FailedAuth, true))?;
+        // Noise process pattern2 payload.
+        let i = k2.len();
+        let new_kid_recv = remap(session, &zeta, rng, session_map);
+        k2.extend(&new_kid_recv.get().to_be_bytes());
+        noise.encrypt_and_hash_in_place(to_nonce(PACKET_TYPE_REKEY_COMPLETE, 0), i, &mut k2);
+
+        let (rk, rf) = noise.get_ask(LABEL_RATCHET_STATE);
+        let new_ratchet_state = RatchetState::new_incr(rk, rf, zeta.ratchet_states[0].chain_len());
+        let result = app.save_ratchet_state(
+            &zeta.s_remote,
+            &zeta.application_data,
+            [&zeta.ratchet_states[0], &zeta.ratchet_states[1]],
+            [&new_ratchet_state, &zeta.ratchet_states[0]],
+        );
+        if let Err(e) = result {
+            return Err(ReceiveError::RatchetIoError(e));
+        }
+        let (kek_send, kek_recv) = noise.get_ask(LABEL_KEX_KEY);
+        let (nk_send, nk_recv) = noise.split();
+
+        zeta.key_mut(true).send.kid = Some(kid_send);
+        zeta.key_mut(true).send.kek = Some(kek_send);
+        zeta.key_mut(true).send.nk = Some(nk_send);
+        zeta.key_mut(true).recv.kid = Some(new_kid_recv);
+        zeta.key_mut(true).recv.kek = Some(kek_recv);
+        zeta.key_mut(true).recv.nk = Some(nk_recv);
+        zeta.ratchet_states[1] = zeta.ratchet_states[0].clone();
+        zeta.ratchet_states[0] = new_ratchet_state;
+        let current_time = app.time();
+        zeta.key_creation_counter = zeta.send_counter;
+        zeta.timeout_timer = current_time + App::SETTINGS.rekey_timeout as i64;
+        zeta.resend_timer = current_time + App::SETTINGS.resend_time as i64;
+        zeta.beta = ZsspAutomata::R2 { k2: k2.clone() };
+
+        let c = zeta.send_counter;
+        zeta.send_counter += 1;
+        let n = to_nonce(PACKET_TYPE_REKEY_COMPLETE, c);
+        let tag = App::Aead::encrypt_in_place(zeta.key_ref(false).send.kek.as_ref().unwrap().as_ref(), n, None, &mut k2);
+        k2.extend(&tag);
+
+        send(&Packet(zeta.key_ref(false).send.kid.unwrap().get(), n, k2), Some(zeta.hk_send.as_ref()));
+        Ok(())
+    })();
+    if matches!(result, Err(ReceiveError::ByzantineFault { .. })) {
+        zeta.expire();
     }
-    let kid_send = NonZeroU32::new(u32::from_be_bytes(k1[i..j].try_into().unwrap())).ok_or(byzantine_fault!(FailedAuth, true))?;
-
-    let mut k2 = Vec::new();
-    // Noise process pattern2 e token.
-    let e_secret = noise.write_e(rng, &mut k2);
-    // Noise process pattern2 ee token.
-    noise.mix_dh(&e_secret, &e_remote).ok_or(byzantine_fault!(FailedAuth, true))?;
-    // Noise process pattern2 se token.
-    noise.mix_dh(&s_secret, &e_remote).ok_or(byzantine_fault!(FailedAuth, true))?;
-    // Noise process pattern2 payload.
-    let i = k2.len();
-    let new_kid_recv = remap(session, &zeta, rng, session_map);
-    k2.extend(&new_kid_recv.get().to_be_bytes());
-    noise.encrypt_and_hash_in_place(to_nonce(PACKET_TYPE_REKEY_COMPLETE, 0), i, &mut k2);
-
-    let (rk, rf) = noise.get_ask(LABEL_RATCHET_STATE);
-    let new_ratchet_state = RatchetState::new_incr(rk, rf, zeta.ratchet_states[0].chain_len());
-    let result = app.save_ratchet_state(
-        &zeta.s_remote,
-        &zeta.application_data,
-        [&zeta.ratchet_states[0], &zeta.ratchet_states[1]],
-        [&new_ratchet_state, &zeta.ratchet_states[0]],
-    );
-    if let Err(e) = result {
-        return Err(ReceiveError::RatchetIoError(e));
-    }
-    let (kek_send, kek_recv) = noise.get_ask(LABEL_KEX_KEY);
-    let (nk_send, nk_recv) = noise.split();
-
-    zeta.key_mut(true).send.kid = Some(kid_send);
-    zeta.key_mut(true).send.kek = Some(kek_send);
-    zeta.key_mut(true).send.nk = Some(nk_send);
-    zeta.key_mut(true).recv.kid = Some(new_kid_recv);
-    zeta.key_mut(true).recv.kek = Some(kek_recv);
-    zeta.key_mut(true).recv.nk = Some(nk_recv);
-    zeta.ratchet_states[1] = zeta.ratchet_states[0].clone();
-    zeta.ratchet_states[0] = new_ratchet_state;
-    let current_time = app.time();
-    zeta.key_creation_counter = zeta.send_counter;
-    zeta.timeout_timer = current_time + App::SETTINGS.rekey_timeout;
-    zeta.resend_timer = current_time + App::SETTINGS.resend_time;
-    zeta.beta = ZsspAutomata::R2 { k2: k2.clone() };
-
-    let c = zeta.send_counter;
-    zeta.send_counter += 1;
-    let n = to_nonce(PACKET_TYPE_REKEY_COMPLETE, c);
-    let tag = App::Aead::encrypt_in_place(&zeta.key_ref(false).send.kek.as_ref().unwrap(), n, None, &mut k2);
-    k2.extend(&tag);
-
-    send(&Packet(zeta.key_ref(false).send.kid.unwrap().get(), n, k2), &zeta.hk_send);
-    Ok(())
+    result
 }
 pub(crate) fn recv_k2_trans<App: ApplicationLayer>(
     zeta: &mut Zeta<App>,
@@ -1101,8 +1114,8 @@ pub(crate) fn recv_k2_trans<App: ApplicationLayer>(
     kid: NonZeroU32,
     n: [u8; AES_GCM_IV_SIZE],
     mut k2: Vec<u8>,
-    send: impl FnOnce(&Packet, &[u8; AES_256_KEY_SIZE]),
-) -> Result<(), ReceiveError<App::IoError>> {
+    send: impl FnOnce(&Packet, Option<&[u8; AES_256_KEY_SIZE]>),
+) -> Result<(), ReceiveError<App::DiskError>> {
     use FaultType::*;
 
     if k2.len() != REKEY_SIZE {
@@ -1119,7 +1132,7 @@ pub(crate) fn recv_k2_trans<App: ApplicationLayer>(
 
     let i = k2.len() - AES_GCM_TAG_SIZE;
     let tag = k2[i..].try_into().unwrap();
-    if !App::Aead::decrypt_in_place(&zeta.key_ref(false).recv.kek.as_ref().unwrap(), n, None, &mut k2[..i], tag) {
+    if !App::Aead::decrypt_in_place(zeta.key_ref(false).recv.kek.as_ref().unwrap().as_ref(), n, None, &mut k2[..i], tag) {
         return Err(byzantine_fault!(FailedAuth, true));
     }
     let (_, c) = from_nonce(&n);
@@ -1127,69 +1140,74 @@ pub(crate) fn recv_k2_trans<App: ApplicationLayer>(
         return Err(byzantine_fault!(ExpiredCounter, true));
     }
     k2.truncate(i);
+    let result = (|| {
+        if let ZsspAutomata::R1 { noise, e_secret, .. } = &zeta.beta {
+            let mut noise = noise.clone();
+            let mut i = 0;
+            // Noise process pattern2 e token.
+            let e_remote = noise.read_e(&mut i, &k2).ok_or(byzantine_fault!(FailedAuth, true))?;
+            // Noise process pattern2 ee token.
+            noise.mix_dh(e_secret, &e_remote).ok_or(byzantine_fault!(FailedAuth, true))?;
+            // Noise process pattern2 se token.
+            noise.mix_dh(e_secret, &zeta.s_remote).ok_or(byzantine_fault!(FailedAuth, true))?;
+            // Noise process pattern2 payload.
+            let j = i + KID_SIZE;
+            let k = j + AES_GCM_TAG_SIZE;
+            let tag = k2[j..k].try_into().unwrap();
+            if !noise.decrypt_and_hash_in_place(to_nonce(PACKET_TYPE_REKEY_COMPLETE, 0), &mut k2[i..j], tag) {
+                return Err(byzantine_fault!(FailedAuth, true));
+            }
+            let kid_send = NonZeroU32::new(u32::from_be_bytes(k2[i..j].try_into().unwrap())).ok_or(byzantine_fault!(InvalidPacket, true))?;
 
-    if let ZsspAutomata::R1 { noise, e_secret, .. } = &zeta.beta {
-        let mut noise = noise.clone();
-        let mut i = 0;
-        // Noise process pattern2 e token.
-        let e_remote = noise.read_e(&mut i, &k2).ok_or(byzantine_fault!(FailedAuth, true))?;
-        // Noise process pattern2 ee token.
-        noise.mix_dh(e_secret, &e_remote).ok_or(byzantine_fault!(FailedAuth, true))?;
-        // Noise process pattern2 se token.
-        noise.mix_dh(e_secret, &zeta.s_remote).ok_or(byzantine_fault!(FailedAuth, true))?;
-        // Noise process pattern2 payload.
-        let j = i + KID_SIZE;
-        let k = j + AES_GCM_TAG_SIZE;
-        let tag = k2[j..k].try_into().unwrap();
-        if !noise.decrypt_and_hash_in_place(to_nonce(PACKET_TYPE_REKEY_COMPLETE, 0), &mut k2[i..j], tag) {
-            return Err(byzantine_fault!(FailedAuth, true));
+            let (rk, rf) = noise.get_ask(LABEL_RATCHET_STATE);
+            let new_ratchet_state = RatchetState::new_incr(rk, rf, zeta.ratchet_states[0].chain_len());
+            let result = app.save_ratchet_state(
+                &zeta.s_remote,
+                &zeta.application_data,
+                [&zeta.ratchet_states[0], &zeta.ratchet_states[1]],
+                [&new_ratchet_state, &RatchetState::Null],
+            );
+            if let Err(e) = result {
+                return Err(ReceiveError::RatchetIoError(e));
+            }
+            let (kek_recv, kek_send) = noise.get_ask(LABEL_KEX_KEY);
+            let (nk_recv, nk_send) = noise.split();
+
+            zeta.key_mut(true).send.kid = Some(kid_send);
+            zeta.key_mut(true).send.kek = Some(kek_send);
+            zeta.key_mut(true).send.nk = Some(nk_send);
+            zeta.key_mut(true).recv.kek = Some(kek_recv);
+            zeta.key_mut(true).recv.nk = Some(nk_recv);
+            zeta.ratchet_states[0] = new_ratchet_state;
+            zeta.key_index ^= true;
+            let current_time = app.time();
+            zeta.key_creation_counter = zeta.send_counter;
+            zeta.timeout_timer = current_time + App::SETTINGS.rekey_timeout as i64;
+            zeta.resend_timer = current_time + App::SETTINGS.resend_time as i64;
+            zeta.beta = ZsspAutomata::S1;
+
+            let mut c1 = Vec::new();
+            let c = zeta.send_counter;
+            zeta.send_counter += 1;
+            let n = to_nonce(PACKET_TYPE_KEY_CONFIRM, c);
+            let tag = App::Aead::encrypt_in_place(zeta.key_ref(false).send.kek.as_ref().unwrap().as_ref(), n, None, &mut []);
+            c1.extend(&tag);
+
+            send(&Packet(zeta.key_ref(false).send.kid.unwrap().get(), n, c1), Some(zeta.hk_send.as_ref()));
+            Ok(())
+        } else {
+            unreachable!()
         }
-        let kid_send = NonZeroU32::new(u32::from_be_bytes(k2[i..j].try_into().unwrap())).ok_or(byzantine_fault!(InvalidPacket, true))?;
-
-        let (rk, rf) = noise.get_ask(LABEL_RATCHET_STATE);
-        let new_ratchet_state = RatchetState::new_incr(rk, rf, zeta.ratchet_states[0].chain_len());
-        let result = app.save_ratchet_state(
-            &zeta.s_remote,
-            &zeta.application_data,
-            [&zeta.ratchet_states[0], &zeta.ratchet_states[1]],
-            [&new_ratchet_state, &RatchetState::Null],
-        );
-        if let Err(e) = result {
-            return Err(ReceiveError::RatchetIoError(e));
-        }
-        let (kek_recv, kek_send) = noise.get_ask(LABEL_KEX_KEY);
-        let (nk_recv, nk_send) = noise.split();
-
-        zeta.key_mut(true).send.kid = Some(kid_send);
-        zeta.key_mut(true).send.kek = Some(kek_send);
-        zeta.key_mut(true).send.nk = Some(nk_send);
-        zeta.key_mut(true).recv.kek = Some(kek_recv);
-        zeta.key_mut(true).recv.nk = Some(nk_recv);
-        zeta.ratchet_states[0] = new_ratchet_state;
-        zeta.key_index ^= true;
-        let current_time = app.time();
-        zeta.key_creation_counter = zeta.send_counter;
-        zeta.timeout_timer = current_time + App::SETTINGS.rekey_timeout;
-        zeta.resend_timer = current_time + App::SETTINGS.resend_time;
-        zeta.beta = ZsspAutomata::S1;
-
-        let mut c1 = Vec::new();
-        let c = zeta.send_counter;
-        zeta.send_counter += 1;
-        let n = to_nonce(PACKET_TYPE_KEY_CONFIRM, c);
-        let tag = App::Aead::encrypt_in_place(&zeta.key_ref(false).send.kek.as_ref().unwrap(), n, None, &mut []);
-        c1.extend(&tag);
-
-        send(&Packet(zeta.key_ref(false).send.kid.unwrap().get(), n, c1), &zeta.hk_send);
-        Ok(())
-    } else {
-        unreachable!()
+    })();
+    if matches!(result, Err(ReceiveError::ByzantineFault { .. })) {
+        zeta.expire();
     }
+    result
 }
 pub(crate) fn send_payload<App: ApplicationLayer>(
     zeta: &mut Zeta<App>,
     mut payload: Vec<u8>,
-    send: impl FnOnce(&Packet, &[u8; AES_256_KEY_SIZE]),
+    send: impl FnOnce(&Packet, Option<&[u8; AES_256_KEY_SIZE]>),
 ) -> Result<(), SendError> {
     use SendError::*;
 
@@ -1214,10 +1232,13 @@ pub(crate) fn send_payload<App: ApplicationLayer>(
     }
 
     let n = to_nonce(PACKET_TYPE_DATA, c);
-    let tag = App::Aead::encrypt_in_place(&zeta.key_ref(false).send.nk.as_ref().unwrap(), n, None, &mut payload);
+    let tag = App::Aead::encrypt_in_place(zeta.key_ref(false).send.nk.as_ref().unwrap().as_ref(), n, None, &mut payload);
     payload.extend(&tag);
 
-    send(&Packet(zeta.key_ref(false).send.kid.unwrap().get(), n, payload), &zeta.hk_send);
+    send(
+        &Packet(zeta.key_ref(false).send.kid.unwrap().get(), n, payload),
+        Some(zeta.hk_send.as_ref()),
+    );
     Ok(())
 }
 pub(crate) fn recv_payload_in_place<App: ApplicationLayer>(
@@ -1225,7 +1246,7 @@ pub(crate) fn recv_payload_in_place<App: ApplicationLayer>(
     kid: NonZeroU32,
     n: [u8; AES_GCM_IV_SIZE],
     payload: &mut Vec<u8>,
-) -> Result<(), ReceiveError<App::IoError>> {
+) -> Result<(), ReceiveError<App::DiskError>> {
     use FaultType::*;
 
     if payload.len() < AES_GCM_TAG_SIZE {
@@ -1244,7 +1265,7 @@ pub(crate) fn recv_payload_in_place<App: ApplicationLayer>(
     let i = payload.len() - AES_GCM_TAG_SIZE;
     let specified_key = zeta.key_ref(is_other).recv.nk.as_ref().ok_or(byzantine_fault!(OutOfSequence, true))?;
     let tag = payload[i..].try_into().unwrap();
-    if !App::Aead::decrypt_in_place(&specified_key, n, None, &mut payload[..i], tag) {
+    if !App::Aead::decrypt_in_place(specified_key.as_ref(), n, None, &mut payload[..i], tag) {
         return Err(byzantine_fault!(FailedAuth, true));
     }
     let (_, c) = from_nonce(&n);

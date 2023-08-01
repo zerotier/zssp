@@ -7,7 +7,6 @@
  */
 
 use std::iter::ExactSizeIterator;
-use std::ops::Deref;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Mutex};
@@ -22,7 +21,7 @@ use rand_core::RngCore;
 use sha2::Sha512;
 
 use zssp_proto::ratchet_state::RatchetState;
-use zssp_proto::RATCHET_SIZE;
+use zssp_proto::{Settings, RATCHET_SIZE};
 
 const TEST_MTU: usize = 1500;
 
@@ -34,14 +33,14 @@ struct TestApplication {
 
 #[allow(unused)]
 impl zssp_proto::ApplicationLayer for &TestApplication {
-    const SETTINGS: zssp_proto::Settings = zssp_proto::Settings {
-        initial_offer_timeout: 10 * 1000,
+    const SETTINGS: Settings = Settings {
+        initial_offer_timeout: Settings::INITIAL_OFFER_TIMEOUT_MS,
         rekey_timeout: 60 * 1000,
         rekey_after_time: 4000,
-        rekey_after_key_uses: 1 << 30,
         rekey_time_max_jitter: 1000,
+        rekey_after_key_uses: Settings::REKEY_AFTER_KEY_USES,
         resend_time: 250,
-        fragment_assembly_timeout: 10 * 1000,
+        fragment_assembly_timeout: Settings::FRAGMENT_ASSEMBLY_TIMEOUT_MS,
     };
     type Rng = OsRng;
     type Prp = Aes256;
@@ -51,7 +50,7 @@ impl zssp_proto::ApplicationLayer for &TestApplication {
     type KeyPair = EphemeralSecret;
     type Kem = [u8; pqc_kyber::KYBER_SECRETKEYBYTES];
 
-    type IoError = ();
+    type DiskError = ();
     type Data = ();
 
     fn hello_requires_recognized_ratchet(&self) -> bool {
@@ -62,17 +61,17 @@ impl zssp_proto::ApplicationLayer for &TestApplication {
         false
     }
 
-    fn restore_by_fingerprint(&self, ratchet_fingerprint: &[u8; RATCHET_SIZE]) -> Result<RatchetState, Self::IoError> {
+    fn restore_by_fingerprint(&self, ratchet_fingerprint: &[u8; RATCHET_SIZE]) -> Result<RatchetState, Self::DiskError> {
         let ratchets = self.ratchets.lock().unwrap();
         for rs in ratchets.iter() {
-            if rs.nonempty().map_or(false, |rs| rs.fingerprint.deref().eq(ratchet_fingerprint)) {
+            if rs.nonempty().map_or(false, |rs| rs.fingerprint.eq_bytes(ratchet_fingerprint)) {
                 return Ok(rs.clone());
             }
         }
         Ok(RatchetState::Null)
     }
 
-    fn restore_by_identity(&self, remote_static_key: &Self::PublicKey, application_data: &Self::Data) -> Result<[RatchetState; 2], Self::IoError> {
+    fn restore_by_identity(&self, remote_static_key: &Self::PublicKey, application_data: &Self::Data) -> Result<[RatchetState; 2], Self::DiskError> {
         Ok(self.ratchets.lock().unwrap().clone())
     }
 
@@ -82,7 +81,7 @@ impl zssp_proto::ApplicationLayer for &TestApplication {
         application_data: &Self::Data,
         pre_ratchet_states: [&RatchetState; 2],
         new_ratchet_states: [&RatchetState; 2],
-    ) -> Result<(), Self::IoError> {
+    ) -> Result<(), Self::DiskError> {
         let mut ratchets = self.ratchets.lock().unwrap();
         ratchets[0] = new_ratchet_states[0].clone();
         ratchets[1] = new_ratchet_states[1].clone();
@@ -112,6 +111,7 @@ fn alice_main(
     alice_app: &TestApplication,
     alice_out: mpsc::SyncSender<Vec<u8>>,
     alice_in: mpsc::Receiver<Vec<u8>>,
+    recursive_out: mpsc::SyncSender<Vec<u8>>,
     alice_keypair: EphemeralSecret,
     bob_pubkey: PublicKey,
 ) {
@@ -127,14 +127,7 @@ fn alice_main(
             up = false;
             alice_session = Some(
                 context
-                    .open(
-                        alice_app,
-                        |b| alice_out.send(b.to_vec()).is_ok(),
-                        TEST_MTU,
-                        bob_pubkey.clone(),
-                        (),
-                        Vec::new(),
-                    )
+                    .open(alice_app, |b| alice_out.send(b).is_ok(), TEST_MTU, bob_pubkey.clone(), (), Vec::new())
                     .unwrap(),
             );
             println!("[alice] opening session");
@@ -149,9 +142,9 @@ fn alice_main(
                     use zssp_proto::result::SessionEvent::*;
                     match context.receive(
                         alice_app,
-                        |b| alice_out.send(b.to_vec()).is_ok(),
+                        |b| alice_out.send(b).is_ok(),
                         TEST_MTU,
-                        |_| Some((|b: &mut [u8]| alice_out.send(b.to_vec()).is_ok(), TEST_MTU)),
+                        |_| Some((|b| alice_out.send(b).is_ok(), TEST_MTU)),
                         &0,
                         pkt,
                     ) {
@@ -177,6 +170,8 @@ fn alice_main(
                             }
                         }
                     }
+                } else if OsRng.next_u32() | 1 > 0 {
+                    let _ = recursive_out.send(pkt);
                 }
             } else {
                 break;
@@ -187,7 +182,7 @@ fn alice_main(
             context
                 .send(
                     alice_session.as_ref().unwrap(),
-                    |b| alice_out.send(b.to_vec()).is_ok(),
+                    |b| alice_out.send(b).is_ok(),
                     TEST_MTU,
                     test_data[..1400 + ((OsRng.next_u64() as usize) % (test_data.len() - 1400))].to_vec(),
                 )
@@ -201,7 +196,7 @@ fn alice_main(
         }
 
         if current_time >= next_service {
-            next_service = current_time + context.service(alice_app, |_| Some((|b: &mut [u8]| alice_out.send(b.to_vec()).is_ok(), TEST_MTU)));
+            next_service = current_time + context.service(alice_app, |_| Some((|b| alice_out.send(b).is_ok(), TEST_MTU)));
         }
     }
 }
@@ -212,6 +207,7 @@ fn bob_main(
     bob_app: &TestApplication,
     bob_out: mpsc::SyncSender<Vec<u8>>,
     bob_in: mpsc::Receiver<Vec<u8>>,
+    recursive_out: mpsc::SyncSender<Vec<u8>>,
     bob_keypair: EphemeralSecret,
 ) {
     let startup_time = std::time::Instant::now();
@@ -233,9 +229,9 @@ fn bob_main(
                 use zssp_proto::result::SessionEvent::*;
                 match context.receive(
                     bob_app,
-                    |b| bob_out.send(b.to_vec()).is_ok(),
+                    |b| bob_out.send(b).is_ok(),
                     TEST_MTU,
-                    |_| Some((|b: &mut [u8]| bob_out.send(b.to_vec()).is_ok(), TEST_MTU)),
+                    |_| Some((|b| bob_out.send(b).is_ok(), TEST_MTU)),
                     &0,
                     pkt,
                 ) {
@@ -249,7 +245,7 @@ fn bob_main(
                             assert!(!data.is_empty());
                             //println!("[bob] received {}", data.len());
                             transferred += data.len() as u64 * 2; // *2 because we are also sending this many bytes back
-                            context.send(&s, |b| bob_out.send(b.to_vec()).is_ok(), TEST_MTU, data).unwrap();
+                            context.send(&s, |b| bob_out.send(b).is_ok(), TEST_MTU, data).unwrap();
                         }
                         Established => panic!(),
                         Rejected => panic!(),
@@ -262,6 +258,8 @@ fn bob_main(
                         }
                     }
                 }
+            } else if OsRng.next_u32() | 1 > 0 {
+                let _ = recursive_out.try_send(pkt);
             }
         }
 
@@ -276,7 +274,7 @@ fn bob_main(
         }
 
         if current_time >= next_service {
-            next_service = current_time + context.service(bob_app, |_| Some((|b: &mut [u8]| bob_out.send(b.to_vec()).is_ok(), TEST_MTU)));
+            next_service = current_time + context.service(bob_app, |_| Some((|b| bob_out.send(b).is_ok(), TEST_MTU)));
         }
     }
 }
@@ -303,8 +301,23 @@ fn core(time: u64, packet_success_rate: u32) {
     let (bob_out, alice_in) = mpsc::sync_channel::<Vec<u8>>(256);
 
     thread::scope(|ts| {
-        ts.spawn(move || alice_main(run, packet_success_rate, &alice_app, alice_out, alice_in, alice_keypair, bob_pubkey));
-        ts.spawn(move || bob_main(run, packet_success_rate, &bob_app, bob_out, bob_in, bob_keypair));
+        {
+            let alice_out = alice_out.clone();
+            let bob_out = bob_out.clone();
+            ts.spawn(move || {
+                alice_main(
+                    run,
+                    packet_success_rate,
+                    &alice_app,
+                    alice_out,
+                    alice_in,
+                    bob_out,
+                    alice_keypair,
+                    bob_pubkey,
+                )
+            });
+        }
+        ts.spawn(move || bob_main(run, packet_success_rate, &bob_app, bob_out, bob_in, alice_out, bob_keypair));
 
         thread::sleep(Duration::from_secs(time));
 
@@ -316,7 +329,7 @@ fn core(time: u64, packet_success_rate: u32) {
 fn main() {
     let args = std::env::args();
     let packet_success_rate = if args.len() <= 1 {
-        let default_success_rate = 0.5;
+        let default_success_rate = 1.0;
         ((u32::MAX as f64) * default_success_rate) as u32
     } else {
         ((u32::MAX as f64) * f64::from_str(args.last().unwrap().as_str()).unwrap()) as u32
