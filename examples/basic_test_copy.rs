@@ -6,6 +6,7 @@
  * https://www.zerotier.com/
  */
 
+use std::collections::HashMap;
 use std::iter::ExactSizeIterator;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,7 +29,12 @@ const TEST_MTU: usize = 1500;
 struct TestApplication {
     time: Instant,
     name: &'static str,
-    ratchets: Mutex<(RatchetState, Option<RatchetState>)>,
+    ratchets: Mutex<Ratchets>,
+}
+
+struct Ratchets {
+    rf_map: HashMap<[u8; RATCHET_SIZE], RatchetState>,
+    peer_map: HashMap<u128, (RatchetState, Option<RatchetState>)>,
 }
 
 #[allow(unused)]
@@ -51,7 +57,7 @@ impl zssp_proto::ApplicationLayer for &TestApplication {
     type Kem = [u8; pqc_kyber::KYBER_SECRETKEYBYTES];
 
     type DiskError = ();
-    type Data = ();
+    type Data = u128;
 
     fn hello_requires_recognized_ratchet(&self) -> bool {
         true
@@ -62,22 +68,17 @@ impl zssp_proto::ApplicationLayer for &TestApplication {
     }
 
     fn check_accept_session(&self, remote_static_key: &Self::PublicKey, identity: &[u8]) -> (Option<(bool, Self::Data)>, bool) {
-        (Some((true, ())), true)
+        (Some((true, 0)), true)
     }
 
     fn restore_by_fingerprint(&self, ratchet_fingerprint: &[u8; RATCHET_SIZE]) -> Result<Option<RatchetState>, Self::DiskError> {
         let ratchets = self.ratchets.lock().unwrap();
-        if ratchets.0.fingerprint_eq(ratchet_fingerprint) {
-            return Ok(Some(ratchets.0.clone()));
-        }
-        if ratchets.1.as_ref().map_or(false, |rs| rs.fingerprint_eq(ratchet_fingerprint)) {
-            return Ok(ratchets.1.clone());
-        }
-        Ok(None)
+        Ok(ratchets.rf_map.get(ratchet_fingerprint).cloned())
     }
 
     fn restore_by_identity(&self, remote_static_key: &Self::PublicKey, application_data: &Self::Data) -> Result<(RatchetState, Option<RatchetState>), Self::DiskError> {
-        Ok(self.ratchets.lock().unwrap().clone())
+        let ratchets = self.ratchets.lock().unwrap();
+        Ok(ratchets.peer_map.get(application_data).cloned())
     }
 
     fn save_ratchet_state(

@@ -161,11 +161,11 @@ pub trait ApplicationLayer: Sized {
     /// If `RatchetAction::DowngradeRatchet` is returned we will attempt to convince Alice to downgrade
     /// to the empty ratchet key, restarting the ratchet chain.
     /// If `RatchetAction::FailAuthentication` is returned Alice's connection will be silently dropped.
-    fn restore_by_fingerprint(&self, ratchet_fingerprint: &[u8; RATCHET_SIZE]) -> Result<RatchetState, Self::DiskError>;
+    fn restore_by_fingerprint(&self, ratchet_fingerprint: &[u8; RATCHET_SIZE]) -> Result<Option<RatchetState>, Self::DiskError>;
     /// Lookup a specific ratchet state based on the identity of the peer being communicated with.
     /// This function will be called whenever Alice attempts to open a session, or Bob attempts
     /// to verify Alice's identity.
-    fn restore_by_identity(&self, remote_static_key: &Self::PublicKey, application_data: &Self::Data) -> Result<[RatchetState; 2], Self::DiskError>;
+    fn restore_by_identity(&self, remote_static_key: &Self::PublicKey, application_data: &Self::Data) -> Result<(RatchetState, Option<RatchetState>), Self::DiskError>;
     /// Atomically save the given `new_ratchet_states` to persistent storage.
     /// `pre_ratchet_states` contains what should be the previous contents of persistent storage.
     ///
@@ -186,8 +186,11 @@ pub trait ApplicationLayer: Sized {
         &self,
         remote_static_key: &Self::PublicKey,
         application_data: &Self::Data,
-        pre_ratchet_states: [&RatchetState; 2],
-        new_ratchet_states: [&RatchetState; 2],
+        state1: &RatchetState,
+        state2: Option<&RatchetState>,
+        state_added: Option<&RatchetState>,
+        state_deleted1: Option<&RatchetState>,
+        state_deleted2: Option<&RatchetState>,
     ) -> Result<(), Self::DiskError>;
 
     /// Receives a stream of events that occur during an execution of ZSSP.

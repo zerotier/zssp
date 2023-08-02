@@ -50,7 +50,8 @@ pub(crate) struct Zeta<App: ApplicationLayer> {
 
     key_index: bool,
     keys: [DuplexKey; 2],
-    ratchet_states: [RatchetState; 2],
+    ratchet_state1: RatchetState,
+    ratchet_state2: Option<RatchetState>,
     pub hk_send: Zeroizing<[u8; AES_256_KEY_SIZE]>,
 
     resend_timer: i64,
@@ -66,7 +67,6 @@ pub(crate) struct Zeta<App: ApplicationLayer> {
 pub struct Session<App: ApplicationLayer>(pub(crate) Mutex<Zeta<App>>);
 
 pub(crate) struct StateB2<App: ApplicationLayer> {
-    /// Can never be Null.
     ratchet_state: RatchetState,
     kid_send: NonZeroU32,
     pub kid_recv: NonZeroU32,
@@ -207,7 +207,8 @@ fn create_a1_state<App: ApplicationLayer>(
     rng: &Mutex<App::Rng>,
     s_remote: &App::PublicKey,
     kid_recv: NonZeroU32,
-    ratchet_states: &[RatchetState; 2],
+    ratchet_state1: &RatchetState,
+    ratchet_state2: Option<&RatchetState>,
     identity: Vec<u8>,
 ) -> Option<StateA1<App>> {
     //    <- s
@@ -231,10 +232,11 @@ fn create_a1_state<App: ApplicationLayer>(
     noise.encrypt_and_hash_in_place(to_nonce(PACKET_TYPE_HANDSHAKE_HELLO, 0), i, &mut x1);
     // Process message pattern 1 payload.
     let i = x1.len();
-    for r in ratchet_states {
-        if let Some(rf) = r.fingerprint() {
-            x1.extend(rf);
-        }
+    if let Some(rf) = ratchet_state1.fingerprint.as_ref() {
+        x1.extend(rf.as_ref());
+    }
+    if let Some(Some(rf)) = ratchet_state2.map(|rs| rs.fingerprint.as_ref()) {
+        x1.extend(rf.as_ref());
     }
     noise.encrypt_and_hash_in_place(to_nonce(PACKET_TYPE_HANDSHAKE_HELLO, 1), i, &mut x1);
 
@@ -257,14 +259,14 @@ pub(crate) fn trans_to_a1<App: ApplicationLayer>(
     identity: Vec<u8>,
     send: impl FnOnce(&Packet),
 ) -> Result<Arc<Session<App>>, OpenError<App::DiskError>> {
-    let ratchet_states = app
+    let (ratchet_state1, ratchet_state2) = app
         .restore_by_identity(&s_remote, &application_data)
         .map_err(|e| OpenError::RatchetIoError(e))?;
 
     let mut session_map = ctx.session_map.lock().unwrap();
     let kid_recv = gen_kid(session_map.deref(), ctx.rng.lock().unwrap().deref_mut());
 
-    let a1 = create_a1_state(&ctx.rng, &s_remote, kid_recv, &ratchet_states, identity).ok_or(OpenError::InvalidPublicKey)?;
+    let a1 = create_a1_state(&ctx.rng, &s_remote, kid_recv, &ratchet_state1, ratchet_state2.as_ref(), identity).ok_or(OpenError::InvalidPublicKey)?;
     let packet = a1.packet.clone();
 
     let (hk_recv, hk_send) = a1.noise.get_ask(LABEL_HEADER_KEY);
@@ -281,7 +283,8 @@ pub(crate) fn trans_to_a1<App: ApplicationLayer>(
         defrag: DefragBuffer::new(Some(hk_recv)),
         key_index: true,
         keys: [DuplexKey::default(), DuplexKey::default()],
-        ratchet_states,
+        ratchet_state1,
+        ratchet_state2,
         hk_send,
         resend_timer: current_time + App::SETTINGS.resend_time as i64,
         timeout_timer: current_time + App::SETTINGS.initial_offer_timeout as i64,
@@ -355,24 +358,26 @@ pub(crate) fn received_x1_trans<App: ApplicationLayer>(
         return Err(byzantine_fault!(FailedAuth, true));
     }
 
-    let mut ratchet_state = RatchetState::Null;
+    let mut ratchet_state = None;
     while i + RATCHET_SIZE <= j {
         match app.restore_by_fingerprint((&x1[i..i + RATCHET_SIZE]).try_into().unwrap()) {
-            Ok(RatchetState::Null) | Ok(RatchetState::Empty) => {}
-            Ok(rs) => {
-                ratchet_state = rs;
+            Ok(None) => {}
+            Ok(Some(rs)) => {
+                ratchet_state = Some(rs);
                 break;
             }
             Err(e) => return Err(ReceiveError::RatchetIoError(e)),
         }
         i += RATCHET_SIZE;
     }
-    if ratchet_state.is_null() {
+    let ratchet_state = if let Some(rs) = ratchet_state {
+        rs
+    } else {
         if app.hello_requires_recognized_ratchet() {
             return Err(byzantine_fault!(FailedAuth, true));
         }
-        ratchet_state = RatchetState::Empty;
-    }
+        RatchetState::empty()
+    };
     let (hk_send, hk_recv) = noise.get_ask(LABEL_HEADER_KEY);
 
     let mut x2 = Vec::new();
@@ -390,7 +395,7 @@ pub(crate) fn received_x1_trans<App: ApplicationLayer>(
     noise.mix_key(ekem1_secret.as_ref());
     drop(ekem1_secret);
     // Process message pattern 2 psk2 token.
-    noise.mix_key_and_hash(ratchet_state.key().unwrap());
+    noise.mix_key_and_hash(ratchet_state.key.as_ref());
     // Process message pattern 2 payload.
     let session_map = ctx.session_map.lock().unwrap();
     let kid_recv = gen_kid(session_map.deref(), ctx.rng.lock().unwrap().deref_mut());
@@ -490,19 +495,15 @@ pub(crate) fn received_x2_trans<App: ApplicationLayer>(
                 NonZeroU32::new(u32::from_be_bytes(payload)).map(|kid2| (kid2, noise))
             };
             // Check first key.
-            let mut ratchet_i = 0;
-            let mut result = None;
-            let mut chain_len = 0;
-            if let Some(key) = zeta.ratchet_states[0].key() {
-                chain_len = zeta.ratchet_states[0].chain_len();
-                result = test_ratchet_key(key);
-            }
+            let mut ratchet_i = 1;
+            let mut chain_len = zeta.ratchet_state1.chain_len;
+            let mut result = test_ratchet_key(zeta.ratchet_state1.key.as_ref());
             // Check second key.
             if result.is_none() {
-                ratchet_i = 1;
-                if let Some(key) = zeta.ratchet_states[1].key() {
-                    chain_len = zeta.ratchet_states[1].chain_len();
-                    result = test_ratchet_key(key);
+                ratchet_i = 2;
+                if let Some(rs) = zeta.ratchet_state2.as_ref() {
+                    chain_len = rs.chain_len;
+                    result = test_ratchet_key(rs.key.as_ref());
                 }
             }
             // Check zero key.
@@ -529,14 +530,21 @@ pub(crate) fn received_x2_trans<App: ApplicationLayer>(
             noise.encrypt_and_hash_in_place(to_nonce(PACKET_TYPE_HANDSHAKE_COMPLETION, 0), i, &mut x3);
 
             let (rk, rf) = noise.get_ask(LABEL_RATCHET_STATE);
-            let new_ratchet_state = RatchetState::new_nonempty(rk, rf, chain_len + 1);
+            let new_ratchet_state = RatchetState::new(rk, rf, chain_len + 1);
 
-            let ratchet_to_preserve = &zeta.ratchet_states[ratchet_i];
+            let (ratchet_to_preserve, ratchet_to_delete) = if ratchet_i == 1 {
+                (Some(&zeta.ratchet_state1), zeta.ratchet_state2.as_ref())
+            } else {
+                (zeta.ratchet_state2.as_ref(), Some(&zeta.ratchet_state1))
+            };
             let result = app.save_ratchet_state(
                 &zeta.s_remote,
                 &zeta.application_data,
-                [&zeta.ratchet_states[0], &zeta.ratchet_states[1]],
-                [&new_ratchet_state, ratchet_to_preserve],
+                &new_ratchet_state,
+                ratchet_to_preserve,
+                Some(&new_ratchet_state),
+                ratchet_to_delete,
+                None,
             );
             if let Err(e) = result {
                 return Err(ReceiveError::RatchetIoError(e));
@@ -552,8 +560,8 @@ pub(crate) fn received_x2_trans<App: ApplicationLayer>(
             zeta.key_mut(true).send.nk = Some(nk_send);
             zeta.key_mut(true).recv.kek = Some(kek_recv);
             zeta.key_mut(true).recv.nk = Some(nk_recv);
-            zeta.ratchet_states[1] = zeta.ratchet_states[ratchet_i].clone();
-            zeta.ratchet_states[0] = new_ratchet_state;
+            zeta.ratchet_state2 = Some(zeta.ratchet_state1.clone());
+            zeta.ratchet_state1 = new_ratchet_state;
             let current_time = app.time();
             zeta.key_creation_counter = zeta.send_counter;
             zeta.resend_timer = current_time + App::SETTINGS.resend_time as i64;
@@ -630,15 +638,9 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
     if let Some((responder_disallows_downgrade, application_data)) = responder_disallows_downgrade {
         let result = app.restore_by_identity(&s_remote, &application_data);
         match result {
-            Ok(true_ratchet_states) => {
-                let mut has_match = false;
-                for rs in &true_ratchet_states {
-                    if !rs.is_null() {
-                        has_match |= &zeta.ratchet_state == rs;
-                    }
-                }
-                if !has_match {
-                    if !responder_disallows_downgrade && zeta.ratchet_state.is_empty() {
+            Ok((ratchet_state1, ratchet_state2)) => {
+                if (&zeta.ratchet_state != &ratchet_state1) & (Some(&zeta.ratchet_state) != ratchet_state2.as_ref()) {
+                    if !responder_disallows_downgrade && zeta.ratchet_state.fingerprint.is_none() {
                         // TODO: add some kind of warning callback or signal.
                     } else {
                         if !responder_silently_rejects {
@@ -650,12 +652,15 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
 
                 let (rk, rf) = noise.get_ask(LABEL_RATCHET_STATE);
                 // We must make sure the ratchet key is saved before we transition.
-                let new_ratchet_state = RatchetState::new_nonempty(rk, rf, zeta.ratchet_state.chain_len() + 1);
+                let new_ratchet_state = RatchetState{ key: rk, fingerprint: Some(rf), chain_len: zeta.ratchet_state.chain_len + 1,};
                 let result = app.save_ratchet_state(
                     &s_remote,
                     &application_data,
-                    [&true_ratchet_states[0], &true_ratchet_states[1]],
-                    [&new_ratchet_state, &RatchetState::Null],
+                    &new_ratchet_state,
+                    None,
+                    Some(&new_ratchet_state),
+                    Some(&ratchet_state1),
+                    ratchet_state2.as_ref(),
                 );
                 if let Err(e) = result {
                     return Err(ReceiveError::RatchetIoError(e));
@@ -690,7 +695,8 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
                     key_creation_counter: INIT_COUNTER + 1,
                     key_index: false,
                     keys: [keys, DuplexKey::default()],
-                    ratchet_states: [new_ratchet_state, RatchetState::Null],
+                    ratchet_state1: new_ratchet_state,
+                    ratchet_state2: None,
                     hk_send: zeta.hk_send.clone(),
                     resend_timer: current_time + App::SETTINGS.resend_time as i64,
                     timeout_timer: current_time + App::SETTINGS.rekey_timeout as i64,
@@ -750,19 +756,22 @@ pub(crate) fn received_c1_trans<App: ApplicationLayer>(
     let just_establised = is_other && matches!(&zeta.beta, ZsspAutomata::A3 { .. });
     if is_other {
         if let ZsspAutomata::A3 { .. } | ZsspAutomata::R2 { .. } = &zeta.beta {
-            if !zeta.ratchet_states[1].is_null() {
+            if zeta.ratchet_state2.is_some() {
                 let result = app.save_ratchet_state(
                     &zeta.s_remote,
                     &zeta.application_data,
-                    [&zeta.ratchet_states[0], &zeta.ratchet_states[1]],
-                    [&zeta.ratchet_states[0], &RatchetState::Null],
+                    &zeta.ratchet_state1,
+                    None,
+                    None,
+                    zeta.ratchet_state2.as_ref(),
+                    None,
                 );
                 if let Err(e) = result {
                     return Err(ReceiveError::RatchetIoError(e));
                 }
             }
 
-            zeta.ratchet_states[1] = RatchetState::Null;
+            zeta.ratchet_state2 = None;
             zeta.key_index ^= true;
             zeta.timeout_timer = app.time()
                 + App::SETTINGS
@@ -928,7 +937,7 @@ fn timeout_trans<App: ApplicationLayer>(
             }
             let new_kid_recv = remap(session, &zeta, &ctx.rng, &ctx.session_map);
 
-            if let Some(a1) = create_a1_state(&ctx.rng, &zeta.s_remote, new_kid_recv, &zeta.ratchet_states, identity.clone()) {
+            if let Some(a1) = create_a1_state(&ctx.rng, &zeta.s_remote, new_kid_recv, &zeta.ratchet_state1, zeta.ratchet_state2.as_ref(), identity.clone()) {
                 let (hk_recv, hk_send) = a1.noise.get_ask(LABEL_HEADER_KEY);
                 let packet = a1.packet.clone();
 
@@ -958,7 +967,7 @@ fn timeout_trans<App: ApplicationLayer>(
             noise.mix_hash(&ctx.s_secret.public_key_bytes());
             noise.mix_hash(&zeta.s_remote.to_bytes());
             // Process message pattern 1 psk0 token.
-            noise.mix_key_and_hash(zeta.ratchet_states[0].key().unwrap());
+            noise.mix_key_and_hash(zeta.ratchet_state1.key.as_ref());
             // Process message pattern 1 e token.
             let e_secret = noise.write_e(&ctx.rng, &mut k1);
             // Process message pattern 1 es token.
@@ -1056,7 +1065,7 @@ pub(crate) fn received_k1_trans<App: ApplicationLayer>(
         noise.mix_hash(&zeta.s_remote.to_bytes());
         noise.mix_hash(&s_secret.public_key_bytes());
         // Process message pattern 1 psk0 token.
-        noise.mix_key_and_hash(zeta.ratchet_states[0].key().unwrap());
+        noise.mix_key_and_hash(zeta.ratchet_state1.key.as_ref());
         // Process message pattern 1 e token.
         let e_remote = noise.read_e(&mut i, &k1).ok_or(byzantine_fault!(FailedAuth, true))?;
         // Process message pattern 1 es token.
@@ -1086,12 +1095,15 @@ pub(crate) fn received_k1_trans<App: ApplicationLayer>(
         noise.encrypt_and_hash_in_place(to_nonce(PACKET_TYPE_REKEY_COMPLETE, 0), i, &mut k2);
 
         let (rk, rf) = noise.get_ask(LABEL_RATCHET_STATE);
-        let new_ratchet_state = RatchetState::new_nonempty(rk, rf, zeta.ratchet_states[0].chain_len() + 1);
+        let new_ratchet_state = RatchetState::new(rk, rf, zeta.ratchet_state1.chain_len + 1);
         let result = app.save_ratchet_state(
             &zeta.s_remote,
             &zeta.application_data,
-            [&zeta.ratchet_states[0], &zeta.ratchet_states[1]],
-            [&new_ratchet_state, &zeta.ratchet_states[0]],
+            &new_ratchet_state,
+            Some(&zeta.ratchet_state1),
+            Some(&new_ratchet_state),
+            zeta.ratchet_state2.as_ref(),
+            None,
         );
         if let Err(e) = result {
             return Err(ReceiveError::RatchetIoError(e));
@@ -1105,8 +1117,8 @@ pub(crate) fn received_k1_trans<App: ApplicationLayer>(
         zeta.key_mut(true).recv.kid = Some(new_kid_recv);
         zeta.key_mut(true).recv.kek = Some(kek_recv);
         zeta.key_mut(true).recv.nk = Some(nk_recv);
-        zeta.ratchet_states[1] = zeta.ratchet_states[0].clone();
-        zeta.ratchet_states[0] = new_ratchet_state;
+        zeta.ratchet_state2 = Some(zeta.ratchet_state1.clone());
+        zeta.ratchet_state1 = new_ratchet_state;
         let current_time = app.time();
         zeta.key_creation_counter = zeta.send_counter;
         zeta.timeout_timer = current_time + App::SETTINGS.rekey_timeout as i64;
@@ -1179,12 +1191,15 @@ pub(crate) fn received_k2_trans<App: ApplicationLayer>(
             let kid_send = NonZeroU32::new(u32::from_be_bytes(k2[i..j].try_into().unwrap())).ok_or(byzantine_fault!(InvalidPacket, true))?;
 
             let (rk, rf) = noise.get_ask(LABEL_RATCHET_STATE);
-            let new_ratchet_state = RatchetState::new_nonempty(rk, rf, zeta.ratchet_states[0].chain_len() + 1);
+            let new_ratchet_state = RatchetState::new(rk, rf, zeta.ratchet_state1.chain_len + 1);
             let result = app.save_ratchet_state(
                 &zeta.s_remote,
                 &zeta.application_data,
-                [&zeta.ratchet_states[0], &zeta.ratchet_states[1]],
-                [&new_ratchet_state, &RatchetState::Null],
+                &new_ratchet_state,
+                None,
+                Some(&new_ratchet_state),
+                Some(&zeta.ratchet_state1),
+                zeta.ratchet_state2.as_ref(),
             );
             if let Err(e) = result {
                 return Err(ReceiveError::RatchetIoError(e));
@@ -1197,7 +1212,7 @@ pub(crate) fn received_k2_trans<App: ApplicationLayer>(
             zeta.key_mut(true).send.nk = Some(nk_send);
             zeta.key_mut(true).recv.kek = Some(kek_recv);
             zeta.key_mut(true).recv.nk = Some(nk_recv);
-            zeta.ratchet_states[0] = new_ratchet_state;
+            zeta.ratchet_state1 = new_ratchet_state;
             zeta.key_index ^= true;
             let current_time = app.time();
             zeta.key_creation_counter = zeta.send_counter;
