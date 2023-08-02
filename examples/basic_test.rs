@@ -37,7 +37,7 @@ impl zssp_proto::ApplicationLayer for &TestApplication {
     const SETTINGS: Settings = Settings {
         initial_offer_timeout: Settings::INITIAL_OFFER_TIMEOUT_MS,
         rekey_timeout: 60 * 1000,
-        rekey_after_time: 4000,
+        rekey_after_time: 3000,
         rekey_time_max_jitter: 1000,
         rekey_after_key_uses: Settings::REKEY_AFTER_KEY_USES,
         resend_time: 250,
