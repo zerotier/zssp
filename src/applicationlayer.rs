@@ -1,16 +1,17 @@
 /* This Source Code Form is subject to the terms of the Mozilla Public
- * License, v. 2.0. If a copy of the MPL was not distributed with this
- * file, You can obtain one at https://mozilla.org/MPL/2.0/.
- *
- * (c) ZeroTier, Inc.
- * https://www.zerotier.com/
- */
+* License, v. 2.0. If a copy of the MPL was not distributed with this
+* file, You can obtain one at https://mozilla.org/MPL/2.0/.
+*
+* (c) ZeroTier, Inc.
+* https://www.zerotier.com/
+*/
+use std::sync::Arc;
 use rand_core::{CryptoRng, RngCore};
 
+use crate::Session;
 use crate::crypto::{AeadAesGcm, HashSha512, KeyPairP384, PrivateKeyKyber1024, PrpAes256, PublicKeyP384};
 use crate::proto::RATCHET_SIZE;
 use crate::ratchet_state::RatchetState;
-
 #[cfg(feature = "logging")]
 use crate::LogEvent;
 
@@ -121,6 +122,7 @@ pub trait ApplicationLayer: Sized {
     /// Used to determine if any current handshakes should be resent or timed-out, or if a session
     /// should rekey.
     fn time(&self) -> i64;
+
     /// This function will be called whenever Alice's initial Hello packet contains the empty ratchet
     /// fingerprint. Brand new peers will always connect to Bob with the empty ratchet, but from
     /// then on they should be using non-empty ratchet states.
@@ -146,15 +148,14 @@ pub trait ApplicationLayer: Sized {
     /// least one party is misconfigured and got their ratchet keys corrupted or lost, or Bob has
     /// been compromised and is being impersonated. An attacker must at least have Bob's private
     /// static key to be able to ask Alice to downgrade.
-    fn initiator_disallows_downgrade(&self) -> bool;
-
-    ///   `check_accept_session` - Function to accept sessions after final negotiation.
-    ///   The second argument is the identity blob that the remote peer sent us. The application
-    ///   must verify this identity is associated with the remote peer's static key.
-    ///   The third argument is the ratchet chain length, or ratchet count.
-    ///   To prevent desync, if this function returns (Some(_), _), no other open session with the
-    ///   same remote peer must exist. Drop or call expire on these sessions.
+    fn initiator_disallows_downgrade(&self, session: &Arc<Session<Self>>) -> bool;
+    /// Function to accept sessions after final negotiation.
+    /// The second argument is the identity that the remote peer sent us. The application
+    /// must verify this identity is associated with the remote peer's static key.
+    /// To prevent desync, if this function returns (Some(_), _), no other open session with the
+    /// same remote peer must exist. Drop or call expire on any pre-existing sessions before returning.
     fn check_accept_session(&self, remote_static_key: &Self::PublicKey, identity: &[u8]) -> (Option<(bool, Self::Data)>, bool);
+
     /// Lookup a specific ratchet state based on its ratchet fingerprint.
     /// This function will be called whenever Alice attempts to connect to us with a non-empty
     /// ratchet fingerprint.
@@ -168,7 +169,6 @@ pub trait ApplicationLayer: Sized {
     /// to the empty ratchet key, restarting the ratchet chain.
     /// If `RatchetAction::FailAuthentication` is returned Alice's connection will be silently dropped.
     fn restore_by_fingerprint(&self, ratchet_fingerprint: &[u8; RATCHET_SIZE]) -> Result<RatchetState, Self::DiskError>;
-
     /// Lookup a specific ratchet state based on the identity of the peer being communicated with.
     /// This function will be called whenever Alice attempts to open a session, or Bob attempts
     /// to verify Alice's identity.

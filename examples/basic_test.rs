@@ -58,7 +58,7 @@ impl zssp_proto::ApplicationLayer for &TestApplication {
         true
     }
 
-    fn initiator_disallows_downgrade(&self) -> bool {
+    fn initiator_disallows_downgrade(&self, session: &Arc<Session>) -> bool {
         true
     }
 

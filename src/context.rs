@@ -93,7 +93,7 @@ impl<App: ApplicationLayer> Context<App> {
     /// * `application_data` - Arbitrary data meaningful to the application to include with session
     ///   object
     /// * `identity` - Payload to be sent to Bob that contains the information necessary
-    ///   for the upper protocol to authenticate and approve of Alice's identity.
+    ///   for the upper protocol to authenticate and approve of Alice's identity
     pub fn open(
         &self,
         app: App,

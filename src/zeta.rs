@@ -506,7 +506,7 @@ pub(crate) fn received_x2_trans<App: ApplicationLayer>(
                 }
             }
             // Check zero key.
-            if result.is_none() && !app.initiator_disallows_downgrade() {
+            if result.is_none() && !app.initiator_disallows_downgrade(session) {
                 chain_len = 0;
                 result = test_ratchet_key(&[0u8; RATCHET_SIZE]);
                 if result.is_some() {
