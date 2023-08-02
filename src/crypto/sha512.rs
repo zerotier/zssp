@@ -1,5 +1,3 @@
-// (c) 2020-2022 ZeroTier, Inc. -- currently proprietary pending actual release and licensing. See LICENSE.md.
-
 pub const SHA512_HASH_SIZE: usize = 64;
 
 /// Opaque SHA-512 implementation.

@@ -9,7 +9,7 @@
 use std::iter::ExactSizeIterator;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Mutex, Arc};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -22,7 +22,7 @@ use sha2::Sha512;
 
 use zssp_proto::crypto::secure_eq;
 use zssp_proto::ratchet_state::RatchetState;
-use zssp_proto::{Settings, RATCHET_SIZE, Session};
+use zssp_proto::{Session, Settings, RATCHET_SIZE};
 
 const TEST_MTU: usize = 1500;
 

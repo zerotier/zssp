@@ -1,13 +1,6 @@
-/* This Source Code Form is subject to the terms of the Mozilla Public
-* License, v. 2.0. If a copy of the MPL was not distributed with this
-* file, You can obtain one at https://mozilla.org/MPL/2.0/.
-*
-* (c) ZeroTier, Inc.
-* https://www.zerotier.com/
-*/
-use std::ops::Deref;
-use crate::crypto::{HashSha512, secure_eq};
+use crate::crypto::{secure_eq, HashSha512};
 use crate::proto::*;
+use std::ops::Deref;
 
 #[derive(Clone, PartialEq, Eq)]
 pub enum RatchetState {
@@ -15,8 +8,8 @@ pub enum RatchetState {
     Empty,
     NonEmpty(NonEmptyRatchetState),
 }
-use RatchetState::*;
 use zeroize::Zeroizing;
+use RatchetState::*;
 impl RatchetState {
     /// Helper function to create a new nonempty ratchet state from a raw ratchet key, fingerprint,
     /// and the ratchet chain's current length.
@@ -41,7 +34,11 @@ impl RatchetState {
         buffer[0] = 2;
         let r2 = Hmac::hmac(otp, &buffer);
         [
-            Self::new_nonempty(Zeroizing::new(r1[..RATCHET_SIZE].try_into().unwrap()), Zeroizing::new(r2[..RATCHET_SIZE].try_into().unwrap()), 1),
+            Self::new_nonempty(
+                Zeroizing::new(r1[..RATCHET_SIZE].try_into().unwrap()),
+                Zeroizing::new(r2[..RATCHET_SIZE].try_into().unwrap()),
+                1,
+            ),
             RatchetState::Null,
         ]
     }

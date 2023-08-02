@@ -7,13 +7,13 @@ use std::sync::{Arc, Mutex, Weak};
 
 use crate::crypto::{AES_256_KEY_SIZE, AES_GCM_IV_SIZE};
 use crate::fragmentation::{send_with_fragmentation, DefragBuffer};
-use crate::result::{ReceiveError, ReceiveOk, SendError, SessionEvent, byzantine_fault};
+use crate::proto::*;
+use crate::result::{byzantine_fault, ReceiveError, ReceiveOk, SendError, SessionEvent};
 use crate::zeta::*;
 use crate::ApplicationLayer;
-use crate::proto::*;
-use crate::{challenge::ChallengeContext, result::OpenError};
 #[cfg(feature = "logging")]
 use crate::LogEvent::*;
+use crate::{challenge::ChallengeContext, result::OpenError};
 
 /// Macro to turn off logging at compile time.
 macro_rules! log {

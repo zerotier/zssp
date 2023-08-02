@@ -1,19 +1,12 @@
-/* This Source Code Form is subject to the terms of the Mozilla Public
-* License, v. 2.0. If a copy of the MPL was not distributed with this
-* file, You can obtain one at https://mozilla.org/MPL/2.0/.
-*
-* (c) ZeroTier, Inc.
-* https://www.zerotier.com/
-*/
-use std::sync::Arc;
 use rand_core::{CryptoRng, RngCore};
+use std::sync::Arc;
 
-use crate::Session;
 use crate::crypto::{AeadAesGcm, HashSha512, KeyPairP384, PrivateKeyKyber1024, PrpAes256, PublicKeyP384};
 use crate::proto::RATCHET_SIZE;
 use crate::ratchet_state::RatchetState;
 #[cfg(feature = "logging")]
 use crate::LogEvent;
+use crate::Session;
 
 /// A container for a vast majority of the dynamic settings within ZSSP, including all time-based settings.
 /// If the user wishes to measure time in units other than milliseconds for some reason, then they can

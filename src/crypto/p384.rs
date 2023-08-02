@@ -1,4 +1,3 @@
-// (c) 2020-2022 ZeroTier, Inc. -- currently proprietary pending actual release and licensing. See LICENSE.md.
 use rand_core::{CryptoRng, RngCore};
 
 pub const P384_PUBLIC_KEY_SIZE: usize = 49;

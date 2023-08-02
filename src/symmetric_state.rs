@@ -2,16 +2,9 @@ use std::marker::PhantomData;
 
 use zeroize::Zeroizing;
 
-use crate::ApplicationLayer;
-/* This Source Code Form is subject to the terms of the Mozilla Public
- * License, v. 2.0. If a copy of the MPL was not distributed with this
- * file, You can obtain one at https://mozilla.org/MPL/2.0/.
- *
- * (c) ZeroTier, Inc.
- * https://www.zerotier.com/
- */
 use crate::crypto::{AeadAesGcm, HashSha512, AES_256_KEY_SIZE, AES_GCM_IV_SIZE, AES_GCM_TAG_SIZE};
 use crate::proto::{HASHLEN, LABEL_KBKDF_CHAIN};
+use crate::ApplicationLayer;
 
 pub struct SymmetricState<App: ApplicationLayer> {
     k: Zeroizing<[u8; AES_256_KEY_SIZE]>,
@@ -85,7 +78,12 @@ impl<App: ApplicationLayer> SymmetricState<App> {
     }
 
     pub fn initialize(h: [u8; HASHLEN]) -> Self {
-        Self { k: Zeroizing::default(), ck: Zeroizing::new(h), h, _app: PhantomData }
+        Self {
+            k: Zeroizing::default(),
+            ck: Zeroizing::new(h),
+            h,
+            _app: PhantomData,
+        }
     }
     pub fn mix_key(&mut self, input_key_material: &[u8]) {
         let mut next_ck = [0u8; HASHLEN];

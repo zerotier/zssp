@@ -5,9 +5,9 @@ use std::sync::Mutex;
 use zeroize::Zeroizing;
 
 use crate::crypto::{PrpAes256, AES_256_KEY_SIZE};
-use crate::result::{ReceiveError, byzantine_fault};
-use crate::ApplicationLayer;
 use crate::proto::*;
+use crate::result::{byzantine_fault, ReceiveError};
+use crate::ApplicationLayer;
 
 fn create_fragment_header(kid_send: u32, fragment_count: usize, fragment_no: usize, n: &[u8; PACKET_NONCE_SIZE]) -> [u8; HEADER_SIZE] {
     debug_assert!(fragment_count > 0);
@@ -84,10 +84,7 @@ impl DefragBuffer {
         }
 
         if let Some(hk_recv) = self.hk_recv.as_ref() {
-            App::Prp::decrypt_in_place(
-                hk_recv,
-                (&mut raw_fragment[HEADER_AUTH_START..HEADER_AUTH_END]).try_into().unwrap(),
-            )
+            App::Prp::decrypt_in_place(hk_recv, (&mut raw_fragment[HEADER_AUTH_START..HEADER_AUTH_END]).try_into().unwrap())
         }
 
         let fragment_no = raw_fragment[FRAGMENT_NO_IDX] as usize;

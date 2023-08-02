@@ -1,5 +1,3 @@
-// (c) 2020-2022 ZeroTier, Inc. -- currently proprietary pending actual release and licensing. See LICENSE.md.
-
 pub const AES_256_BLOCK_SIZE: usize = 16;
 pub const AES_256_KEY_SIZE: usize = 32;
 pub const AES_GCM_TAG_SIZE: usize = 16;

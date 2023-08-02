@@ -1,19 +1,19 @@
 use rand_core::RngCore;
-use zeroize::Zeroizing;
 use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Mutex, Weak};
+use zeroize::Zeroizing;
 
 use crate::challenge::{gen_null_response, respond_to_challenge_in_place};
-use crate::context::{ContextInner, SessionMap, log};
+use crate::context::{log, ContextInner, SessionMap};
+use crate::crypto::*;
 use crate::fragmentation::DefragBuffer;
 use crate::proto::*;
 use crate::ratchet_state::RatchetState;
-use crate::result::{FaultType, OpenError, ReceiveError, SendError, byzantine_fault};
+use crate::result::{byzantine_fault, FaultType, OpenError, ReceiveError, SendError};
 use crate::symmetric_state::SymmetricState;
 use crate::ApplicationLayer;
-use crate::crypto::*;
 #[cfg(feature = "logging")]
 use crate::LogEvent::*;
 
@@ -1254,10 +1254,7 @@ pub(crate) fn send_payload<App: ApplicationLayer>(
     let tag = App::Aead::encrypt_in_place(zeta.key_ref(false).send.nk.as_ref().unwrap(), n, None, &mut payload);
     payload.extend(&tag);
 
-    send(
-        &Packet(zeta.key_ref(false).send.kid.unwrap().get(), n, payload),
-        Some(&zeta.hk_send),
-    );
+    send(&Packet(zeta.key_ref(false).send.kid.unwrap().get(), n, payload), Some(&zeta.hk_send));
     Ok(())
 }
 pub(crate) fn received_payload_in_place<App: ApplicationLayer>(
