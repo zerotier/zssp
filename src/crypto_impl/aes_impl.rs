@@ -1,13 +1,8 @@
 // (c) 2020-2022 ZeroTier, Inc. -- currently proprietary pending actual release and licensing. See LICENSE.md.
 use aes::cipher::{generic_array::GenericArray, BlockDecrypt, BlockEncrypt, KeyInit};
 use aes::Aes256;
-use aes_gcm::{
-    aead::AeadMutInPlace,
-    Aes256Gcm,
-    Key, // Or `Aes128Gcm`
-    Nonce,
-    Tag,
-};
+use aes_gcm::aead::AeadMutInPlace;
+use aes_gcm::{Aes256Gcm, Key, Nonce, Tag};
 
 use crate::crypto::*;
 

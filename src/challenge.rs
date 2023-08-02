@@ -41,7 +41,7 @@ impl ChallengeContext {
         let mut salt = [0u8; SALT_SIZE];
         rng.fill_bytes(&mut salt);
         Self {
-            enabled: true,
+            enabled: false,
             counter: 0,
             antireplay_window: std::array::from_fn(|_| 0),
             salt,
@@ -87,7 +87,7 @@ impl ChallengeContext {
         let prev_counter = *slot;
         prev_counter < counter
     }
-    /// Update the challenge window, returning true if the challenge is still valid.
+    /// Update the challenge window to include the given counter.
     fn update_window(&mut self, counter: u64) {
         let slot = &mut self.antireplay_window[(counter as usize) % self.antireplay_window.len()];
         *slot = counter.wrapping_add(1);

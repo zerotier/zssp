@@ -8,7 +8,7 @@ pub const AES_GCM_IV_SIZE: usize = 12;
 /// A trait for encrypting individual blocks of plaintext using AES-256.
 /// It is used for header authentication, for which we have a standard model proof that our
 /// algorithm is secure.
-pub trait PrpAes256: Send + Sync {
+pub trait PrpAes256 {
     /// Decrypt the given `block` of plaintext directly using the AES block cipher
     /// (i.e. AES-256 in zero-padding ECB mode).
     /// The ciphertext should be written directly back out to `block`.

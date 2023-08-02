@@ -20,6 +20,7 @@ use rand_core::OsRng;
 use rand_core::RngCore;
 use sha2::Sha512;
 
+use zssp_proto::crypto::secure_eq;
 use zssp_proto::ratchet_state::RatchetState;
 use zssp_proto::{Settings, RATCHET_SIZE};
 
@@ -54,17 +55,21 @@ impl zssp_proto::ApplicationLayer for &TestApplication {
     type Data = ();
 
     fn hello_requires_recognized_ratchet(&self) -> bool {
-        false
+        true
     }
 
     fn initiator_disallows_downgrade(&self) -> bool {
-        false
+        true
+    }
+
+    fn check_accept_session(&self, remote_static_key: &Self::PublicKey, identity: &[u8]) -> (Option<(bool, Self::Data)>, bool) {
+        (Some((true, ())), true)
     }
 
     fn restore_by_fingerprint(&self, ratchet_fingerprint: &[u8; RATCHET_SIZE]) -> Result<RatchetState, Self::DiskError> {
         let ratchets = self.ratchets.lock().unwrap();
         for rs in ratchets.iter() {
-            if rs.nonempty().map_or(false, |rs| rs.fingerprint.eq_bytes(ratchet_fingerprint)) {
+            if rs.nonempty().map_or(false, |rs| secure_eq(&rs.fingerprint, ratchet_fingerprint)) {
                 return Ok(rs.clone());
             }
         }
@@ -94,10 +99,6 @@ impl zssp_proto::ApplicationLayer for &TestApplication {
 
     fn time(&self) -> i64 {
         self.time.elapsed().as_millis() as i64
-    }
-
-    fn check_accept_session(&self, remote_static_key: &Self::PublicKey, identity: &[u8]) -> (Option<(bool, Self::Data)>, bool) {
-        (Some((false, ())), false)
     }
 
     fn event_log(&self, event: zssp_proto::LogEvent<Self>) {
@@ -282,7 +283,7 @@ fn bob_main(
 fn core(time: u64, packet_success_rate: u32) {
     let run = &AtomicBool::new(true);
 
-    let shared_ratchet_states = RatchetState::new_initial_states();
+    let shared_ratchet_states = RatchetState::new_from_otp::<Sha512>(b"password1");
     let alice_keypair = EphemeralSecret::random(&mut OsRng);
     let alice_app = TestApplication {
         time: Instant::now(),

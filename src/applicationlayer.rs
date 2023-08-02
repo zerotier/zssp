@@ -14,28 +14,62 @@ use crate::ratchet_state::RatchetState;
 #[cfg(feature = "logging")]
 use crate::LogEvent;
 
+/// A container for a vast majority of the dynamic settings within ZSSP, including all time-based settings.
+/// If the user wishes to measure time in units other than milliseconds for some reason, then they can
+/// create an adjusted version of this struct with those units, and use it instead of the default.
 pub struct Settings {
+    /// Timeout for how long Alice should wait for Bob to confirm that the Noise_XK handshake
+    /// was completed successfully. The handshake attempt will be assumed as failed and
+    /// restarted if Bob does not respond by this cut-off.
     pub initial_offer_timeout: u64,
+    /// Timeout for how long ZSSP should wait before expiring and closing a session when it has
+    /// lingered in certain states for too long, primarily the rekeying states.
+    /// If a remote peer does not send the correct information to rekey a session before this
+    /// timeout then the session will close.
     pub rekey_timeout: u64,
+    /// How long until rekeying should occur for each new session key.
     pub rekey_after_time: u64,
+    /// Maximum random jitter to subtract from the rekey after time timer.
+    /// Must be greater than 0.
+    /// This prevents rekeying from occurring predictably on the hour, so traffic analysis is harder.
     pub rekey_time_max_jitter: u64,
+    /// How many key uses may occur before the session starts attempting to rekey.
+    /// The session will forceably close at 2^32 key uses so it is recommended this value be smaller.
     pub rekey_after_key_uses: u64,
+    /// Retry interval for outgoing connection initiation or rekey attempts.
+    ///
+    /// Retry attempts will be no more often than this, but the delay may end up being
+    /// slightly more in some cases based on the rate of calls to `service`.
     pub resend_time: u64,
+    /// How long fragments are allowed to linger in the defragmentation buffer before they are dropped.
+    /// This implementation of a defrag buffer only bounds memory consumption based on this value.
     pub fragment_assembly_timeout: u64,
 }
-impl Default for Settings {
-    fn default() -> Self {
-        Self::new_ms()
-    }
-}
 impl Settings {
+    /// Default value for the `initial_offer_timeout`.
+    /// The default value is 10 seconds in ms.
     pub const INITIAL_OFFER_TIMEOUT_MS: u64 = 10 * 1000;
+    /// Default value for the `rekey_timeout`.
+    /// The default value is 1 minute in ms.
     pub const REKEY_TIMEOUT_MS: u64 = 60 * 1000;
+    /// Default value for the `rekey_after_time`.
+    /// The default value is 1 hour in ms.
     pub const REKEY_AFTER_TIME_MS: u64 = 60 * 60 * 1000;
+    /// Default value for the `rekey_time_max_jitter`.
+    /// The default is 10 minutes in ms.
     pub const REKEY_AFTER_TIME_MAX_JITTER_MS: u64 = 10 * 60 * 1000;
+    /// Default value for the `rekey_after_key_uses`.
+    /// The default is 2^30.
     pub const REKEY_AFTER_KEY_USES: u64 = 1 << 30;
+    /// Default value for the `resend_time`.
+    /// The default is 1 second in ms.
     pub const RESEND_TIME: u64 = 1000;
+    /// Default value for the `fragment_assembly_timeout`.
+    /// The default is 5 seconds in ms.
     pub const FRAGMENT_ASSEMBLY_TIMEOUT_MS: u64 = 5 * 1000;
+    /// Create an instance of Settings with all default values.
+    /// These defaults are in units of milliseconds, so if these defaults are used, `App::time`
+    /// must return timestamps in unts of milliseconds as well.
     pub const fn new_ms() -> Self {
         Self {
             initial_offer_timeout: Self::INITIAL_OFFER_TIMEOUT_MS,
@@ -48,17 +82,20 @@ impl Settings {
         }
     }
 }
+impl Default for Settings {
+    fn default() -> Self {
+        Self::new_ms()
+    }
+}
 
 /// Trait to implement to integrate the session into an application.
 ///
 /// Templating the session on this trait lets the code here be almost entirely transport, OS,
 /// and use case independent.
-///
-/// The constants exposed in this trait can be redefined from their defaults to change rekey
-/// and negotiation timeout behavior. Both sides of a ZSSP session **must** have these constants
-/// set to the same values. Changing these constants is generally discouraged unless you know
-/// what you are doing.
 pub trait ApplicationLayer: Sized {
+    /// These are constants that can be redefined from their defaults to change rekey
+    /// and negotiation timeout behavior. If two sides of a ZSSP session have different constants,
+    /// the protocol will tend to default to the smaller constants.
     const SETTINGS: Settings = Settings::new_ms();
 
     type Rng: CryptoRng + RngCore;
@@ -79,6 +116,11 @@ pub trait ApplicationLayer: Sized {
     /// each session.
     type Data;
 
+    /// Should return the current time in milliseconds. Does not have to be monotonic, nor synced
+    /// with remote peers (although both of these properties would help reliability slightly).
+    /// Used to determine if any current handshakes should be resent or timed-out, or if a session
+    /// should rekey.
+    fn time(&self) -> i64;
     /// This function will be called whenever Alice's initial Hello packet contains the empty ratchet
     /// fingerprint. Brand new peers will always connect to Bob with the empty ratchet, but from
     /// then on they should be using non-empty ratchet states.
@@ -105,6 +147,14 @@ pub trait ApplicationLayer: Sized {
     /// been compromised and is being impersonated. An attacker must at least have Bob's private
     /// static key to be able to ask Alice to downgrade.
     fn initiator_disallows_downgrade(&self) -> bool;
+
+    ///   `check_accept_session` - Function to accept sessions after final negotiation.
+    ///   The second argument is the identity blob that the remote peer sent us. The application
+    ///   must verify this identity is associated with the remote peer's static key.
+    ///   The third argument is the ratchet chain length, or ratchet count.
+    ///   To prevent desync, if this function returns (Some(_), _), no other open session with the
+    ///   same remote peer must exist. Drop or call expire on these sessions.
+    fn check_accept_session(&self, remote_static_key: &Self::PublicKey, identity: &[u8]) -> (Option<(bool, Self::Data)>, bool);
     /// Lookup a specific ratchet state based on its ratchet fingerprint.
     /// This function will be called whenever Alice attempts to connect to us with a non-empty
     /// ratchet fingerprint.
@@ -147,9 +197,9 @@ pub trait ApplicationLayer: Sized {
         new_ratchet_states: [&RatchetState; 2],
     ) -> Result<(), Self::DiskError>;
 
+    /// Receives a stream of events that occur during an execution of ZSSP.
+    /// These are provided for debugging, logging or metrics purposes, and must be used for
+    /// nothing else. Do not base protocol-level decisions upon the events passed to this function.
     #[cfg(feature = "logging")]
     fn event_log(&self, event: LogEvent<Self>);
-
-    fn time(&self) -> i64;
-    fn check_accept_session(&self, remote_static_key: &Self::PublicKey, identity: &[u8]) -> (Option<(bool, Self::Data)>, bool);
 }

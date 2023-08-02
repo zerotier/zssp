@@ -2,10 +2,12 @@ use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use crate::crypto::{PrpAes256, Secret, AES_256_KEY_SIZE};
-use crate::result::ReceiveError;
+use zeroize::Zeroizing;
+
+use crate::crypto::{PrpAes256, AES_256_KEY_SIZE};
+use crate::result::{ReceiveError, byzantine_fault};
 use crate::ApplicationLayer;
-use crate::{byzantine_fault, proto::*};
+use crate::proto::*;
 
 fn create_fragment_header(kid_send: u32, fragment_count: usize, fragment_no: usize, n: &[u8; PACKET_NONCE_SIZE]) -> [u8; HEADER_SIZE] {
     debug_assert!(fragment_count > 0);
@@ -55,7 +57,7 @@ pub fn send_with_fragmentation<App: ApplicationLayer>(
 
 pub struct DefragBuffer {
     fragment_map: Mutex<HashMap<[u8; PACKET_NONCE_SIZE], Buffer>>,
-    hk_recv: Option<Secret<AES_256_KEY_SIZE>>,
+    hk_recv: Option<Zeroizing<[u8; AES_256_KEY_SIZE]>>,
 }
 
 struct Buffer {
@@ -66,11 +68,11 @@ struct Buffer {
 }
 
 impl DefragBuffer {
-    pub fn new(hk_recv: Option<Secret<AES_256_KEY_SIZE>>) -> Self {
+    pub fn new(hk_recv: Option<Zeroizing<[u8; AES_256_KEY_SIZE]>>) -> Self {
         Self { fragment_map: Mutex::new(HashMap::new()), hk_recv }
     }
 
-    pub fn recv_fragment<App: ApplicationLayer>(
+    pub fn received_fragment<App: ApplicationLayer>(
         &self,
         mut raw_fragment: Vec<u8>,
         current_time: i64,
@@ -83,7 +85,7 @@ impl DefragBuffer {
 
         if let Some(hk_recv) = self.hk_recv.as_ref() {
             App::Prp::decrypt_in_place(
-                hk_recv.as_ref(),
+                hk_recv,
                 (&mut raw_fragment[HEADER_AUTH_START..HEADER_AUTH_END]).try_into().unwrap(),
             )
         }

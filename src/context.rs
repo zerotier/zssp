@@ -7,23 +7,29 @@ use std::sync::{Arc, Mutex, Weak};
 
 use crate::crypto::{AES_256_KEY_SIZE, AES_GCM_IV_SIZE};
 use crate::fragmentation::{send_with_fragmentation, DefragBuffer};
-use crate::result::{ReceiveError, ReceiveOk, SendError, SessionEvent};
+use crate::result::{ReceiveError, ReceiveOk, SendError, SessionEvent, byzantine_fault};
 use crate::zeta::*;
 use crate::ApplicationLayer;
-use crate::{byzantine_fault, proto::*};
+use crate::proto::*;
 use crate::{challenge::ChallengeContext, result::OpenError};
-
 #[cfg(feature = "logging")]
 use crate::LogEvent::*;
+
 /// Macro to turn off logging at compile time.
-#[macro_export]
 macro_rules! log {
     ($app:expr, $event:expr) => {
         #[cfg(feature = "logging")]
         $app.event_log($event);
     };
 }
+pub(crate) use log;
 
+/// Session context for local application.
+///
+/// Each application using ZSSP must create an instance of this to own sessions and
+/// defragment incoming packets that are not yet associated with a session.
+///
+/// Internally this is just a clonable Arc, so it can be safely shared with multiple threads.
 pub struct Context<App: ApplicationLayer>(Arc<ContextInner<App>>);
 impl<App: ApplicationLayer> Clone for Context<App> {
     fn clone(&self) -> Self {
@@ -36,7 +42,6 @@ pub(crate) type SessionMap<App> = Mutex<HashMap<NonZeroU32, Weak<Session<App>>>>
 pub(crate) struct ContextInner<App: ApplicationLayer> {
     pub(crate) rng: Mutex<App::Rng>,
     pub(crate) s_secret: App::KeyPair,
-    /// `session_queue -> state_machine_lock -> state -> session_map`
     pub(crate) session_map: SessionMap<App>,
     pub(crate) sessions: Mutex<HashMap<*const Session<App>, Weak<Session<App>>>>,
     pub(crate) b2_map: Mutex<HashMap<NonZeroU32, StateB2<App>>>,
@@ -69,10 +74,26 @@ impl<App: ApplicationLayer> Context<App> {
             sessions: Mutex::new(HashMap::new()),
         }))
     }
+    /// Enable the ZeroTier Challenge Protocol, to protect this machine from CPU exhaustion DDOS
+    /// attacks.
     pub fn enable_challenge(&self, enabled: bool) {
         self.0.challenge.lock().unwrap().enabled = enabled;
     }
 
+    /// Create a new session and send initial packet(s) to other side.
+    ///
+    /// This will return SendError::DataTooLarge if the combined size of the metadata and the local
+    /// static public blob (as retrieved from the application layer) exceed MAX_INIT_PAYLOAD_SIZE.
+    ///
+    /// * `app` - Application layer instance
+    /// * `send` - Function to be called to send one or more initial packets to the remote being
+    ///   contacted
+    /// * `mtu` - MTU for initial packets
+    /// * `static_remote_key` - Remote side's static public NIST P-384 key
+    /// * `application_data` - Arbitrary data meaningful to the application to include with session
+    ///   object
+    /// * `identity` - Payload to be sent to Bob that contains the information necessary
+    ///   for the upper protocol to authenticate and approve of Alice's identity.
     pub fn open(
         &self,
         app: App,
@@ -99,6 +120,14 @@ impl<App: ApplicationLayer> Context<App> {
         )
     }
 
+    /// Receive, authenticate, decrypt, and process a physical wire packet.
+    ///
+    /// * `app` - Interface to application using ZSSP
+    /// * `send_unassociated_reply` - Function to send reply packets directly when no session exists
+    /// * `send_unassociated_mtu` - MTU for unassociated replies
+    /// * `send_to` - Function to get senders for existing sessions, permitting MTU and path lookup
+    /// * `remote_address` - Whatever the remote address is, as long as you can Hash it
+    /// * `raw_fragment` - Buffer containing incoming wire packet
     pub fn receive<'a, SendFn: FnMut(Vec<u8>) -> bool>(
         &self,
         app: App,
@@ -119,7 +148,7 @@ impl<App: ApplicationLayer> Context<App> {
             if let Some(Some(session)) = session {
                 // Process recv fragmentation layer.
                 let mut zeta = session.0.lock().unwrap();
-                let result = zeta.defrag.recv_fragment::<App>(raw_fragment, app.time(), |n, frag_no, frag_count| {
+                let result = zeta.defrag.received_fragment::<App>(raw_fragment, app.time(), |n, frag_no, frag_count| {
                     let (p, c) = from_nonce(n);
                     if p != PACKET_TYPE_DATA {
                         log!(app, ReceivedRawFragment(p, c, frag_no, frag_count));
@@ -160,12 +189,12 @@ impl<App: ApplicationLayer> Context<App> {
                     let (p, _) = from_nonce(&pn);
                     let ret = match p {
                         PACKET_TYPE_DATA => {
-                            recv_payload_in_place(&mut zeta, kid_recv, to_aes_nonce(&pn), &mut assembled_packet)?;
+                            received_payload_in_place(&mut zeta, kid_recv, to_aes_nonce(&pn), &mut assembled_packet)?;
                             SessionEvent::Data(assembled_packet)
                         }
                         PACKET_TYPE_HANDSHAKE_RESPONSE => {
                             log!(app, ReceivedRawX2);
-                            recv_x2_trans(
+                            received_x2_trans(
                                 &mut zeta,
                                 &session,
                                 &app,
@@ -180,7 +209,8 @@ impl<App: ApplicationLayer> Context<App> {
                         }
                         PACKET_TYPE_KEY_CONFIRM => {
                             log!(app, ReceivedRawKeyConfirm);
-                            let result = recv_c1_trans(&mut zeta, &app, &ctx.rng, kid_recv, to_aes_nonce(&pn), assembled_packet, send_associated)?;
+                            let result =
+                                received_c1_trans(&mut zeta, &app, &ctx.rng, kid_recv, to_aes_nonce(&pn), assembled_packet, send_associated)?;
                             log!(app, KeyConfirmIsAuthSentAck(&session));
                             if result {
                                 SessionEvent::Established
@@ -190,13 +220,13 @@ impl<App: ApplicationLayer> Context<App> {
                         }
                         PACKET_TYPE_ACK => {
                             log!(app, ReceivedRawAck);
-                            recv_c2_trans(&mut zeta, &app, &ctx.rng, kid_recv, to_aes_nonce(&pn), assembled_packet)?;
+                            received_c2_trans(&mut zeta, &app, &ctx.rng, kid_recv, to_aes_nonce(&pn), assembled_packet)?;
                             log!(app, AckIsAuth(&session));
                             SessionEvent::Control
                         }
                         PACKET_TYPE_REKEY_INIT => {
                             log!(app, ReceivedRawK1);
-                            recv_k1_trans(
+                            received_k1_trans(
                                 &mut zeta,
                                 &session,
                                 &app,
@@ -213,13 +243,13 @@ impl<App: ApplicationLayer> Context<App> {
                         }
                         PACKET_TYPE_REKEY_COMPLETE => {
                             log!(app, ReceivedRawK2);
-                            recv_k2_trans(&mut zeta, &app, kid_recv, to_aes_nonce(&pn), assembled_packet, send_associated)?;
+                            received_k2_trans(&mut zeta, &app, kid_recv, to_aes_nonce(&pn), assembled_packet, send_associated)?;
                             log!(app, K2IsAuthSentKeyConfirm(&session));
                             SessionEvent::Control
                         }
                         PACKET_TYPE_SESSION_REJECTED => {
                             log!(app, ReceivedRawD);
-                            recv_d_trans(&mut zeta, kid_recv, to_aes_nonce(&pn), assembled_packet)?;
+                            received_d_trans(&mut zeta, kid_recv, to_aes_nonce(&pn), assembled_packet)?;
                             log!(app, DIsAuthClosedSession(&session));
                             SessionEvent::Rejected
                         }
@@ -235,7 +265,7 @@ impl<App: ApplicationLayer> Context<App> {
                 if let Entry::Occupied(mut entry) = b2_map.entry(kid_recv) {
                     let zeta = entry.get_mut();
                     // Process recv fragmentation layer.
-                    let result = zeta.defrag.recv_fragment::<App>(raw_fragment, app.time(), |n, frag_no, frag_count| {
+                    let result = zeta.defrag.received_fragment::<App>(raw_fragment, app.time(), |n, frag_no, frag_count| {
                         let (p, c) = from_nonce(n);
                         log!(app, ReceivedRawFragment(p, c, frag_no, frag_count));
                         if p == PACKET_TYPE_HANDSHAKE_COMPLETION && c == 0 {
@@ -247,7 +277,7 @@ impl<App: ApplicationLayer> Context<App> {
                     if let Some((_, assembled_packet)) = result {
                         log!(app, ReceivedRawX3);
                         let zeta = entry.remove();
-                        let session = recv_x3_trans(zeta, &app, ctx, kid_recv, assembled_packet, |Packet(kid, nonce, payload), hk| {
+                        let session = received_x3_trans(zeta, &app, ctx, kid_recv, assembled_packet, |Packet(kid, nonce, payload), hk| {
                             send_with_fragmentation::<App>(
                                 send_unassociated_reply,
                                 send_unassociated_mtu,
@@ -274,7 +304,7 @@ impl<App: ApplicationLayer> Context<App> {
                 .hello_defrag
                 .lock()
                 .unwrap()
-                .recv_fragment::<App>(raw_fragment, app.time(), |n, frag_no, frag_count| {
+                .received_fragment::<App>(raw_fragment, app.time(), |n, frag_no, frag_count| {
                     let (p, c) = from_nonce(n);
                     log!(app, ReceivedRawFragment(p, c, frag_no, frag_count));
                     if p == PACKET_TYPE_HANDSHAKE_HELLO || p == PACKET_TYPE_CHALLENGE {
@@ -316,7 +346,7 @@ impl<App: ApplicationLayer> Context<App> {
                     assembled_packet.truncate(challenge_start);
 
                     // Process recv zeta layer.
-                    recv_x1_trans(&app, &ctx, to_aes_nonce(&n), assembled_packet, |Packet(kid, nonce, payload), hk| {
+                    received_x1_trans(&app, &ctx, to_aes_nonce(&n), assembled_packet, |Packet(kid, nonce, payload), hk| {
                         send_with_fragmentation::<App>(
                             send_unassociated_reply,
                             send_unassociated_mtu,
@@ -352,6 +382,13 @@ impl<App: ApplicationLayer> Context<App> {
         }
     }
 
+    /// Send data over the session.
+    ///
+    /// * `session` - The session to send to
+    /// * `send` - Function to call to send physical packet(s); the buffer passed to `send` is a
+    ///   slice of `data`
+    /// * `mtu` - The MTU of the link, all packets passed to `send` will be at most `mtu` in length
+    /// * `payload` - Data to send
     pub fn send(&self, session: &Arc<Session<App>>, send: impl FnMut(Vec<u8>) -> bool, mut mtu: usize, payload: Vec<u8>) -> Result<(), SendError> {
         mtu = mtu.max(MIN_TRANSPORT_MTU);
         let mut zeta = session.0.lock().unwrap();
@@ -360,6 +397,13 @@ impl<App: ApplicationLayer> Context<App> {
         })
     }
 
+    /// Perform periodic background service and cleanup tasks.
+    ///
+    /// This returns the number of milliseconds until it should be called again. The caller should
+    /// try to satisfy this but small variations in timing of up to a few seconds are not
+    /// a problem.
+    ///
+    /// * `send_to` - Function to get a sender and an MTU to send something over an active session
     pub fn service<SendFn: FnMut(Vec<u8>) -> bool>(&self, app: App, mut send_to: impl FnMut(&Arc<Session<App>>) -> Option<(SendFn, usize)>) -> i64 {
         let ctx = &self.0;
         let sessions = ctx.sessions.lock().unwrap();

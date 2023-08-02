@@ -69,12 +69,15 @@ KKpsk0:
     <- e, ee, se
 */
 pub(crate) const HASHLEN: usize = SHA512_HASH_SIZE;
+/// The size in bytes of both a ratchet key and a ratchet fingerprint.
 pub const RATCHET_SIZE: usize = 32;
 
 pub(crate) const PROTOCOL_NAME_NOISE_XK: [u8; HASHLEN] = *b"Noise_XKhfs+psk2_P384+Kyber1024_AESGCM_SHA512\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
 pub(crate) const PROTOCOL_NAME_NOISE_KK: [u8; HASHLEN] =
     *b"Noise_KKpsk0_P384_AESGCM_SHA512\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
 
+pub(crate) const LABEL_OTP_TO_RATCHET: &[u8; 19] = b"ZSSP_OTP_TO_RATCHET";
+pub(crate) const LABEL_KBKDF_CHAIN: &[u8; 4] = b"ZSSP";
 pub(crate) const LABEL_RATCHET_STATE: &[u8; 4] = b"ASKR";
 pub(crate) const LABEL_HEADER_KEY: &[u8; 4] = b"ASKH";
 pub(crate) const LABEL_KEX_KEY: &[u8; 4] = b"ASKK";
