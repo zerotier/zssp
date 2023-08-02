@@ -1,116 +1,38 @@
-/* This Source Code Form is subject to the terms of the Mozilla Public
- * License, v. 2.0. If a copy of the MPL was not distributed with this
- * file, You can obtain one at https://mozilla.org/MPL/2.0/.
- *
- * (c) ZeroTier, Inc.
- * https://www.zerotier.com/
- */
-use crate::crypto::aes::AES_256_KEY_SIZE;
-use crate::crypto::secret::Secret;
-use crate::crypto::sha512::HmacSha512;
+use std::marker::PhantomData;
 
-use crate::proto::NOISE_HASHLEN;
+use zeroize::Zeroizing;
 
-#[derive(Clone)]
-pub(crate) struct SymmetricState {
-    chaining_key: Secret<NOISE_HASHLEN>,
-    token_counter: u8,
+use crate::crypto::{AeadAesGcm, HashSha512, AES_256_KEY_SIZE, AES_GCM_IV_SIZE, AES_GCM_TAG_SIZE};
+use crate::proto::{HASHLEN, LABEL_KBKDF_CHAIN};
+use crate::ApplicationLayer;
+
+pub struct SymmetricState<App: ApplicationLayer> {
+    k: Zeroizing<[u8; AES_256_KEY_SIZE]>,
+    ck: Zeroizing<[u8; HASHLEN]>,
+    h: [u8; HASHLEN],
+    /// If anyone knows a better way to get rid of the "parameter `App` is never used" error please
+    /// let me know.
+    _app: PhantomData<fn() -> App::Data>,
+}
+impl<App: ApplicationLayer> Clone for SymmetricState<App> {
+    fn clone(&self) -> Self {
+        Self {
+            k: self.k.clone(),
+            ck: self.ck.clone(),
+            h: self.h.clone(),
+            _app: PhantomData,
+        }
+    }
 }
 
-impl SymmetricState {
-    pub(crate) fn new(h: [u8; NOISE_HASHLEN]) -> Self {
-        Self { chaining_key: Secret(h), token_counter: b'P' }
-    }
-    /// Corresponds to Noise `MixKey`.
-    pub(crate) fn mix_key(&mut self, hm: &mut impl HmacSha512, input_key_material: &[u8]) {
-        let mut next_ck = Secret::new();
+const KBKDF_LABEL_START: usize = 1;
+const KBKDF_LABEL_END: usize = KBKDF_LABEL_START + 4;
+const KBKDF_CONTEXT_START: usize = KBKDF_LABEL_END + 1;
+const KBKDF_LENGTH_START: usize = KBKDF_CONTEXT_START + HASHLEN;
+const KBKDF_INPUT_SIZE: usize = KBKDF_LENGTH_START + 2;
+const HASHLEN_BITS: usize = HASHLEN * 8;
 
-        self.kbkdf(hm, input_key_material, self.label(), 2, next_ck.as_mut(), None, None);
-        self.token_counter += 1;
-
-        self.chaining_key.overwrite(&next_ck);
-        // We don't need a key at this step of Noise, so generating that key and calling
-        // `InitializeKey` would be completely pointless.
-    }
-    /// Corresponds to Noise `MixKey` followed by `InitializeKey`.
-    pub(crate) fn mix_key_initialize_key(&mut self, hm: &mut impl HmacSha512, input_key_material: &[u8]) -> Secret<AES_256_KEY_SIZE> {
-        let mut next_ck = Secret::new();
-        let mut temp_k = [0u8; NOISE_HASHLEN];
-
-        self.kbkdf(hm, input_key_material, self.label(), 2, next_ck.as_mut(), Some(&mut temp_k), None);
-        self.token_counter += 1;
-
-        self.chaining_key.overwrite(&next_ck);
-        Secret::from_bytes_then_delete(&mut temp_k[..AES_256_KEY_SIZE])
-    }
-    /// Corresponds to Noise `MixKeyAndHash`.
-    pub(crate) fn mix_key_and_hash(&mut self, hm: &mut impl HmacSha512, input_key_material: &[u8]) -> [u8; NOISE_HASHLEN] {
-        let mut next_ck = Secret::new();
-        let mut temp_h = [0u8; NOISE_HASHLEN];
-
-        self.kbkdf(hm, input_key_material, self.label(), 3, next_ck.as_mut(), Some(&mut temp_h), None);
-        self.token_counter += 1;
-
-        self.chaining_key.overwrite(&next_ck);
-        temp_h
-    }
-    /// Corresponds to Noise `MixKeyAndHash` followed by `InitializeKey`.
-    pub(crate) fn mix_key_and_hash_initialize_key(
-        &mut self,
-        hm: &mut impl HmacSha512,
-        input_key_material: &[u8],
-    ) -> ([u8; NOISE_HASHLEN], Secret<AES_256_KEY_SIZE>) {
-        let mut next_ck = Secret::new();
-        let mut temp_h = [0u8; NOISE_HASHLEN];
-        let mut temp_k = [0u8; NOISE_HASHLEN];
-
-        self.kbkdf(
-            hm,
-            input_key_material,
-            self.label(),
-            3,
-            next_ck.as_mut(),
-            Some(&mut temp_h),
-            Some(&mut temp_k),
-        );
-        self.token_counter += 1;
-
-        self.chaining_key.overwrite(&next_ck);
-        (temp_h, Secret::from_bytes_then_delete(&mut temp_k[..AES_256_KEY_SIZE]))
-    }
-    /// Get an additional symmetric key (ASK) that is a collision resistant hash of the transcript,
-    /// is forward secrect and is cryptographically independent from all other produced keys.
-    /// Based on Noise's unstable ASK mechanism, using KBKDF instead of HKDF.
-    /// https://github.com/noiseprotocol/noise_wiki/wiki/Additional-Symmetric-Keys.
-    pub(crate) fn get_ask2(
-        &self,
-        hm: &mut impl HmacSha512,
-        label: u8,
-        noise_h: &[u8; NOISE_HASHLEN],
-    ) -> (Secret<AES_256_KEY_SIZE>, Secret<AES_256_KEY_SIZE>) {
-        let mut temp_k1 = [0u8; NOISE_HASHLEN];
-        let mut temp_k2 = [0u8; NOISE_HASHLEN];
-        self.kbkdf(hm, noise_h, [b'A', b'S', b'K', label], 2, &mut temp_k1, Some(&mut temp_k2), None);
-        (
-            Secret::from_bytes_then_delete(&mut temp_k1[..AES_256_KEY_SIZE]),
-            Secret::from_bytes_then_delete(&mut temp_k2[..AES_256_KEY_SIZE]),
-        )
-    }
-    /// Corresponds to Noise `Split`.
-    pub(crate) fn split(self, hm: &mut impl HmacSha512) -> (Secret<AES_256_KEY_SIZE>, Secret<AES_256_KEY_SIZE>) {
-        let mut temp_k1 = [0u8; NOISE_HASHLEN];
-        let mut temp_k2 = [0u8; NOISE_HASHLEN];
-        self.kbkdf(hm, &[], self.label(), 2, &mut temp_k1, Some(&mut temp_k2), None);
-        // Normally KBKDF would not truncate to derive the correct length of AES keys,
-        // but Noise specifies that the AES keys be truncated from NOISE_HASHLEN to AES_256_KEY_SIZE.
-        (
-            Secret::from_bytes_then_delete(&mut temp_k1[..AES_256_KEY_SIZE]),
-            Secret::from_bytes_then_delete(&mut temp_k2[..AES_256_KEY_SIZE]),
-        )
-    }
-    fn label(&self) -> [u8; 4] {
-        [b'Z', b'S', b'S', self.token_counter]
-    }
+impl<App: ApplicationLayer> SymmetricState<App> {
     /// HMAC-SHA512 key derivation based on KBKDF Counter Mode:
     /// https://csrc.nist.gov/publications/detail/sp/800-108/rev-1/final.
     /// Cryptographically this isn't meaningfully different from
@@ -124,34 +46,122 @@ impl SymmetricState {
     /// and data representation ambiguity.
     fn kbkdf(
         &self,
-        hm: &mut impl HmacSha512,
         input_key_material: &[u8],
-        label: [u8; 4],
+        label: &[u8; 4],
         num_outputs: u16,
-        output1: &mut [u8; NOISE_HASHLEN],
-        output2: Option<&mut [u8; NOISE_HASHLEN]>,
-        output3: Option<&mut [u8; NOISE_HASHLEN]>,
+        output1: &mut [u8; HASHLEN],
+        output2: Option<&mut [u8; HASHLEN]>,
+        output3: Option<&mut [u8; HASHLEN]>,
     ) {
-        let l = &(num_outputs * 512u16).to_be_bytes();
+        let mut buffer = Zeroizing::new([0u8; KBKDF_INPUT_SIZE]);
+        let buffer: &mut [u8] = buffer.as_mut();
+        buffer[0] = 1;
+        buffer[KBKDF_LABEL_START..KBKDF_LABEL_END].copy_from_slice(label);
+        buffer[KBKDF_LABEL_END] = 0x00;
+        buffer[KBKDF_CONTEXT_START..KBKDF_LENGTH_START].copy_from_slice(self.ck.as_ref());
+        buffer[KBKDF_LENGTH_START..].copy_from_slice(&(num_outputs * HASHLEN_BITS as u16).to_be_bytes());
 
-        hm.reset(input_key_material);
-        hm.update(&[1, label[0], label[1], label[2], label[3], 0x00]);
-        hm.update(self.chaining_key.as_ref());
-        hm.update(l);
-        hm.finish(output1);
+        debug_assert!(num_outputs >= 1);
+        *output1 = App::Hash::hmac(input_key_material, &buffer);
+
         if let Some(output2) = output2 {
-            hm.reset(input_key_material);
-            hm.update(&[2, label[0], label[1], label[2], label[3], 0x00]);
-            hm.update(self.chaining_key.as_ref());
-            hm.update(l);
-            hm.finish(output2);
+            debug_assert!(num_outputs >= 2);
+            buffer[0] = 2;
+            *output2 = App::Hash::hmac(input_key_material, &buffer);
         }
+
         if let Some(output3) = output3 {
-            hm.reset(input_key_material);
-            hm.update(&[3, label[0], label[1], label[2], label[3], 0x00]);
-            hm.update(self.chaining_key.as_ref());
-            hm.update(l);
-            hm.finish(output3);
+            debug_assert!(num_outputs >= 3);
+            buffer[0] = 3;
+            *output3 = App::Hash::hmac(input_key_material, &buffer);
         }
+    }
+
+    pub fn initialize(h: [u8; HASHLEN]) -> Self {
+        Self {
+            k: Zeroizing::default(),
+            ck: Zeroizing::new(h),
+            h,
+            _app: PhantomData,
+        }
+    }
+    pub fn mix_key(&mut self, input_key_material: &[u8]) {
+        let mut next_ck = [0u8; HASHLEN];
+        let mut temp_k = [0u8; HASHLEN];
+
+        self.kbkdf(input_key_material, LABEL_KBKDF_CHAIN, 2, &mut next_ck, Some(&mut temp_k), None);
+
+        *self.ck = next_ck;
+        self.k.clone_from_slice(&temp_k[..AES_256_KEY_SIZE]);
+    }
+    pub fn mix_hash(&mut self, data: &[u8]) {
+        let mut hash = App::Hash::new();
+        hash.update(&self.h);
+        hash.update(data);
+        self.h = hash.finish();
+    }
+    pub fn mix_key_and_hash(&mut self, input_key_material: &[u8]) {
+        let mut next_ck = [0u8; HASHLEN];
+        let mut temp_h = [0u8; HASHLEN];
+        let mut temp_k = [0u8; HASHLEN];
+
+        self.kbkdf(
+            input_key_material,
+            LABEL_KBKDF_CHAIN,
+            3,
+            &mut next_ck,
+            Some(&mut temp_h),
+            Some(&mut temp_k),
+        );
+
+        *self.ck = next_ck;
+        self.mix_hash(&temp_h);
+        self.k.clone_from_slice(&temp_k[..AES_256_KEY_SIZE]);
+    }
+    pub fn encrypt_and_hash_in_place(&mut self, iv: [u8; AES_GCM_IV_SIZE], plaintext_start: usize, buffer: &mut Vec<u8>) {
+        let tag = App::Aead::encrypt_in_place(&self.k, iv, Some(&self.h), &mut buffer[plaintext_start..]);
+        buffer.extend(&tag);
+        let mut hash = App::Hash::new();
+        hash.update(&buffer[plaintext_start..]);
+        self.h = hash.finish();
+    }
+    #[must_use]
+    pub fn decrypt_and_hash_in_place(&mut self, iv: [u8; AES_GCM_IV_SIZE], buffer: &mut [u8], tag: [u8; AES_GCM_TAG_SIZE]) -> bool {
+        let mut hash = App::Hash::new();
+        hash.update(buffer);
+        hash.update(&tag);
+        let ret = App::Aead::decrypt_in_place(&self.k, iv, Some(&self.h), buffer, tag);
+        self.h = hash.finish();
+        ret
+    }
+    /// Corresponds to Noise `Split`.
+    pub fn split(self) -> (Zeroizing<[u8; AES_256_KEY_SIZE]>, Zeroizing<[u8; AES_256_KEY_SIZE]>) {
+        let mut temp_k1 = [0u8; HASHLEN];
+        let mut temp_k2 = [0u8; HASHLEN];
+        self.kbkdf(&[], LABEL_KBKDF_CHAIN, 2, &mut temp_k1, Some(&mut temp_k2), None);
+        // Normally KBKDF would not truncate to derive the correct length of AES keys,
+        // but Noise specifies that the AES keys be truncated from HASHLEN to AES_256_KEY_SIZE.
+        (
+            Zeroizing::new(temp_k1[..AES_256_KEY_SIZE].try_into().unwrap()),
+            Zeroizing::new(temp_k2[..AES_256_KEY_SIZE].try_into().unwrap()),
+        )
+    }
+    /// Get an additional symmetric key (ASK) that is a collision resistant hash of the transcript,
+    /// is forward secrect and is cryptographically independent from all other produced keys.
+    /// Based on Noise's unstable ASK mechanism, using KBKDF instead of HKDF.
+    /// https://github.com/noiseprotocol/noise_wiki/wiki/Additional-Symmetric-Keys.
+    pub fn get_ask(&self, label: &[u8; 4]) -> (Zeroizing<[u8; AES_256_KEY_SIZE]>, Zeroizing<[u8; AES_256_KEY_SIZE]>) {
+        let mut temp_k1 = [0u8; HASHLEN];
+        let mut temp_k2 = [0u8; HASHLEN];
+        self.kbkdf(&self.h, label, 2, &mut temp_k1, Some(&mut temp_k2), None);
+        (
+            Zeroizing::new(temp_k1[..AES_256_KEY_SIZE].try_into().unwrap()),
+            Zeroizing::new(temp_k2[..AES_256_KEY_SIZE].try_into().unwrap()),
+        )
+    }
+    /// Used for internally debugging a key exchange.
+    #[allow(unused)]
+    pub(crate) fn finger(&self) -> (u8, u8, u8) {
+        (self.k[0], self.ck[0], self.h[0])
     }
 }

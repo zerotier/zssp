@@ -1,38 +1,29 @@
-// (c) 2020-2022 ZeroTier, Inc. -- currently proprietary pending actual release and licensing. See LICENSE.md.
-
 pub const AES_256_BLOCK_SIZE: usize = 16;
 pub const AES_256_KEY_SIZE: usize = 32;
+pub const AES_GCM_TAG_SIZE: usize = 16;
+pub const AES_GCM_IV_SIZE: usize = 12;
 
 /// A trait for encrypting individual blocks of plaintext using AES-256.
 /// It is used for header authentication, for which we have a standard model proof that our
 /// algorithm is secure.
-///
-/// Instances must securely delete their keys when dropped or reset.
-pub trait AesEnc: Send + Sync {
-    fn new(key: &[u8; AES_256_KEY_SIZE]) -> Self;
-
-    /// Change the encryption key to `key` so that all future encryption is performed with it.
-    /// This function is very rarely called so it does not have to be particularly efficient.
-    fn reset(&self, key: &[u8; AES_256_KEY_SIZE]);
-
+pub trait PrpAes256 {
     /// Decrypt the given `block` of plaintext directly using the AES block cipher
     /// (i.e. AES-256 in zero-padding ECB mode).
     /// The ciphertext should be written directly back out to `block`.
-    fn encrypt_in_place(&self, block: &mut [u8; AES_256_BLOCK_SIZE]);
-}
-
-/// A trait for decrypting individual blocks of plaintext using AES-256.
-///
-/// Instances must securely delete their keys when dropped or reset.
-pub trait AesDec: Send + Sync {
-    fn new(key: &[u8; AES_256_KEY_SIZE]) -> Self;
-
-    /// Change the decryption key to `key` so that all future decryption is performed with it.
-    /// This function is very rarely called so it does not have to be particularly efficient.
-    fn reset(&self, key: &[u8; AES_256_KEY_SIZE]);
-
+    fn encrypt_in_place(key: &[u8; AES_256_KEY_SIZE], block: &mut [u8; AES_256_BLOCK_SIZE]);
     /// Decrypt the given `block` of ciphertext directly using the AES 256 block cipher
     /// (i.e. AES-256 in zero-padding ECB mode).
     /// The plaintext should be written directly back out to `block`.
-    fn decrypt_in_place(&self, block: &mut [u8; AES_256_BLOCK_SIZE]);
+    fn decrypt_in_place(key: &[u8; AES_256_KEY_SIZE], block: &mut [u8; AES_256_BLOCK_SIZE]);
+}
+
+pub trait AeadAesGcm {
+    fn encrypt_in_place(key: &[u8; AES_256_KEY_SIZE], iv: [u8; AES_GCM_IV_SIZE], aad: Option<&[u8]>, buffer: &mut [u8]) -> [u8; AES_GCM_TAG_SIZE];
+    fn decrypt_in_place(
+        key: &[u8; AES_256_KEY_SIZE],
+        iv: [u8; AES_GCM_IV_SIZE],
+        aad: Option<&[u8]>,
+        buffer: &mut [u8],
+        tag: [u8; AES_GCM_TAG_SIZE],
+    ) -> bool;
 }
