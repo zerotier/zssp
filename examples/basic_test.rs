@@ -9,7 +9,7 @@
 use std::iter::ExactSizeIterator;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Mutex};
+use std::sync::{mpsc, Mutex, Arc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -22,7 +22,7 @@ use sha2::Sha512;
 
 use zssp_proto::crypto::secure_eq;
 use zssp_proto::ratchet_state::RatchetState;
-use zssp_proto::{Settings, RATCHET_SIZE};
+use zssp_proto::{Settings, RATCHET_SIZE, Session};
 
 const TEST_MTU: usize = 1500;
 
@@ -58,7 +58,7 @@ impl zssp_proto::ApplicationLayer for &TestApplication {
         true
     }
 
-    fn initiator_disallows_downgrade(&self, session: &Arc<Session>) -> bool {
+    fn initiator_disallows_downgrade(&self, session: &Arc<Session<Self>>) -> bool {
         true
     }
 
