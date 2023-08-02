@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 use std::iter::ExactSizeIterator;
+use std::ops::Deref;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -35,6 +36,14 @@ struct TestApplication {
 struct Ratchets {
     rf_map: HashMap<[u8; RATCHET_SIZE], RatchetState>,
     peer_map: HashMap<u128, (RatchetState, Option<RatchetState>)>,
+}
+impl Ratchets {
+    fn new() -> Self {
+        Self {
+            rf_map: HashMap::new(),
+            peer_map: HashMap::new(),
+        }
+    }
 }
 
 #[allow(unused)]
@@ -78,7 +87,7 @@ impl zssp_proto::ApplicationLayer for &TestApplication {
 
     fn restore_by_identity(&self, remote_static_key: &Self::PublicKey, application_data: &Self::Data) -> Result<(RatchetState, Option<RatchetState>), Self::DiskError> {
         let ratchets = self.ratchets.lock().unwrap();
-        Ok(ratchets.peer_map.get(application_data).cloned())
+        Ok(ratchets.peer_map.get(application_data).cloned().unwrap_or_else(|| (RatchetState::empty(), None)))
     }
 
     fn save_ratchet_state(
@@ -92,10 +101,17 @@ impl zssp_proto::ApplicationLayer for &TestApplication {
         state_deleted2: Option<&RatchetState>,
     ) -> Result<(), Self::DiskError> {
         let mut ratchets = self.ratchets.lock().unwrap();
-        ratchets.0 = state1.clone();
-        ratchets.1 = state2.cloned();
+        ratchets.peer_map.insert(*application_data, (state1.clone(), state2.cloned()));
+        // TODO: change the API to get rid of unwrap.
         if let Some(rs) = state_added {
+            ratchets.rf_map.insert(*rs.fingerprint.as_ref().unwrap().deref(), rs.clone());
             println!("[{}] new ratchet #{}", self.name, rs.chain_len);
+        }
+        if let Some(rs) = state_deleted1 {
+            ratchets.rf_map.remove(rs.fingerprint.as_ref().unwrap().deref());
+        }
+        if let Some(rs) = state_deleted2 {
+            ratchets.rf_map.remove(rs.fingerprint.as_ref().unwrap().deref());
         }
         Ok(())
     }
@@ -131,7 +147,7 @@ fn alice_main(
             up = false;
             alice_session = Some(
                 context
-                    .open(alice_app, |b| alice_out.send(b).is_ok(), TEST_MTU, bob_pubkey.clone(), (), Vec::new())
+                    .open(alice_app, |b| alice_out.send(b).is_ok(), TEST_MTU, bob_pubkey.clone(), 0, Vec::new())
                     .unwrap(),
             );
             println!("[alice] opening session");
@@ -286,19 +302,18 @@ fn bob_main(
 fn core(time: u64, packet_success_rate: u32) {
     let run = &AtomicBool::new(true);
 
-    let shared_ratchet_state = RatchetState::new_from_otp::<Sha512>(b"password1");
     let alice_keypair = EphemeralSecret::random(&mut OsRng);
     let alice_app = TestApplication {
         time: Instant::now(),
         name: "alice",
-        ratchets: Mutex::new((shared_ratchet_state.clone(), None)),
+        ratchets: Mutex::new(Ratchets::new()),
     };
     let bob_keypair = EphemeralSecret::random(&mut OsRng);
     let bob_pubkey = bob_keypair.public_key();
     let bob_app = TestApplication {
         time: Instant::now(),
         name: "bob",
-        ratchets: Mutex::new((shared_ratchet_state, None)),
+        ratchets: Mutex::new(Ratchets::new()),
     };
 
     let (alice_out, bob_in) = mpsc::sync_channel::<Vec<u8>>(256);
