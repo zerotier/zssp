@@ -166,9 +166,12 @@ pub trait ApplicationLayer: Sized {
     /// This function will be called whenever Alice attempts to open a session, or Bob attempts
     /// to verify Alice's identity.
     ///
-    /// If the peer's ratchet states could not be could, this function should return either
-    /// `RatchetState::new_initial_states()`, or `RatchetState::new_otp_states(...)` if a one time
-    /// password has been shared with this peer.
+    /// If the peer's ratchet states could not be could, this function should return
+    /// `RatchetState::new_initial_states()`.
+    ///
+    /// If a one-time-password has been pre-shared with this peer, `RatchetState::new_otp_states(...)`
+    /// should be pre-saved to the storage backend as if it is a normal ratchet state.
+    /// This is to ensure it can both be restored and eventually deleted when it is used.
     ///
     /// This function is not responsible for deciding whether or not to connect to this remote peer.
     /// Filtering peers should be done by the caller to `Context::open` as well as by the

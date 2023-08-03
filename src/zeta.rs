@@ -524,7 +524,7 @@ pub(crate) fn received_x2_trans<App: ApplicationLayer>(
             noise.encrypt_and_hash_in_place(to_nonce(PACKET_TYPE_HANDSHAKE_COMPLETION, 1), i, &mut x3);
             // Process message pattern 3 se token.
             noise.mix_dh(&ctx.s_secret, &e_remote).ok_or(byzantine_fault!(FailedAuth, true))?;
-            // Process message pattern 3 payload token.
+            // Process message pattern 3 payload.
             let i = x3.len();
             x3.extend(identity);
             noise.encrypt_and_hash_in_place(to_nonce(PACKET_TYPE_HANDSHAKE_COMPLETION, 0), i, &mut x3);
@@ -980,7 +980,7 @@ fn timeout_trans<App: ApplicationLayer>(
                 zeta.expire();
                 return;
             }
-            // Process message pattern 1 payload token.
+            // Process message pattern 1 payload.
             let i = k1.len();
             k1.extend(&new_kid_recv.get().to_be_bytes());
             noise.encrypt_and_hash_in_place(to_nonce(PACKET_TYPE_REKEY_INIT, 0), i, &mut k1);
