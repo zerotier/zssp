@@ -174,7 +174,8 @@ pub trait ApplicationLayer: Sized {
     /// or `None` if there is not a new ratchet state this update. `state_deleted1` and
     /// `state_deleted2` will be equal to any ratchet states that are to be deleted and overwritten
     /// as a result of this update, or `None` if there is not one to be deleted.
-    /// `state_added` will always have a non-empty (`Some()`) ratchet fingerprint.
+    /// `state_added` will always have a non-empty (`Some()`) ratchet fingerprint, and it will
+    /// always be equal to `current_state1`.
     ///
     /// If this returns `Err(IoError)`, the packet which triggered this function to be called will be
     /// dropped, and no session state will be mutated, preserving synchronization. The remote peer
