@@ -76,8 +76,8 @@ impl DefragBuffer {
         &self,
         mut raw_fragment: Vec<u8>,
         current_time: i64,
-        vrfy: impl FnOnce(&[u8; PACKET_NONCE_SIZE], usize, usize) -> Result<(), ReceiveError<App::DiskError>>,
-    ) -> Result<Option<([u8; PACKET_NONCE_SIZE], Vec<u8>)>, ReceiveError<App::DiskError>> {
+        vrfy: impl FnOnce(&[u8; PACKET_NONCE_SIZE], usize, usize) -> Result<(), ReceiveError<App::StorageError>>,
+    ) -> Result<Option<([u8; PACKET_NONCE_SIZE], Vec<u8>)>, ReceiveError<App::StorageError>> {
         use crate::result::FaultType::*;
         if raw_fragment.len() < HEADER_AUTH_END {
             return Err(byzantine_fault!(InvalidPacket, true));

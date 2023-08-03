@@ -102,7 +102,7 @@ impl<App: ApplicationLayer> Context<App> {
         static_remote_key: App::PublicKey,
         application_data: App::Data,
         identity: Vec<u8>,
-    ) -> Result<Arc<Session<App>>, OpenError<App::DiskError>> {
+    ) -> Result<Arc<Session<App>>, OpenError<App::StorageError>> {
         mtu = mtu.max(MIN_TRANSPORT_MTU);
         let ctx = &self.0;
 
@@ -136,7 +136,7 @@ impl<App: ApplicationLayer> Context<App> {
         send_to: impl FnOnce(&Arc<Session<App>>) -> Option<(SendFn, usize)>,
         remote_address: &impl Hash,
         raw_fragment: Vec<u8>,
-    ) -> Result<ReceiveOk<App>, ReceiveError<App::DiskError>> {
+    ) -> Result<ReceiveOk<App>, ReceiveError<App::StorageError>> {
         use crate::result::FaultType::*;
         send_unassociated_mtu = send_unassociated_mtu.max(MIN_TRANSPORT_MTU);
         let ctx = &self.0;

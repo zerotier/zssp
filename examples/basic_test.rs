@@ -62,7 +62,7 @@ impl zssp_proto::ApplicationLayer for &TestApplication {
     type KeyPair = EphemeralSecret;
     type Kem = PqcKyberSecretKey;
 
-    type DiskError = ();
+    type StorageError = ();
     type Data = u128;
 
     fn hello_requires_recognized_ratchet(&self) -> bool {
@@ -77,7 +77,7 @@ impl zssp_proto::ApplicationLayer for &TestApplication {
         (Some((true, 1)), true)
     }
 
-    fn restore_by_fingerprint(&self, ratchet_fingerprint: &[u8; RATCHET_SIZE]) -> Result<Option<RatchetState>, Self::DiskError> {
+    fn restore_by_fingerprint(&self, ratchet_fingerprint: &[u8; RATCHET_SIZE]) -> Result<Option<RatchetState>, Self::StorageError> {
         let ratchets = self.ratchets.lock().unwrap();
         Ok(ratchets.rf_map.get(ratchet_fingerprint).cloned())
     }
@@ -86,7 +86,7 @@ impl zssp_proto::ApplicationLayer for &TestApplication {
         &self,
         remote_static_key: &Self::PublicKey,
         application_data: &Self::Data,
-    ) -> Result<(RatchetState, Option<RatchetState>), Self::DiskError> {
+    ) -> Result<(RatchetState, Option<RatchetState>), Self::StorageError> {
         let ratchets = self.ratchets.lock().unwrap();
         Ok(ratchets
             .peer_map
@@ -104,7 +104,7 @@ impl zssp_proto::ApplicationLayer for &TestApplication {
         state_added: Option<&RatchetState>,
         state_deleted1: Option<&RatchetState>,
         state_deleted2: Option<&RatchetState>,
-    ) -> Result<(), Self::DiskError> {
+    ) -> Result<(), Self::StorageError> {
         let mut ratchets = self.ratchets.lock().unwrap();
         ratchets.peer_map.insert(*application_data, (state1.clone(), state2.cloned()));
 

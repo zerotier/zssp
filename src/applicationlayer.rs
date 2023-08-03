@@ -132,7 +132,7 @@ pub trait ApplicationLayer: Sized {
 
     /// A user-defined error returned when the `ApplicationLayer` fails to access persistent storage
     /// for a peer's ratchet states.
-    type DiskError: std::fmt::Debug;
+    type StorageError: std::fmt::Debug;
 
     /// An arbitrary opaque object for use by the application that is attached to each session.
     type Data;
@@ -188,7 +188,7 @@ pub trait ApplicationLayer: Sized {
     /// If `RatchetAction::DowngradeRatchet` is returned we will attempt to convince Alice to downgrade
     /// to the empty ratchet key, restarting the ratchet chain.
     /// If `RatchetAction::FailAuthentication` is returned Alice's connection will be silently dropped.
-    fn restore_by_fingerprint(&self, ratchet_fingerprint: &[u8; RATCHET_SIZE]) -> Result<Option<RatchetState>, Self::DiskError>;
+    fn restore_by_fingerprint(&self, ratchet_fingerprint: &[u8; RATCHET_SIZE]) -> Result<Option<RatchetState>, Self::StorageError>;
     /// Lookup the specific ratchet states based on the identity of the peer being communicated with.
     /// This function will be called whenever Alice attempts to open a session, or Bob attempts
     /// to verify Alice's identity.
@@ -207,7 +207,7 @@ pub trait ApplicationLayer: Sized {
         &self,
         remote_static_key: &Self::PublicKey,
         application_data: &Self::Data,
-    ) -> Result<(RatchetState, Option<RatchetState>), Self::DiskError>;
+    ) -> Result<(RatchetState, Option<RatchetState>), Self::StorageError>;
     /// Atomically save `current_state1` and `current_state2` so that them and only them can be
     /// restored with `restore_by_identity` and `restore_by_fingerprint` through a system restart.
     /// Theses should overwrite the previous ratchet states 1 and 2 saved to storage.
@@ -241,7 +241,7 @@ pub trait ApplicationLayer: Sized {
         state_added: Option<&RatchetState>,
         state_deleted1: Option<&RatchetState>,
         state_deleted2: Option<&RatchetState>,
-    ) -> Result<(), Self::DiskError>;
+    ) -> Result<(), Self::StorageError>;
 
     /// Receives a stream of events that occur during an execution of ZSSP.
     /// These are provided for debugging, logging or metrics purposes, and must be used for
