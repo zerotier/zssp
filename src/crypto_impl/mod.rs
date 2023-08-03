@@ -13,11 +13,11 @@ pub use aes;
 pub use aes_gcm;
 #[cfg(feature = "hmac")]
 pub use hmac;
+#[cfg(feature = "pqc_kyber")]
+pub use kyber1024::PqcKyberSecretKey;
 #[cfg(feature = "p384")]
 pub use p384;
 #[cfg(feature = "pqc_kyber")]
 pub use pqc_kyber;
-#[cfg(feature = "pqc_kyber")]
-pub use kyber1024::PqcKyberSecretKey;
 #[cfg(feature = "sha2")]
 pub use sha2;

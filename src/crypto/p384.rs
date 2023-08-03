@@ -26,7 +26,7 @@ pub trait KeyPairP384<Rng: RngCore + CryptoRng> {
     /// The `PublicKeyP384` implementation which matches this `KeyPairP384` implementation.
     type PublicKey: PublicKeyP384;
     /// Randomly generate a new P-384 keypair.
-    /// 
+    ///
     /// This function may use the provided RNG or its own, so long as the output is cryptographically random.
     fn generate(rng: &mut Rng) -> Self;
 

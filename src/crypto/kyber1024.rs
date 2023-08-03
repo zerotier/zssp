@@ -16,19 +16,19 @@ pub trait PrivateKeyKyber1024<Rng: RngCore + CryptoRng>: Sized + Send + Sync {
     ///
     /// This function may use the provided RNG or its own, so long as the output is cryptographically random.
     fn generate(rng: &mut Rng) -> (Self, [u8; KYBER_PUBLIC_KEY_SIZE]);
-    /// Generate a Kyber1024 key encapsulation based on the given public key, and return the
+    /// Generate a Kyber1024 key encapsulation based on the given `public_key`, and return the
     /// raw bytes of the generated ciphertext and plaintext. The ciphertext is immediately sent to
     /// the remote peer and the plaintext is immediately hashed, both are quickly deleted.
     ///
     /// This function may use the provided RNG or its own, so long as the output is cryptographically random.
     ///
-    /// This must return `None` if the given public_key is invalid in any way according to the
-    /// Kyber1024 spec.
+    /// **CRITICAL**: This must return `None` if the given `public_key` is invalid in any way
+    /// according to the Kyber1024 spec.
     fn encapsulate(rng: &mut Rng, public_key: &[u8; KYBER_PUBLIC_KEY_SIZE]) -> Option<([u8; KYBER_CIPHERTEXT_SIZE], [u8; KYBER_PLAINTEXT_SIZE])>;
-    /// Decapsulate a Kyber1024 ciphertext received from the remote peer, retreiving
+    /// Decapsulate a Kyber1024 `ciphertext` received from the remote peer, retreiving
     /// the raw bytes of the original plaintext. This plaintext is immediately hashed and deleted.
     ///
-    /// This must return `None` if the given ciphertext is invalid in any way according to the
-    /// Kyber1024 spec.
+    /// **CRITICAL**: This must return `None` if the given `ciphertext` is invalid in any way
+    /// according to the Kyber1024 spec.
     fn decapsulate(&self, ciphertext: &[u8; KYBER_CIPHERTEXT_SIZE]) -> Option<[u8; KYBER_PLAINTEXT_SIZE]>;
 }
