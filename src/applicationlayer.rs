@@ -92,22 +92,49 @@ pub trait ApplicationLayer: Sized {
     /// the protocol will tend to default to the smaller constants.
     const SETTINGS: Settings = Settings::new_ms();
 
+    /// The random number generator that ZSSP should use.
+    ///
+    /// FIPS compliance requires use of a FIPS certified implementation.
     type Rng: CryptoRng + RngCore;
-
+    /// The implementation of AES-256 that ZSSP should use.
+    /// We provide an optional implementation for this trait using the `aes` crate.
+    ///
+    /// FIPS compliance requires use of a FIPS certified implementation.
     type Prp: PrpAes256;
-
+    /// The implementation of AES-GCM-256 that ZSSP should use.
+    /// The efficiency and security of ZSSP is very closely tied to the efficiency and security of
+    /// this implementation.
+    /// We provide an optional implementation for this trait using the `aes-gcm` crate.
+    ///
+    /// FIPS compliance requires a FIPS certified implementation.
     type Aead: AeadAesGcm;
-
+    /// The implementation of SHA-512 that ZSSP should use.
+    /// We provide an optional implementation for this trait using the `sha2` crate.
+    ///
+    /// FIPS compliance requires use of a FIPS certified implementation.
     type Hash: HashSha512;
-
+    /// The implementation of P-384 public keys that ZSSP should use.
+    /// We provide an optional implementation for this trait using the `p384` crate.
+    ///
+    /// FIPS compliance requires a FIPS certified implementation.
     type PublicKey: PublicKeyP384;
+    /// The implementation of P-384 private keys that ZSSP should use.
+    /// We provide an optional implementation for this trait using the `p384` crate.
+    ///
+    /// FIPS compliance requires use of a FIPS certified implementation.
     type KeyPair: KeyPairP384<Self::Rng, PublicKey = Self::PublicKey>;
+    /// The implementation of Kyber1024 that ZSSP should use.
+    /// We provide an optional implementation for this trait using the `pqc_kyber` crate.
+    ///
+    /// No implementation of Kyber1024 can be FIPS certified, but this is not required
+    /// for ZSSP to achieve FIPS compliance.
     type Kem: PrivateKeyKyber1024<Self::Rng>;
 
+    /// A user-defined error returned when the `ApplicationLayer` fails to access persistent storage
+    /// for a peer's ratchet states.
     type DiskError: std::fmt::Debug;
 
-    /// Type for arbitrary opaque object for use by the application that is attached to
-    /// each session.
+    /// An arbitrary opaque object for use by the application that is attached to each session.
     type Data;
 
     /// Should return the current time in milliseconds. Does not have to be monotonic, nor synced
@@ -220,5 +247,5 @@ pub trait ApplicationLayer: Sized {
     /// These are provided for debugging, logging or metrics purposes, and must be used for
     /// nothing else. Do not base protocol-level decisions upon the events passed to this function.
     #[cfg(feature = "logging")]
-    fn event_log(&self, event: LogEvent<Self>);
+    fn event_log(&self, event: LogEvent<'_, Self>);
 }

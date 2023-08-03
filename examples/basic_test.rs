@@ -21,9 +21,8 @@ use rand_core::OsRng;
 use rand_core::RngCore;
 use sha2::Sha512;
 
-use zeroize::Zeroizing;
-use zssp_proto::crypto_impl::kyber1024::PqcKyberSecretKey;
-use zssp_proto::ratchet_state::RatchetState;
+use zssp_proto::crypto_impl::PqcKyberSecretKey;
+use zssp_proto::RatchetState;
 use zssp_proto::{Session, Settings, RATCHET_SIZE};
 
 const TEST_MTU: usize = 1500;

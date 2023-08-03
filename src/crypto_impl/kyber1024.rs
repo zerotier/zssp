@@ -3,6 +3,8 @@ use zeroize::Zeroizing;
 
 use crate::crypto::*;
 
+/// A wrapper for a buffer the size of a pqc_kyber secret key.
+/// The crate `pqc_kyber` is low level and operates directly on buffers of bytes.
 pub type PqcKyberSecretKey = Zeroizing<[u8; pqc_kyber::KYBER_SECRETKEYBYTES]>;
 
 impl<Rng: RngCore + CryptoRng> PrivateKeyKyber1024<Rng> for PqcKyberSecretKey {
