@@ -25,13 +25,6 @@ impl<App: ApplicationLayer> Clone for SymmetricState<App> {
     }
 }
 
-const KBKDF_LABEL_START: usize = 1;
-const KBKDF_LABEL_END: usize = KBKDF_LABEL_START + 4;
-const KBKDF_CONTEXT_START: usize = KBKDF_LABEL_END + 1;
-const KBKDF_LENGTH_START: usize = KBKDF_CONTEXT_START + HASHLEN;
-const KBKDF_INPUT_SIZE: usize = KBKDF_LENGTH_START + 2;
-const HASHLEN_BITS: usize = HASHLEN * 8;
-
 impl<App: ApplicationLayer> SymmetricState<App> {
     /// HMAC-SHA512 key derivation based on KBKDF Counter Mode:
     /// https://csrc.nist.gov/publications/detail/sp/800-108/rev-1/final.
@@ -53,13 +46,12 @@ impl<App: ApplicationLayer> SymmetricState<App> {
         output2: Option<&mut [u8; HASHLEN]>,
         output3: Option<&mut [u8; HASHLEN]>,
     ) {
-        let mut buffer = Zeroizing::new([0u8; KBKDF_INPUT_SIZE]);
-        let buffer: &mut [u8] = buffer.as_mut();
-        buffer[0] = 1;
-        buffer[KBKDF_LABEL_START..KBKDF_LABEL_END].copy_from_slice(label);
-        buffer[KBKDF_LABEL_END] = 0x00;
-        buffer[KBKDF_CONTEXT_START..KBKDF_LENGTH_START].copy_from_slice(self.ck.as_ref());
-        buffer[KBKDF_LENGTH_START..].copy_from_slice(&(num_outputs * HASHLEN_BITS as u16).to_be_bytes());
+        let mut buffer = Zeroizing::new(Vec::new());
+        buffer.push(1);
+        buffer.extend(label);
+        buffer.push(0x00);
+        buffer.extend(self.ck.as_ref());
+        buffer.extend(&(num_outputs * 8 * HASHLEN as u16).to_be_bytes());
 
         debug_assert!(num_outputs >= 1);
         *output1 = App::Hash::hmac(input_key_material, &buffer);
