@@ -232,10 +232,10 @@ fn create_a1_state<App: ApplicationLayer>(
     noise.encrypt_and_hash_in_place(to_nonce(PACKET_TYPE_HANDSHAKE_HELLO, 0), i, &mut x1);
     // Process message pattern 1 payload.
     let i = x1.len();
-    if let Some(rf) = ratchet_state1.fingerprint.as_ref() {
+    if let Some(rf) = ratchet_state1.fingerprint() {
         x1.extend(rf.as_ref());
     }
-    if let Some(Some(rf)) = ratchet_state2.map(|rs| rs.fingerprint.as_ref()) {
+    if let Some(Some(rf)) = ratchet_state2.map(|rs| rs.fingerprint()) {
         x1.extend(rf.as_ref());
     }
     noise.encrypt_and_hash_in_place(to_nonce(PACKET_TYPE_HANDSHAKE_HELLO, 1), i, &mut x1);
@@ -640,7 +640,7 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
         match result {
             Ok((ratchet_state1, ratchet_state2)) => {
                 if (&zeta.ratchet_state != &ratchet_state1) & (Some(&zeta.ratchet_state) != ratchet_state2.as_ref()) {
-                    if !responder_disallows_downgrade && zeta.ratchet_state.fingerprint.is_none() {
+                    if !responder_disallows_downgrade && zeta.ratchet_state.fingerprint().is_none() {
                         // TODO: add some kind of warning callback or signal.
                     } else {
                         if !responder_silently_rejects {
@@ -652,7 +652,7 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
 
                 let (rk, rf) = noise.get_ask(LABEL_RATCHET_STATE);
                 // We must make sure the ratchet key is saved before we transition.
-                let new_ratchet_state = RatchetState{ key: rk, fingerprint: Some(rf), chain_len: zeta.ratchet_state.chain_len + 1,};
+                let new_ratchet_state = RatchetState::new(rk, rf, zeta.ratchet_state.chain_len + 1);
                 let result = app.save_ratchet_state(
                     &s_remote,
                     &application_data,

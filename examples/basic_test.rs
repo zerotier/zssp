@@ -6,6 +6,7 @@
  * https://www.zerotier.com/
  */
 
+use std::collections::HashMap;
 use std::iter::ExactSizeIterator;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,7 +29,20 @@ const TEST_MTU: usize = 1500;
 struct TestApplication {
     time: Instant,
     name: &'static str,
-    ratchets: Mutex<(RatchetState, Option<RatchetState>)>,
+    ratchets: Mutex<Ratchets>,
+}
+
+struct Ratchets {
+    rf_map: HashMap<[u8; RATCHET_SIZE], RatchetState>,
+    peer_map: HashMap<u128, (RatchetState, Option<RatchetState>)>,
+}
+impl Ratchets {
+    fn new() -> Self {
+        Self {
+            rf_map: HashMap::new(),
+            peer_map: HashMap::new(),
+        }
+    }
 }
 
 #[allow(unused)]
@@ -51,10 +65,10 @@ impl zssp_proto::ApplicationLayer for &TestApplication {
     type Kem = [u8; pqc_kyber::KYBER_SECRETKEYBYTES];
 
     type DiskError = ();
-    type Data = ();
+    type Data = u128;
 
     fn hello_requires_recognized_ratchet(&self) -> bool {
-        true
+        false
     }
 
     fn initiator_disallows_downgrade(&self, session: &Arc<Session<Self>>) -> bool {
@@ -62,22 +76,17 @@ impl zssp_proto::ApplicationLayer for &TestApplication {
     }
 
     fn check_accept_session(&self, remote_static_key: &Self::PublicKey, identity: &[u8]) -> (Option<(bool, Self::Data)>, bool) {
-        (Some((true, ())), true)
+        (Some((true, 1)), true)
     }
 
     fn restore_by_fingerprint(&self, ratchet_fingerprint: &[u8; RATCHET_SIZE]) -> Result<Option<RatchetState>, Self::DiskError> {
         let ratchets = self.ratchets.lock().unwrap();
-        if ratchets.0.fingerprint_eq(ratchet_fingerprint) {
-            return Ok(Some(ratchets.0.clone()));
-        }
-        if ratchets.1.as_ref().map_or(false, |rs| rs.fingerprint_eq(ratchet_fingerprint)) {
-            return Ok(ratchets.1.clone());
-        }
-        Ok(None)
+        Ok(ratchets.rf_map.get(ratchet_fingerprint).cloned())
     }
 
     fn restore_by_identity(&self, remote_static_key: &Self::PublicKey, application_data: &Self::Data) -> Result<(RatchetState, Option<RatchetState>), Self::DiskError> {
-        Ok(self.ratchets.lock().unwrap().clone())
+        let ratchets = self.ratchets.lock().unwrap();
+        Ok(ratchets.peer_map.get(application_data).cloned().unwrap_or_else(|| RatchetState::new_initial_states()))
     }
 
     fn save_ratchet_state(
@@ -91,10 +100,17 @@ impl zssp_proto::ApplicationLayer for &TestApplication {
         state_deleted2: Option<&RatchetState>,
     ) -> Result<(), Self::DiskError> {
         let mut ratchets = self.ratchets.lock().unwrap();
-        ratchets.0 = state1.clone();
-        ratchets.1 = state2.cloned();
+        ratchets.peer_map.insert(*application_data, (state1.clone(), state2.cloned()));
+
         if let Some(rs) = state_added {
+            ratchets.rf_map.insert(*rs.fingerprint().unwrap(), rs.clone());
             println!("[{}] new ratchet #{}", self.name, rs.chain_len);
+        }
+        if let Some(Some(rf)) = state_deleted1.map(|rs| rs.fingerprint()) {
+            ratchets.rf_map.remove(rf);
+        }
+        if let Some(Some(rf)) = state_deleted1.map(|rs| rs.fingerprint()) {
+            ratchets.rf_map.remove(rf);
         }
         Ok(())
     }
@@ -130,7 +146,7 @@ fn alice_main(
             up = false;
             alice_session = Some(
                 context
-                    .open(alice_app, |b| alice_out.send(b).is_ok(), TEST_MTU, bob_pubkey.clone(), (), Vec::new())
+                    .open(alice_app, |b| alice_out.send(b).is_ok(), TEST_MTU, bob_pubkey.clone(), 0, Vec::new())
                     .unwrap(),
             );
             println!("[alice] opening session");
@@ -194,7 +210,7 @@ fn alice_main(
             thread::sleep(Duration::from_millis(10));
         }
         // TODO: we need to more comprehensively test if re-opening the session works
-        if OsRng.next_u32() <= ((u32::MAX as f64) * 0.0000025) as u32 {
+        if OsRng.next_u32() <= ((u32::MAX as f64) * 0.000005) as u32 {
             alice_session = None;
         }
 
@@ -285,19 +301,18 @@ fn bob_main(
 fn core(time: u64, packet_success_rate: u32) {
     let run = &AtomicBool::new(true);
 
-    let shared_ratchet_state = RatchetState::new_from_otp::<Sha512>(b"password1");
     let alice_keypair = EphemeralSecret::random(&mut OsRng);
     let alice_app = TestApplication {
         time: Instant::now(),
         name: "alice",
-        ratchets: Mutex::new((shared_ratchet_state.clone(), None)),
+        ratchets: Mutex::new(Ratchets::new()),
     };
     let bob_keypair = EphemeralSecret::random(&mut OsRng);
     let bob_pubkey = bob_keypair.public_key();
     let bob_app = TestApplication {
         time: Instant::now(),
         name: "bob",
-        ratchets: Mutex::new((shared_ratchet_state, None)),
+        ratchets: Mutex::new(Ratchets::new()),
     };
 
     let (alice_out, bob_in) = mpsc::sync_channel::<Vec<u8>>(256);

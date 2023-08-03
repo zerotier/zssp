@@ -24,10 +24,12 @@ impl RatchetState {
     pub fn new(key: Zeroizing<[u8; RATCHET_SIZE]>, fingerprint: Zeroizing<[u8; RATCHET_SIZE]>, chain_len: u64) -> Self {
         RatchetState { key, fingerprint: Some(fingerprint), chain_len }
     }
+    pub fn new_raw(key: [u8; RATCHET_SIZE], fingerprint: [u8; RATCHET_SIZE], chain_len: u64) -> Self {
+        RatchetState { key: Zeroizing::new(key), fingerprint: Some(Zeroizing::new(fingerprint)), chain_len }
+    }
     pub fn empty() -> Self {
         RatchetState { key: Zeroizing::new([0u8; RATCHET_SIZE]), fingerprint: None, chain_len: 0 }
     }
-
     pub fn new_from_otp<Hmac: HashSha512>(otp: &[u8]) -> RatchetState {
         let mut buffer = Vec::new();
         buffer.push(1);
@@ -43,10 +45,27 @@ impl RatchetState {
             1,
         )
     }
+
+    pub fn new_initial_states() -> (RatchetState, Option<RatchetState>) {
+        (
+            RatchetState::empty(),
+            None
+        )
+    }
+    pub fn new_otp_states<Hmac: HashSha512>(otp: &[u8]) -> (RatchetState, Option<RatchetState>) {
+        (
+            RatchetState::new_from_otp::<Hmac>(otp),
+            None
+        )
+    }
+
     pub fn is_empty(&self) -> bool {
         self.fingerprint.is_none()
     }
     pub fn fingerprint_eq(&self, rf: &[u8; RATCHET_SIZE]) -> bool {
         self.fingerprint.as_ref().map_or(false, |rf0| secure_eq(rf0, rf))
+    }
+    pub fn fingerprint(&self) -> Option<&[u8; RATCHET_SIZE]> {
+        self.fingerprint.as_deref()
     }
 }

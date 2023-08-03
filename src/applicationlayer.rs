@@ -166,8 +166,15 @@ pub trait ApplicationLayer: Sized {
     /// This function will be called whenever Alice attempts to open a session, or Bob attempts
     /// to verify Alice's identity.
     fn restore_by_identity(&self, remote_static_key: &Self::PublicKey, application_data: &Self::Data) -> Result<(RatchetState, Option<RatchetState>), Self::DiskError>;
-    /// Atomically save the given `new_ratchet_states` to persistent storage.
-    /// `pre_ratchet_states` contains what should be the previous contents of persistent storage.
+    /// Atomically save `current_state1` and `current_state2` so that them and only them can be
+    /// restored with `restore_by_identity` and `restore_by_fingerprint` through a system restart.
+    /// Theses should overwrite the previous ratchet states 1 and 2 saved to storage.
+    ///
+    /// `state_added` will be equal to the brand new ratchet state that was added in this update,
+    /// or `None` if there is not a new ratchet state this update. `state_deleted1` and
+    /// `state_deleted2` will be equal to any ratchet states that are to be deleted and overwritten
+    /// as a result of this update, or `None` if there is not one to be deleted.
+    /// `state_added` will always have a non-empty (`Some()`) ratchet fingerprint.
     ///
     /// If this returns `Err(IoError)`, the packet which triggered this function to be called will be
     /// dropped, and no session state will be mutated, preserving synchronization. The remote peer
@@ -186,8 +193,8 @@ pub trait ApplicationLayer: Sized {
         &self,
         remote_static_key: &Self::PublicKey,
         application_data: &Self::Data,
-        state1: &RatchetState,
-        state2: Option<&RatchetState>,
+        current_state1: &RatchetState,
+        current_state2: Option<&RatchetState>,
         state_added: Option<&RatchetState>,
         state_deleted1: Option<&RatchetState>,
         state_deleted2: Option<&RatchetState>,
