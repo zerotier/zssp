@@ -22,7 +22,7 @@ sha2 = { version = "0.10.7", default-features = false, optional = true }
 hmac = { version = "0.12.1", default-features = false, optional = true }
 
 [features]
-default = ["debug", "aes-gcm", "p384", "sha2", "hmac", "pqc_kyber"]
+default = ["debug", "aes-gcm", "p384", "hmac", "pqc_kyber"]
 aes = ["dep:aes"]
 aes-gcm = ["dep:aes-gcm", "aes"]
 sha2 = ["dep:sha2"]
