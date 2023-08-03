@@ -176,7 +176,11 @@ pub trait ApplicationLayer: Sized {
     /// This function is not responsible for deciding whether or not to connect to this remote peer.
     /// Filtering peers should be done by the caller to `Context::open` as well as by the
     /// function `ApplicationLayer::check_accept_session`.
-    fn restore_by_identity(&self, remote_static_key: &Self::PublicKey, application_data: &Self::Data) -> Result<(RatchetState, Option<RatchetState>), Self::DiskError>;
+    fn restore_by_identity(
+        &self,
+        remote_static_key: &Self::PublicKey,
+        application_data: &Self::Data,
+    ) -> Result<(RatchetState, Option<RatchetState>), Self::DiskError>;
     /// Atomically save `current_state1` and `current_state2` so that them and only them can be
     /// restored with `restore_by_identity` and `restore_by_fingerprint` through a system restart.
     /// Theses should overwrite the previous ratchet states 1 and 2 saved to storage.

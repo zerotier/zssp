@@ -937,7 +937,14 @@ fn timeout_trans<App: ApplicationLayer>(
             }
             let new_kid_recv = remap(session, &zeta, &ctx.rng, &ctx.session_map);
 
-            if let Some(a1) = create_a1_state(&ctx.rng, &zeta.s_remote, new_kid_recv, &zeta.ratchet_state1, zeta.ratchet_state2.as_ref(), identity.clone()) {
+            if let Some(a1) = create_a1_state(
+                &ctx.rng,
+                &zeta.s_remote,
+                new_kid_recv,
+                &zeta.ratchet_state1,
+                zeta.ratchet_state2.as_ref(),
+                identity.clone(),
+            ) {
                 let (hk_recv, hk_send) = a1.noise.get_ask(LABEL_HEADER_KEY);
                 let packet = a1.packet.clone();
 

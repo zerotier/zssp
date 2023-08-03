@@ -38,10 +38,7 @@ struct Ratchets {
 }
 impl Ratchets {
     fn new() -> Self {
-        Self {
-            rf_map: HashMap::new(),
-            peer_map: HashMap::new(),
-        }
+        Self { rf_map: HashMap::new(), peer_map: HashMap::new() }
     }
 }
 
@@ -84,9 +81,17 @@ impl zssp_proto::ApplicationLayer for &TestApplication {
         Ok(ratchets.rf_map.get(ratchet_fingerprint).cloned())
     }
 
-    fn restore_by_identity(&self, remote_static_key: &Self::PublicKey, application_data: &Self::Data) -> Result<(RatchetState, Option<RatchetState>), Self::DiskError> {
+    fn restore_by_identity(
+        &self,
+        remote_static_key: &Self::PublicKey,
+        application_data: &Self::Data,
+    ) -> Result<(RatchetState, Option<RatchetState>), Self::DiskError> {
         let ratchets = self.ratchets.lock().unwrap();
-        Ok(ratchets.peer_map.get(application_data).cloned().unwrap_or_else(|| RatchetState::new_initial_states()))
+        Ok(ratchets
+            .peer_map
+            .get(application_data)
+            .cloned()
+            .unwrap_or_else(|| RatchetState::new_initial_states()))
     }
 
     fn save_ratchet_state(

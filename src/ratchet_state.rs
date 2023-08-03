@@ -12,12 +12,13 @@ pub struct RatchetState {
 }
 impl PartialEq for RatchetState {
     fn eq(&self, other: &Self) -> bool {
-        secure_eq(&self.key, &other.key) & (self.chain_len == other.chain_len) &
-        match (self.fingerprint.as_ref(), other.fingerprint.as_ref()) {
-            (Some(rf1), Some(rf2)) => secure_eq(rf1, rf2),
-            (None, None) => true,
-            _ => false,
-        }
+        secure_eq(&self.key, &other.key)
+            & (self.chain_len == other.chain_len)
+            & match (self.fingerprint.as_ref(), other.fingerprint.as_ref()) {
+                (Some(rf1), Some(rf2)) => secure_eq(rf1, rf2),
+                (None, None) => true,
+                _ => false,
+            }
     }
 }
 impl RatchetState {
@@ -25,10 +26,18 @@ impl RatchetState {
         RatchetState { key, fingerprint: Some(fingerprint), chain_len }
     }
     pub fn new_raw(key: [u8; RATCHET_SIZE], fingerprint: [u8; RATCHET_SIZE], chain_len: u64) -> Self {
-        RatchetState { key: Zeroizing::new(key), fingerprint: Some(Zeroizing::new(fingerprint)), chain_len }
+        RatchetState {
+            key: Zeroizing::new(key),
+            fingerprint: Some(Zeroizing::new(fingerprint)),
+            chain_len,
+        }
     }
     pub fn empty() -> Self {
-        RatchetState { key: Zeroizing::new([0u8; RATCHET_SIZE]), fingerprint: None, chain_len: 0 }
+        RatchetState {
+            key: Zeroizing::new([0u8; RATCHET_SIZE]),
+            fingerprint: None,
+            chain_len: 0,
+        }
     }
     pub fn new_from_otp<Hmac: HashSha512>(otp: &[u8]) -> RatchetState {
         let mut buffer = Vec::new();
@@ -47,16 +56,10 @@ impl RatchetState {
     }
 
     pub fn new_initial_states() -> (RatchetState, Option<RatchetState>) {
-        (
-            RatchetState::empty(),
-            None
-        )
+        (RatchetState::empty(), None)
     }
     pub fn new_otp_states<Hmac: HashSha512>(otp: &[u8]) -> (RatchetState, Option<RatchetState>) {
-        (
-            RatchetState::new_from_otp::<Hmac>(otp),
-            None
-        )
+        (RatchetState::new_from_otp::<Hmac>(otp), None)
     }
 
     pub fn is_empty(&self) -> bool {
