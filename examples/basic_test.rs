@@ -21,6 +21,7 @@ use rand_core::OsRng;
 use rand_core::RngCore;
 use sha2::Sha512;
 
+use zeroize::Zeroizing;
 use zssp_proto::ratchet_state::RatchetState;
 use zssp_proto::{Session, Settings, RATCHET_SIZE};
 
@@ -59,7 +60,7 @@ impl zssp_proto::ApplicationLayer for &TestApplication {
     type Hash = Sha512;
     type PublicKey = PublicKey;
     type KeyPair = EphemeralSecret;
-    type Kem = [u8; pqc_kyber::KYBER_SECRETKEYBYTES];
+    type Kem = Zeroizing<[u8; pqc_kyber::KYBER_SECRETKEYBYTES]>;
 
     type DiskError = ();
     type Data = u128;

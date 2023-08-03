@@ -43,7 +43,7 @@ impl RatchetState {
         let mut buffer = Vec::new();
         buffer.push(1);
         buffer.extend(LABEL_OTP_TO_RATCHET);
-        buffer.push(0);
+        buffer.push(0x00);
         buffer.extend((2u16 * 512u16).to_be_bytes());
         let r1 = Hmac::hmac(otp, &buffer);
         buffer[0] = 2;
