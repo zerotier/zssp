@@ -162,9 +162,17 @@ pub trait ApplicationLayer: Sized {
     /// to the empty ratchet key, restarting the ratchet chain.
     /// If `RatchetAction::FailAuthentication` is returned Alice's connection will be silently dropped.
     fn restore_by_fingerprint(&self, ratchet_fingerprint: &[u8; RATCHET_SIZE]) -> Result<Option<RatchetState>, Self::DiskError>;
-    /// Lookup a specific ratchet state based on the identity of the peer being communicated with.
+    /// Lookup the specific ratchet states based on the identity of the peer being communicated with.
     /// This function will be called whenever Alice attempts to open a session, or Bob attempts
     /// to verify Alice's identity.
+    ///
+    /// If the peer's ratchet states could not be could, this function should return either
+    /// `RatchetState::new_initial_states()`, or `RatchetState::new_otp_states(...)` if a one time
+    /// password has been shared with this peer.
+    ///
+    /// This function is not responsible for deciding whether or not to connect to this remote peer.
+    /// Filtering peers should be done by the caller to `Context::open` as well as by the
+    /// function `ApplicationLayer::check_accept_session`.
     fn restore_by_identity(&self, remote_static_key: &Self::PublicKey, application_data: &Self::Data) -> Result<(RatchetState, Option<RatchetState>), Self::DiskError>;
     /// Atomically save `current_state1` and `current_state2` so that them and only them can be
     /// restored with `restore_by_identity` and `restore_by_fingerprint` through a system restart.
