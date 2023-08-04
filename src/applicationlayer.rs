@@ -2,11 +2,12 @@ use rand_core::{CryptoRng, RngCore};
 use std::sync::Arc;
 
 use crate::crypto::{AeadAesGcm, HashSha512, KeyPairP384, PrivateKeyKyber1024, PrpAes256, PublicKeyP384};
-use crate::proto::RATCHET_SIZE;
-use crate::ratchet_state::RatchetState;
 #[cfg(feature = "logging")]
 use crate::LogEvent;
 use crate::Session;
+
+pub use crate::proto::RATCHET_SIZE;
+pub use crate::ratchet_state::RatchetState;
 
 /// A container for a vast majority of the dynamic settings within ZSSP, including all time-based settings.
 /// If the user wishes to measure time in units other than milliseconds for some reason, then they can
@@ -174,7 +175,7 @@ pub trait ApplicationLayer: Sized {
     /// must verify this identity is associated with the remote peer's static key.
     /// To prevent desync, if this function returns (Some(_), _), no other open session with the
     /// same remote peer must exist. Drop or call expire on any pre-existing sessions before returning.
-    fn check_accept_session(&self, remote_static_key: &Self::PublicKey, identity: &[u8]) -> (Option<(bool, Self::SessionData)>, bool);
+    fn check_accept_session(&self, remote_static_key: &Self::PublicKey, identity: &[u8]) -> AcceptAction<Self>;
 
     /// Lookup a specific ratchet state based on its ratchet fingerprint.
     /// This function will be called whenever Alice attempts to connect to us with a non-empty
@@ -246,12 +247,16 @@ pub trait ApplicationLayer: Sized {
     fn event_log(&self, event: LogEvent<'_, Self>);
 }
 
-pub trait CryptoLayer {}
-
 pub struct RatchetUpdate<'a> {
     pub state1: &'a RatchetState,
     pub state2: Option<&'a RatchetState>,
     pub state1_was_just_added: bool,
     pub state_deleted1: Option<&'a RatchetState>,
     pub state_deleted2: Option<&'a RatchetState>,
+}
+
+pub struct AcceptAction<App: ApplicationLayer> {
+    pub session_data: Option<App::SessionData>,
+    pub responder_disallows_downgrade: bool,
+    pub responder_silently_rejects: bool,
 }

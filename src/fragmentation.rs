@@ -4,10 +4,10 @@ use std::sync::Mutex;
 
 use zeroize::Zeroizing;
 
+use crate::applicationlayer::ApplicationLayer;
 use crate::crypto::{PrpAes256, AES_256_KEY_SIZE};
 use crate::proto::*;
 use crate::result::{byzantine_fault, ReceiveError};
-use crate::ApplicationLayer;
 
 fn create_fragment_header(kid_send: u32, fragment_count: usize, fragment_no: usize, n: &[u8; PACKET_NONCE_SIZE]) -> [u8; HEADER_SIZE] {
     debug_assert!(fragment_count > 0);

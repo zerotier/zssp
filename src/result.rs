@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use crate::{ApplicationLayer, Session};
+use crate::applicationlayer::ApplicationLayer;
+use crate::Session;
 
 /// An error that can occur when attempting to open a session.
 /// Depending on the error type trying again may not work.

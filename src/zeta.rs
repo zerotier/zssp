@@ -5,6 +5,7 @@ use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Mutex, Weak};
 use zeroize::Zeroizing;
 
+use crate::applicationlayer::ApplicationLayer;
 use crate::applicationlayer::RatchetUpdate;
 use crate::challenge::{gen_null_response, respond_to_challenge_in_place};
 use crate::context::{log, ContextInner, SessionMap};
@@ -14,7 +15,6 @@ use crate::proto::*;
 use crate::ratchet_state::RatchetState;
 use crate::result::{byzantine_fault, FaultType, OpenError, ReceiveError, SendError};
 use crate::symmetric_state::SymmetricState;
-use crate::ApplicationLayer;
 #[cfg(feature = "logging")]
 use crate::LogEvent::*;
 
@@ -627,7 +627,10 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
     let (kek_send, kek_recv) = noise.get_ask(LABEL_KEX_KEY);
     let c = INIT_COUNTER;
 
-    let (responder_disallows_downgrade, responder_silently_rejects) = app.check_accept_session(&s_remote, &x3[identity_start..identity_end]);
+    let action = app.check_accept_session(&s_remote, &x3[identity_start..identity_end]);
+    let responder_disallows_downgrade = action.responder_disallows_downgrade;
+    let responder_silently_rejects = action.responder_silently_rejects;
+    let session_data = action.session_data;
     let create_reject = || {
         let mut d = Vec::<u8>::new();
         let n = to_nonce(PACKET_TYPE_SESSION_REJECTED, c);
@@ -638,7 +641,7 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
         // handshake is being dropped, so nonce reuse can't happen.
         Packet(zeta.kid_send.get(), n, d)
     };
-    if let Some((responder_disallows_downgrade, session_data)) = responder_disallows_downgrade {
+    if let Some(session_data) = session_data {
         let result = app.restore_by_identity(&s_remote, &session_data);
         match result {
             Ok((ratchet_state1, ratchet_state2)) => {

@@ -7,8 +7,6 @@
 */
 //#![warn(missing_docs, rust_2018_idioms)]
 //! TODO: docs
-
-mod applicationlayer;
 mod challenge;
 mod context;
 mod fragmentation;
@@ -19,6 +17,7 @@ mod ratchet_state;
 mod symmetric_state;
 mod zeta;
 
+pub mod applicationlayer;
 /// A collection of implementation-independent traits for the various specific cryptographic
 /// algorithms ZSSP depends on.
 ///
@@ -40,10 +39,8 @@ pub mod crypto;
 pub mod crypto_impl;
 pub mod result;
 
-pub use applicationlayer::{ApplicationLayer, RatchetUpdate, Settings};
 pub use context::Context;
 #[cfg(feature = "logging")]
 pub use log_event::LogEvent;
-pub use proto::{MIN_TRANSPORT_MTU, RATCHET_SIZE};
-pub use ratchet_state::RatchetState;
+pub use proto::MIN_TRANSPORT_MTU;
 pub use zeta::Session;

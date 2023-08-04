@@ -5,12 +5,12 @@ use std::hash::Hash;
 use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex, Weak};
 
+use crate::applicationlayer::ApplicationLayer;
 use crate::crypto::{AES_256_KEY_SIZE, AES_GCM_IV_SIZE};
 use crate::fragmentation::{send_with_fragmentation, DefragBuffer};
 use crate::proto::*;
 use crate::result::{byzantine_fault, ReceiveError, ReceiveOk, SendError, SessionEvent};
 use crate::zeta::*;
-use crate::ApplicationLayer;
 #[cfg(feature = "logging")]
 use crate::LogEvent::*;
 use crate::{challenge::ChallengeContext, result::OpenError};

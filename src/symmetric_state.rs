@@ -2,9 +2,9 @@ use std::marker::PhantomData;
 
 use zeroize::Zeroizing;
 
+use crate::applicationlayer::ApplicationLayer;
 use crate::crypto::{AeadAesGcm, HashSha512, AES_256_KEY_SIZE, AES_GCM_IV_SIZE, AES_GCM_TAG_SIZE};
 use crate::proto::{HASHLEN, LABEL_KBKDF_CHAIN};
-use crate::ApplicationLayer;
 
 pub struct SymmetricState<App: ApplicationLayer> {
     k: Zeroizing<[u8; AES_256_KEY_SIZE]>,

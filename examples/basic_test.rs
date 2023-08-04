@@ -21,9 +21,9 @@ use rand_core::OsRng;
 use rand_core::RngCore;
 use sha2::Sha512;
 
+use zssp_proto::applicationlayer::{AcceptAction, ApplicationLayer, RatchetState, RatchetUpdate, Settings, RATCHET_SIZE};
 use zssp_proto::crypto_impl::PqcKyberSecretKey;
-use zssp_proto::{RatchetState, RatchetUpdate};
-use zssp_proto::{Session, Settings, RATCHET_SIZE};
+use zssp_proto::Session;
 
 const TEST_MTU: usize = 1500;
 
@@ -44,7 +44,7 @@ impl Ratchets {
 }
 
 #[allow(unused)]
-impl zssp_proto::ApplicationLayer for &TestApplication {
+impl ApplicationLayer for &TestApplication {
     const SETTINGS: Settings = Settings {
         initial_offer_timeout: Settings::INITIAL_OFFER_TIMEOUT_MS,
         rekey_timeout: 60 * 1000,
@@ -73,8 +73,12 @@ impl zssp_proto::ApplicationLayer for &TestApplication {
         true
     }
 
-    fn check_accept_session(&self, remote_static_key: &Self::PublicKey, identity: &[u8]) -> (Option<(bool, Self::SessionData)>, bool) {
-        (Some((true, 1)), true)
+    fn check_accept_session(&self, remote_static_key: &Self::PublicKey, identity: &[u8]) -> AcceptAction<Self> {
+        AcceptAction {
+            session_data: Some(1),
+            responder_disallows_downgrade: true,
+            responder_silently_rejects: false,
+        }
     }
 
     fn restore_by_fingerprint(&self, ratchet_fingerprint: &[u8; RATCHET_SIZE]) -> Result<Option<RatchetState>, Self::StorageError> {
