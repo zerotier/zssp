@@ -5,6 +5,7 @@ use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Mutex, Weak};
 use zeroize::Zeroizing;
 
+use crate::applicationlayer::RatchetUpdate;
 use crate::challenge::{gen_null_response, respond_to_challenge_in_place};
 use crate::context::{log, ContextInner, SessionMap};
 use crate::crypto::*;
@@ -40,7 +41,7 @@ pub(crate) fn from_nonce(n: &[u8]) -> (u8, u64) {
 pub(crate) struct Zeta<App: ApplicationLayer> {
     ctx: Weak<ContextInner<App>>,
     /// An arbitrary application defined object associated with each session.
-    pub application_data: App::Data,
+    pub session_data: App::SessionData,
     /// Is true if the local peer acted as Bob, the responder in the initial key exchange.
     pub was_bob: bool,
 
@@ -255,12 +256,12 @@ pub(crate) fn trans_to_a1<App: ApplicationLayer>(
     app: App,
     ctx: &Arc<ContextInner<App>>,
     s_remote: App::PublicKey,
-    application_data: App::Data,
+    session_data: App::SessionData,
     identity: Vec<u8>,
     send: impl FnOnce(&Packet),
 ) -> Result<Arc<Session<App>>, OpenError<App::StorageError>> {
     let (ratchet_state1, ratchet_state2) = app
-        .restore_by_identity(&s_remote, &application_data)
+        .restore_by_identity(&s_remote, &session_data)
         .map_err(|e| OpenError::RatchetIoError(e))?;
 
     let mut session_map = ctx.session_map.lock().unwrap();
@@ -274,7 +275,7 @@ pub(crate) fn trans_to_a1<App: ApplicationLayer>(
     let current_time = app.time();
     let mut zeta = Zeta {
         ctx: Arc::downgrade(ctx),
-        application_data,
+        session_data,
         was_bob: false,
         s_remote,
         send_counter: INIT_COUNTER,
@@ -539,12 +540,14 @@ pub(crate) fn received_x2_trans<App: ApplicationLayer>(
             };
             let result = app.save_ratchet_state(
                 &zeta.s_remote,
-                &zeta.application_data,
-                &new_ratchet_state,
-                ratchet_to_preserve,
-                Some(&new_ratchet_state),
-                ratchet_to_delete,
-                None,
+                &zeta.session_data,
+                RatchetUpdate {
+                    state1: &new_ratchet_state,
+                    state2: ratchet_to_preserve,
+                    state1_was_just_added: true,
+                    state_deleted1: ratchet_to_delete,
+                    state_deleted2: None,
+                },
             );
             if let Err(e) = result {
                 return Err(ReceiveError::RatchetIoError(e));
@@ -635,8 +638,8 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
         // handshake is being dropped, so nonce reuse can't happen.
         Packet(zeta.kid_send.get(), n, d)
     };
-    if let Some((responder_disallows_downgrade, application_data)) = responder_disallows_downgrade {
-        let result = app.restore_by_identity(&s_remote, &application_data);
+    if let Some((responder_disallows_downgrade, session_data)) = responder_disallows_downgrade {
+        let result = app.restore_by_identity(&s_remote, &session_data);
         match result {
             Ok((ratchet_state1, ratchet_state2)) => {
                 if (&zeta.ratchet_state != &ratchet_state1) & (Some(&zeta.ratchet_state) != ratchet_state2.as_ref()) {
@@ -655,12 +658,14 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
                 let new_ratchet_state = RatchetState::new(rk, rf, zeta.ratchet_state.chain_len + 1);
                 let result = app.save_ratchet_state(
                     &s_remote,
-                    &application_data,
-                    &new_ratchet_state,
-                    None,
-                    Some(&new_ratchet_state),
-                    Some(&ratchet_state1),
-                    ratchet_state2.as_ref(),
+                    &session_data,
+                    RatchetUpdate {
+                        state1: &new_ratchet_state,
+                        state2: None,
+                        state1_was_just_added: true,
+                        state_deleted1: Some(&ratchet_state1),
+                        state_deleted2: ratchet_state2.as_ref(),
+                    },
                 );
                 if let Err(e) = result {
                     return Err(ReceiveError::RatchetIoError(e));
@@ -688,7 +693,7 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
                 };
                 let session = Arc::new(Session(Mutex::new(Zeta {
                     ctx: Arc::downgrade(ctx),
-                    application_data,
+                    session_data,
                     was_bob: true,
                     s_remote,
                     send_counter: INIT_COUNTER + 1,
@@ -759,12 +764,14 @@ pub(crate) fn received_c1_trans<App: ApplicationLayer>(
             if zeta.ratchet_state2.is_some() {
                 let result = app.save_ratchet_state(
                     &zeta.s_remote,
-                    &zeta.application_data,
-                    &zeta.ratchet_state1,
-                    None,
-                    None,
-                    zeta.ratchet_state2.as_ref(),
-                    None,
+                    &zeta.session_data,
+                    RatchetUpdate {
+                        state1: &zeta.ratchet_state1,
+                        state2: None,
+                        state1_was_just_added: false,
+                        state_deleted1: zeta.ratchet_state2.as_ref(),
+                        state_deleted2: None,
+                    },
                 );
                 if let Err(e) = result {
                     return Err(ReceiveError::RatchetIoError(e));
@@ -1105,12 +1112,14 @@ pub(crate) fn received_k1_trans<App: ApplicationLayer>(
         let new_ratchet_state = RatchetState::new(rk, rf, zeta.ratchet_state1.chain_len + 1);
         let result = app.save_ratchet_state(
             &zeta.s_remote,
-            &zeta.application_data,
-            &new_ratchet_state,
-            Some(&zeta.ratchet_state1),
-            Some(&new_ratchet_state),
-            zeta.ratchet_state2.as_ref(),
-            None,
+            &zeta.session_data,
+            RatchetUpdate {
+                state1: &new_ratchet_state,
+                state2: Some(&zeta.ratchet_state1),
+                state1_was_just_added: true,
+                state_deleted1: zeta.ratchet_state2.as_ref(),
+                state_deleted2: None,
+            },
         );
         if let Err(e) = result {
             return Err(ReceiveError::RatchetIoError(e));
@@ -1201,12 +1210,14 @@ pub(crate) fn received_k2_trans<App: ApplicationLayer>(
             let new_ratchet_state = RatchetState::new(rk, rf, zeta.ratchet_state1.chain_len + 1);
             let result = app.save_ratchet_state(
                 &zeta.s_remote,
-                &zeta.application_data,
-                &new_ratchet_state,
-                None,
-                Some(&new_ratchet_state),
-                Some(&zeta.ratchet_state1),
-                zeta.ratchet_state2.as_ref(),
+                &zeta.session_data,
+                RatchetUpdate {
+                    state1: &new_ratchet_state,
+                    state2: None,
+                    state1_was_just_added: true,
+                    state_deleted1: Some(&zeta.ratchet_state1),
+                    state_deleted2: zeta.ratchet_state2.as_ref(),
+                },
             );
             if let Err(e) = result {
                 return Err(ReceiveError::RatchetIoError(e));

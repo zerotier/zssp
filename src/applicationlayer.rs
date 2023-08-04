@@ -132,10 +132,10 @@ pub trait ApplicationLayer: Sized {
 
     /// A user-defined error returned when the `ApplicationLayer` fails to access persistent storage
     /// for a peer's ratchet states.
-    type StorageError: std::fmt::Debug;
+    type StorageError: std::error::Error;
 
     /// An arbitrary opaque object for use by the application that is attached to each session.
-    type Data;
+    type SessionData;
 
     /// Should return the current time in milliseconds. Does not have to be monotonic, nor synced
     /// with remote peers (although both of these properties would help reliability slightly).
@@ -174,7 +174,7 @@ pub trait ApplicationLayer: Sized {
     /// must verify this identity is associated with the remote peer's static key.
     /// To prevent desync, if this function returns (Some(_), _), no other open session with the
     /// same remote peer must exist. Drop or call expire on any pre-existing sessions before returning.
-    fn check_accept_session(&self, remote_static_key: &Self::PublicKey, identity: &[u8]) -> (Option<(bool, Self::Data)>, bool);
+    fn check_accept_session(&self, remote_static_key: &Self::PublicKey, identity: &[u8]) -> (Option<(bool, Self::SessionData)>, bool);
 
     /// Lookup a specific ratchet state based on its ratchet fingerprint.
     /// This function will be called whenever Alice attempts to connect to us with a non-empty
@@ -206,7 +206,7 @@ pub trait ApplicationLayer: Sized {
     fn restore_by_identity(
         &self,
         remote_static_key: &Self::PublicKey,
-        application_data: &Self::Data,
+        session_data: &Self::SessionData,
     ) -> Result<(RatchetState, Option<RatchetState>), Self::StorageError>;
     /// Atomically save `current_state1` and `current_state2` so that them and only them can be
     /// restored with `restore_by_identity` and `restore_by_fingerprint` through a system restart.
@@ -235,12 +235,8 @@ pub trait ApplicationLayer: Sized {
     fn save_ratchet_state(
         &self,
         remote_static_key: &Self::PublicKey,
-        application_data: &Self::Data,
-        current_state1: &RatchetState,
-        current_state2: Option<&RatchetState>,
-        state_added: Option<&RatchetState>,
-        state_deleted1: Option<&RatchetState>,
-        state_deleted2: Option<&RatchetState>,
+        session_data: &Self::SessionData,
+        update_data: RatchetUpdate<'_>,
     ) -> Result<(), Self::StorageError>;
 
     /// Receives a stream of events that occur during an execution of ZSSP.
@@ -248,4 +244,14 @@ pub trait ApplicationLayer: Sized {
     /// nothing else. Do not base protocol-level decisions upon the events passed to this function.
     #[cfg(feature = "logging")]
     fn event_log(&self, event: LogEvent<'_, Self>);
+}
+
+pub trait CryptoLayer {}
+
+pub struct RatchetUpdate<'a> {
+    pub state1: &'a RatchetState,
+    pub state2: Option<&'a RatchetState>,
+    pub state1_was_just_added: bool,
+    pub state_deleted1: Option<&'a RatchetState>,
+    pub state_deleted2: Option<&'a RatchetState>,
 }

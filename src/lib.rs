@@ -40,7 +40,7 @@ pub mod crypto;
 pub mod crypto_impl;
 pub mod result;
 
-pub use applicationlayer::{ApplicationLayer, Settings};
+pub use applicationlayer::{ApplicationLayer, RatchetUpdate, Settings};
 pub use context::Context;
 #[cfg(feature = "logging")]
 pub use log_event::LogEvent;

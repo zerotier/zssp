@@ -59,7 +59,6 @@ fn to_packet_nonce(n: &[u8; AES_GCM_IV_SIZE]) -> &[u8; PACKET_NONCE_SIZE] {
     (&n[n.len() - PACKET_NONCE_SIZE..]).try_into().unwrap()
 }
 
-#[allow(unused)]
 impl<App: ApplicationLayer> Context<App> {
     /// Create a new session context.
     pub fn new(static_secret_key: App::KeyPair, mut rng: App::Rng) -> Self {
@@ -90,7 +89,7 @@ impl<App: ApplicationLayer> Context<App> {
     ///   contacted
     /// * `mtu` - MTU for initial packets
     /// * `static_remote_key` - Remote side's static public NIST P-384 key
-    /// * `application_data` - Arbitrary data meaningful to the application to include with session
+    /// * `session_data` - Arbitrary data meaningful to the application to include with session
     ///   object
     /// * `identity` - Payload to be sent to Bob that contains the information necessary
     ///   for the upper protocol to authenticate and approve of Alice's identity
@@ -100,7 +99,7 @@ impl<App: ApplicationLayer> Context<App> {
         send: impl FnMut(Vec<u8>) -> bool,
         mut mtu: usize,
         static_remote_key: App::PublicKey,
-        application_data: App::Data,
+        session_data: App::SessionData,
         identity: Vec<u8>,
     ) -> Result<Arc<Session<App>>, OpenError<App::StorageError>> {
         mtu = mtu.max(MIN_TRANSPORT_MTU);
@@ -111,7 +110,7 @@ impl<App: ApplicationLayer> Context<App> {
             app,
             &ctx,
             static_remote_key,
-            application_data,
+            session_data,
             identity,
             |Packet(kid, nonce, payload): &Packet| {
                 // Process fragmentation layer.

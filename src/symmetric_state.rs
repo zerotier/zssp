@@ -12,7 +12,7 @@ pub struct SymmetricState<App: ApplicationLayer> {
     h: [u8; HASHLEN],
     /// If anyone knows a better way to get rid of the "parameter `App` is never used" error please
     /// let me know.
-    _app: PhantomData<fn() -> App::Data>,
+    _app: PhantomData<fn() -> App::SessionData>,
 }
 impl<App: ApplicationLayer> Clone for SymmetricState<App> {
     fn clone(&self) -> Self {

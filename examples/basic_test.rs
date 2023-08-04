@@ -22,7 +22,7 @@ use rand_core::RngCore;
 use sha2::Sha512;
 
 use zssp_proto::crypto_impl::PqcKyberSecretKey;
-use zssp_proto::RatchetState;
+use zssp_proto::{RatchetState, RatchetUpdate};
 use zssp_proto::{Session, Settings, RATCHET_SIZE};
 
 const TEST_MTU: usize = 1500;
@@ -62,8 +62,8 @@ impl zssp_proto::ApplicationLayer for &TestApplication {
     type KeyPair = EphemeralSecret;
     type Kem = PqcKyberSecretKey;
 
-    type StorageError = ();
-    type Data = u128;
+    type StorageError = std::convert::Infallible;
+    type SessionData = u128;
 
     fn hello_requires_recognized_ratchet(&self) -> bool {
         false
@@ -73,7 +73,7 @@ impl zssp_proto::ApplicationLayer for &TestApplication {
         true
     }
 
-    fn check_accept_session(&self, remote_static_key: &Self::PublicKey, identity: &[u8]) -> (Option<(bool, Self::Data)>, bool) {
+    fn check_accept_session(&self, remote_static_key: &Self::PublicKey, identity: &[u8]) -> (Option<(bool, Self::SessionData)>, bool) {
         (Some((true, 1)), true)
     }
 
@@ -85,12 +85,12 @@ impl zssp_proto::ApplicationLayer for &TestApplication {
     fn restore_by_identity(
         &self,
         remote_static_key: &Self::PublicKey,
-        application_data: &Self::Data,
+        session_data: &Self::SessionData,
     ) -> Result<(RatchetState, Option<RatchetState>), Self::StorageError> {
         let ratchets = self.ratchets.lock().unwrap();
         Ok(ratchets
             .peer_map
-            .get(application_data)
+            .get(session_data)
             .cloned()
             .unwrap_or_else(|| RatchetState::new_initial_states()))
     }
@@ -98,24 +98,24 @@ impl zssp_proto::ApplicationLayer for &TestApplication {
     fn save_ratchet_state(
         &self,
         remote_static_key: &Self::PublicKey,
-        application_data: &Self::Data,
-        state1: &RatchetState,
-        state2: Option<&RatchetState>,
-        state_added: Option<&RatchetState>,
-        state_deleted1: Option<&RatchetState>,
-        state_deleted2: Option<&RatchetState>,
+        session_data: &Self::SessionData,
+        update_data: RatchetUpdate<'_>,
     ) -> Result<(), Self::StorageError> {
         let mut ratchets = self.ratchets.lock().unwrap();
-        ratchets.peer_map.insert(*application_data, (state1.clone(), state2.cloned()));
+        ratchets
+            .peer_map
+            .insert(*session_data, (update_data.state1.clone(), update_data.state2.cloned()));
 
-        if let Some(rs) = state_added {
-            ratchets.rf_map.insert(*rs.fingerprint().unwrap(), rs.clone());
-            println!("[{}] new ratchet #{}", self.name, rs.chain_len);
+        if update_data.state1_was_just_added {
+            ratchets
+                .rf_map
+                .insert(*update_data.state1.fingerprint().unwrap(), update_data.state1.clone());
+            println!("[{}] new ratchet #{}", self.name, update_data.state1.chain_len);
         }
-        if let Some(Some(rf)) = state_deleted1.map(|rs| rs.fingerprint()) {
+        if let Some(Some(rf)) = update_data.state_deleted1.map(|rs| rs.fingerprint()) {
             ratchets.rf_map.remove(rf);
         }
-        if let Some(Some(rf)) = state_deleted1.map(|rs| rs.fingerprint()) {
+        if let Some(Some(rf)) = update_data.state_deleted2.map(|rs| rs.fingerprint()) {
             ratchets.rf_map.remove(rf);
         }
         Ok(())
