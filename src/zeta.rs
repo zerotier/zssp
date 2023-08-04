@@ -25,6 +25,8 @@ use crate::LogEvent::*;
 /// it as effectively AAD. Other elements of the header are either not authenticated,
 /// like fragmentation info, or their authentication is implied via key exchange like
 /// the key id.
+///
+/// Corresponds to Figure 10 found in Section 4.3.
 pub(crate) fn to_nonce(packet_type: u8, counter: u64) -> [u8; AES_GCM_IV_SIZE] {
     let mut ret = [0u8; AES_GCM_IV_SIZE];
     ret[3] = packet_type;
@@ -32,6 +34,7 @@ pub(crate) fn to_nonce(packet_type: u8, counter: u64) -> [u8; AES_GCM_IV_SIZE] {
     ret[4..].copy_from_slice(&counter.to_be_bytes());
     ret
 }
+/// Corresponds to Figure 10 found in Section 4.3.
 pub(crate) fn from_nonce(n: &[u8]) -> (u8, u64) {
     assert!(n.len() >= PACKET_NONCE_SIZE);
     let c_start = n.len() - 8;
