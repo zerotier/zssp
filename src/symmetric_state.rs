@@ -37,6 +37,7 @@ impl<App: ApplicationLayer> SymmetricState<App> {
     /// * L = `num_outputs*512u16`
     /// We have intentionally made every input small and fixed size to avoid unnecessary complexity
     /// and data representation ambiguity.
+    /// Corresponds to Noise `HKDF`.
     fn kbkdf(
         &self,
         input_key_material: &[u8],
@@ -69,6 +70,7 @@ impl<App: ApplicationLayer> SymmetricState<App> {
         }
     }
 
+    /// Corresponds to Noise `Initialize` on a SymmetricState.
     pub fn initialize(h: [u8; HASHLEN]) -> Self {
         Self {
             k: Zeroizing::default(),
@@ -77,6 +79,7 @@ impl<App: ApplicationLayer> SymmetricState<App> {
             _app: PhantomData,
         }
     }
+    /// Corresponds to Noise `MixKey`.
     pub fn mix_key(&mut self, input_key_material: &[u8]) {
         let mut next_ck = [0u8; HASHLEN];
         let mut temp_k = [0u8; HASHLEN];
@@ -86,12 +89,14 @@ impl<App: ApplicationLayer> SymmetricState<App> {
         *self.ck = next_ck;
         self.k.clone_from_slice(&temp_k[..AES_256_KEY_SIZE]);
     }
+    /// Corresponds to Noise `MixHash`.
     pub fn mix_hash(&mut self, data: &[u8]) {
         let mut hash = App::Hash::new();
         hash.update(&self.h);
         hash.update(data);
         self.h = hash.finish();
     }
+    /// Corresponds to Noise `MixKeyAndHash`.
     pub fn mix_key_and_hash(&mut self, input_key_material: &[u8]) {
         let mut next_ck = [0u8; HASHLEN];
         let mut temp_h = [0u8; HASHLEN];
@@ -110,6 +115,7 @@ impl<App: ApplicationLayer> SymmetricState<App> {
         self.mix_hash(&temp_h);
         self.k.clone_from_slice(&temp_k[..AES_256_KEY_SIZE]);
     }
+    /// Corresponds to Noise `EncryptAndHash`.
     pub fn encrypt_and_hash_in_place(&mut self, iv: [u8; AES_GCM_IV_SIZE], plaintext_start: usize, buffer: &mut Vec<u8>) {
         let tag = App::Aead::encrypt_in_place(&self.k, iv, Some(&self.h), &mut buffer[plaintext_start..]);
         buffer.extend(&tag);
@@ -117,6 +123,7 @@ impl<App: ApplicationLayer> SymmetricState<App> {
         hash.update(&buffer[plaintext_start..]);
         self.h = hash.finish();
     }
+    /// Corresponds to Noise `DecryptAndHash`.
     #[must_use]
     pub fn decrypt_and_hash_in_place(&mut self, iv: [u8; AES_GCM_IV_SIZE], buffer: &mut [u8], tag: [u8; AES_GCM_TAG_SIZE]) -> bool {
         let mut hash = App::Hash::new();

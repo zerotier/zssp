@@ -38,6 +38,7 @@ pub(crate) fn from_nonce(n: &[u8]) -> (u8, u64) {
     (n[c_start - 1], u64::from_be_bytes(n[c_start..].try_into().unwrap()))
 }
 
+/// Corresponds to the Zeta State Machine found in Section 4.1.
 pub(crate) struct Zeta<App: ApplicationLayer> {
     ctx: Weak<ContextInner<App>>,
     /// An arbitrary application defined object associated with each session.
@@ -57,7 +58,7 @@ pub(crate) struct Zeta<App: ApplicationLayer> {
 
     resend_timer: i64,
     timeout_timer: i64,
-    pub beta: ZsspAutomata<App>,
+    pub beta: ZetaAutomata<App>,
 
     pub counter_antireplay_window: [u64; COUNTER_WINDOW_MAX_OOO],
     pub defrag: DefragBuffer,
@@ -67,6 +68,7 @@ pub(crate) struct Zeta<App: ApplicationLayer> {
 /// A FIPS/NIST compliant variant of Noise_XK with hybrid Kyber1024 PQ data forward secrecy.
 pub struct Session<App: ApplicationLayer>(pub(crate) Mutex<Zeta<App>>);
 
+/// Corresponds to State B_2 of the Zeta State Machine found in Section 4.1 - Definition 3.
 pub(crate) struct StateB2<App: ApplicationLayer> {
     ratchet_state: RatchetState,
     kid_send: NonZeroU32,
@@ -90,9 +92,11 @@ pub(crate) struct Keys {
     kid: Option<NonZeroU32>,
 }
 
+/// Corresponds to the tuple of values the Transition Algorithms send to the remote peer in Section 4.3.
 #[derive(Clone)]
 pub(crate) struct Packet(pub u32, pub [u8; AES_GCM_IV_SIZE], pub Vec<u8>);
 
+/// Corresponds to State A_1 of the Zeta State Machine found in Section 4.1.
 #[derive(Clone)]
 pub(crate) struct StateA1<App: ApplicationLayer> {
     noise: SymmetricState<App>,
@@ -102,7 +106,8 @@ pub(crate) struct StateA1<App: ApplicationLayer> {
     packet: Packet,
 }
 
-pub(crate) enum ZsspAutomata<App: ApplicationLayer> {
+/// Corresponds to the ZKE Automata found in Section 4.1 - Definition 2.
+pub(crate) enum ZetaAutomata<App: ApplicationLayer> {
     Null,
     A1(StateA1<App>),
     A3 {
@@ -186,7 +191,7 @@ impl<App: ApplicationLayer> Zeta<App> {
     fn expire(&mut self) {
         self.resend_timer = i64::MAX;
         self.timeout_timer = i64::MAX;
-        self.beta = ZsspAutomata::Null;
+        self.beta = ZetaAutomata::Null;
         if let Some(ctx) = self.ctx.upgrade() {
             let mut session_map = ctx.session_map.lock().unwrap();
             let mut sessions = ctx.sessions.lock().unwrap();
@@ -252,6 +257,7 @@ fn create_a1_state<App: ApplicationLayer>(
         packet: Packet(0, to_nonce(PACKET_TYPE_HANDSHAKE_HELLO, c), x1),
     })
 }
+/// Corresponds to Transition Algorithm 1 found in Section 4.3.
 pub(crate) fn trans_to_a1<App: ApplicationLayer>(
     app: App,
     ctx: &Arc<ContextInner<App>>,
@@ -289,7 +295,7 @@ pub(crate) fn trans_to_a1<App: ApplicationLayer>(
         hk_send,
         resend_timer: current_time + App::SETTINGS.resend_time as i64,
         timeout_timer: current_time + App::SETTINGS.initial_offer_timeout as i64,
-        beta: ZsspAutomata::A1(a1),
+        beta: ZetaAutomata::A1(a1),
     };
     zeta.key_mut(true).recv.kid = Some(kid_recv);
 
@@ -301,8 +307,9 @@ pub(crate) fn trans_to_a1<App: ApplicationLayer>(
 
     Ok(session)
 }
+/// Corresponds to Algorithm 13 found in Section 5.
 pub(crate) fn respond_to_challenge<App: ApplicationLayer>(zeta: &mut Zeta<App>, rng: &Mutex<App::Rng>, challenge: &[u8; CHALLENGE_SIZE]) {
-    if let ZsspAutomata::A1(StateA1 { packet: Packet(_, _, x1), .. }) = &mut zeta.beta {
+    if let ZetaAutomata::A1(StateA1 { packet: Packet(_, _, x1), .. }) = &mut zeta.beta {
         let response_start = x1.len() - CHALLENGE_SIZE;
         respond_to_challenge_in_place::<App::Rng, App::Hash>(
             rng.lock().unwrap().deref_mut(),
@@ -311,6 +318,7 @@ pub(crate) fn respond_to_challenge<App: ApplicationLayer>(zeta: &mut Zeta<App>, 
         );
     }
 }
+/// Corresponds to Transition Algorithm 2 found in Section 4.3.
 pub(crate) fn received_x1_trans<App: ApplicationLayer>(
     app: &App,
     ctx: &ContextInner<App>,
@@ -428,6 +436,7 @@ pub(crate) fn received_x1_trans<App: ApplicationLayer>(
     send(&Packet(kid_send.get(), to_nonce(PACKET_TYPE_HANDSHAKE_RESPONSE, c), x2), &hk_send);
     Ok(())
 }
+/// Corresponds to Transition Algorithm 3 found in Section 4.3.
 pub(crate) fn received_x2_trans<App: ApplicationLayer>(
     zeta: &mut Zeta<App>,
     session: &Arc<Session<App>>,
@@ -452,7 +461,7 @@ pub(crate) fn received_x2_trans<App: ApplicationLayer>(
         return Err(byzantine_fault!(FailedAuth, true));
     }
     let result = (|| {
-        if let ZsspAutomata::A1(StateA1 { noise, e_secret, e1_secret, identity, .. }) = &zeta.beta {
+        if let ZetaAutomata::A1(StateA1 { noise, e_secret, e1_secret, identity, .. }) = &zeta.beta {
             let mut noise = noise.clone();
             let mut i = 0;
             // Process message pattern 2 e token.
@@ -570,7 +579,7 @@ pub(crate) fn received_x2_trans<App: ApplicationLayer>(
             zeta.resend_timer = current_time + App::SETTINGS.resend_time as i64;
             zeta.timeout_timer = current_time + App::SETTINGS.initial_offer_timeout as i64;
             let packet = Packet(kid_send.get(), n, x3);
-            zeta.beta = ZsspAutomata::A3 { identity, packet: packet.clone() };
+            zeta.beta = ZetaAutomata::A3 { identity, packet: packet.clone() };
 
             Ok(packet)
         } else {
@@ -584,6 +593,7 @@ pub(crate) fn received_x2_trans<App: ApplicationLayer>(
     }
     result.map(|_| ())
 }
+/// Corresponds to Transition Algorithm 4 found in Section 4.3.
 pub(crate) fn received_x3_trans<App: ApplicationLayer>(
     zeta: StateB2<App>,
     app: &App,
@@ -708,7 +718,7 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
                     hk_send: zeta.hk_send.clone(),
                     resend_timer: current_time + App::SETTINGS.resend_time as i64,
                     timeout_timer: current_time + App::SETTINGS.rekey_timeout as i64,
-                    beta: ZsspAutomata::S1,
+                    beta: ZetaAutomata::S1,
                     counter_antireplay_window: std::array::from_fn(|_| 0),
                     defrag: zeta.defrag,
                 })));
@@ -727,6 +737,7 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
         Err(byzantine_fault!(FailedAuth, true))
     }
 }
+/// Corresponds to Transition Algorithm 5 found in Section 4.3.
 pub(crate) fn received_c1_trans<App: ApplicationLayer>(
     zeta: &mut Zeta<App>,
     app: &App,
@@ -761,9 +772,9 @@ pub(crate) fn received_c1_trans<App: ApplicationLayer>(
         return Err(byzantine_fault!(ExpiredCounter, true));
     }
 
-    let just_establised = is_other && matches!(&zeta.beta, ZsspAutomata::A3 { .. });
+    let just_establised = is_other && matches!(&zeta.beta, ZetaAutomata::A3 { .. });
     if is_other {
-        if let ZsspAutomata::A3 { .. } | ZsspAutomata::R2 { .. } = &zeta.beta {
+        if let ZetaAutomata::A3 { .. } | ZetaAutomata::R2 { .. } = &zeta.beta {
             if zeta.ratchet_state2.is_some() {
                 let result = app.save_ratchet_state(
                     &zeta.s_remote,
@@ -788,7 +799,7 @@ pub(crate) fn received_c1_trans<App: ApplicationLayer>(
                     .rekey_after_time
                     .saturating_sub(rng.lock().unwrap().next_u64() % App::SETTINGS.rekey_time_max_jitter) as i64;
             zeta.resend_timer = i64::MAX;
-            zeta.beta = ZsspAutomata::S2;
+            zeta.beta = ZetaAutomata::S2;
         }
     }
     let mut c2 = Vec::new();
@@ -803,6 +814,8 @@ pub(crate) fn received_c1_trans<App: ApplicationLayer>(
     send(&Packet(zeta.key_ref(false).send.kid.unwrap().get(), n, c2), Some(&zeta.hk_send));
     Ok(just_establised)
 }
+/// Corresponds to the trivial Transition Algorithm described for processing C_2 packets found in
+/// Section 4.3.
 pub(crate) fn received_c2_trans<App: ApplicationLayer>(
     zeta: &mut Zeta<App>,
     app: &App,
@@ -820,7 +833,7 @@ pub(crate) fn received_c2_trans<App: ApplicationLayer>(
         // Some acknowledgement may have arrived extremely delayed.
         return Err(byzantine_fault!(UnknownLocalKeyId, false));
     }
-    if !matches!(&zeta.beta, ZsspAutomata::S1) {
+    if !matches!(&zeta.beta, ZetaAutomata::S1) {
         // Some acknowledgement may have arrived extremely delayed.
         return Err(byzantine_fault!(OutOfSequence, false));
     }
@@ -839,9 +852,11 @@ pub(crate) fn received_c2_trans<App: ApplicationLayer>(
             .rekey_after_time
             .saturating_sub(rng.lock().unwrap().next_u64() % App::SETTINGS.rekey_time_max_jitter) as i64;
     zeta.resend_timer = i64::MAX;
-    zeta.beta = ZsspAutomata::S2;
+    zeta.beta = ZetaAutomata::S2;
     Ok(())
 }
+/// Corresponds to the trivial Transition Algorithm described for processing D packets found in
+/// Section 4.3.
 pub(crate) fn received_d_trans<App: ApplicationLayer>(
     zeta: &mut Zeta<App>,
     kid: NonZeroU32,
@@ -853,7 +868,7 @@ pub(crate) fn received_d_trans<App: ApplicationLayer>(
     if d.len() != SESSION_REJECTED_SIZE {
         return Err(byzantine_fault!(InvalidPacket, true));
     }
-    if Some(kid) != zeta.key_ref(true).recv.kid || !matches!(&zeta.beta, ZsspAutomata::A3 { .. }) {
+    if Some(kid) != zeta.key_ref(true).recv.kid || !matches!(&zeta.beta, ZetaAutomata::A3 { .. }) {
         return Err(byzantine_fault!(OutOfSequence, true));
     }
 
@@ -869,6 +884,7 @@ pub(crate) fn received_d_trans<App: ApplicationLayer>(
     zeta.expire();
     Ok(())
 }
+/// Corresponds to the timer rules of the Zeta State Machine found in Section 4.1 - Definition 3.
 pub(crate) fn service<App: ApplicationLayer>(
     zeta: &mut Zeta<App>,
     session: &Arc<Session<App>>,
@@ -880,28 +896,29 @@ pub(crate) fn service<App: ApplicationLayer>(
     if zeta.timeout_timer <= current_time {
         timeout_trans(zeta, session, app, ctx, current_time, send);
     } else if zeta.resend_timer <= current_time {
+        // Corresponds to the resend timer rules found in Section 4.1 - Definition 3.
         zeta.resend_timer = current_time + App::SETTINGS.resend_time as i64;
 
         let (p, mut control_payload) = match &zeta.beta {
-            ZsspAutomata::Null => return,
-            ZsspAutomata::A1(StateA1 { packet, .. }) => {
+            ZetaAutomata::Null => return,
+            ZetaAutomata::A1(StateA1 { packet, .. }) => {
                 log!(app, ResentX1(session));
                 return send(packet, None);
             }
-            ZsspAutomata::A3 { packet, .. } => {
+            ZetaAutomata::A3 { packet, .. } => {
                 log!(app, ResentX3(session));
                 return send(packet, Some(&zeta.hk_send));
             }
-            ZsspAutomata::S1 => {
+            ZetaAutomata::S1 => {
                 log!(app, ResentKeyConfirm(session));
                 (PACKET_TYPE_KEY_CONFIRM, Vec::new())
             }
-            ZsspAutomata::S2 => return,
-            ZsspAutomata::R1 { k1, .. } => {
+            ZetaAutomata::S2 => return,
+            ZetaAutomata::R1 { k1, .. } => {
                 log!(app, ResentK1(session));
                 (PACKET_TYPE_REKEY_INIT, k1.clone())
             }
-            ZsspAutomata::R2 { k2, .. } => {
+            ZetaAutomata::R2 { k2, .. } => {
                 log!(app, ResentK2(session));
                 (PACKET_TYPE_REKEY_COMPLETE, k2.clone())
             }
@@ -928,7 +945,7 @@ fn remap<App: ApplicationLayer>(session: &Arc<Session<App>>, zeta: &Zeta<App>, r
     session_map.insert(new_kid_recv, weak);
     new_kid_recv
 }
-#[allow(unused)]
+/// Corresponds to the timeout timer Transition Algorithm described in Section 4.1 - Definition 3.
 fn timeout_trans<App: ApplicationLayer>(
     zeta: &mut Zeta<App>,
     session: &Arc<Session<App>>,
@@ -938,9 +955,9 @@ fn timeout_trans<App: ApplicationLayer>(
     send: impl FnOnce(&Packet, Option<&[u8; AES_256_KEY_SIZE]>),
 ) {
     match &zeta.beta {
-        ZsspAutomata::Null => {}
-        ZsspAutomata::A1(StateA1 { identity, .. }) | ZsspAutomata::A3 { identity, .. } => {
-            if matches!(&zeta.beta, ZsspAutomata::A1(_)) {
+        ZetaAutomata::Null => {}
+        ZetaAutomata::A1(StateA1 { identity, .. }) | ZetaAutomata::A3 { identity, .. } => {
+            if matches!(&zeta.beta, ZetaAutomata::A1(_)) {
                 log!(app, TimeoutX1(session));
             } else {
                 log!(app, TimeoutX3(session));
@@ -963,7 +980,7 @@ fn timeout_trans<App: ApplicationLayer>(
                 zeta.key_mut(true).recv.kid = Some(new_kid_recv);
                 zeta.resend_timer = current_time + App::SETTINGS.resend_time as i64;
                 zeta.timeout_timer = current_time + App::SETTINGS.initial_offer_timeout as i64;
-                zeta.beta = ZsspAutomata::A1(a1);
+                zeta.beta = ZetaAutomata::A1(a1);
                 zeta.defrag = DefragBuffer::new(Some(hk_recv));
 
                 send(&packet, None);
@@ -971,7 +988,8 @@ fn timeout_trans<App: ApplicationLayer>(
                 zeta.expire();
             }
         }
-        ZsspAutomata::S2 => {
+        ZetaAutomata::S2 => {
+            // Corresponds to Transition Algorithm 6 found in Section 4.3.
             log!(app, StartedRekeyingSentK1(session));
             let new_kid_recv = remap(session, &zeta, &ctx.rng, &ctx.session_map);
             //    -> s
@@ -1005,7 +1023,7 @@ fn timeout_trans<App: ApplicationLayer>(
             zeta.key_mut(true).recv.kid = Some(new_kid_recv);
             zeta.timeout_timer = current_time + App::SETTINGS.rekey_timeout as i64;
             zeta.resend_timer = current_time + App::SETTINGS.resend_time as i64;
-            zeta.beta = ZsspAutomata::R1 { noise, e_secret, k1: k1.clone() };
+            zeta.beta = ZetaAutomata::R1 { noise, e_secret, k1: k1.clone() };
 
             let c = zeta.send_counter;
             zeta.send_counter += 1;
@@ -1015,20 +1033,21 @@ fn timeout_trans<App: ApplicationLayer>(
 
             send(&Packet(zeta.key_ref(false).send.kid.unwrap().get(), n, k1), Some(&zeta.hk_send));
         }
-        ZsspAutomata::S1 { .. } => {
+        ZetaAutomata::S1 { .. } => {
             log!(app, TimeoutKeyConfirm(session));
             zeta.expire();
         }
-        ZsspAutomata::R1 { .. } => {
+        ZetaAutomata::R1 { .. } => {
             log!(app, TimeoutK1(session));
             zeta.expire();
         }
-        ZsspAutomata::R2 { .. } => {
+        ZetaAutomata::R2 { .. } => {
             log!(app, TimeoutK2(session));
             zeta.expire();
         }
     }
 }
+/// Corresponds to Transition Algorithm 7 found in Section 4.3.
 pub(crate) fn received_k1_trans<App: ApplicationLayer>(
     zeta: &mut Zeta<App>,
     session: &Arc<Session<App>>,
@@ -1055,8 +1074,8 @@ pub(crate) fn received_k1_trans<App: ApplicationLayer>(
         return Err(byzantine_fault!(UnknownLocalKeyId, false));
     }
     let should_rekey_as_bob = match &zeta.beta {
-        ZsspAutomata::S2 { .. } => true,
-        ZsspAutomata::R1 { .. } => zeta.was_bob,
+        ZetaAutomata::S2 { .. } => true,
+        ZetaAutomata::R1 { .. } => zeta.was_bob,
         _ => false,
     };
     if !should_rekey_as_bob {
@@ -1142,7 +1161,7 @@ pub(crate) fn received_k1_trans<App: ApplicationLayer>(
         zeta.key_creation_counter = zeta.send_counter;
         zeta.timeout_timer = current_time + App::SETTINGS.rekey_timeout as i64;
         zeta.resend_timer = current_time + App::SETTINGS.resend_time as i64;
-        zeta.beta = ZsspAutomata::R2 { k2: k2.clone() };
+        zeta.beta = ZetaAutomata::R2 { k2: k2.clone() };
 
         let c = zeta.send_counter;
         zeta.send_counter += 1;
@@ -1158,6 +1177,7 @@ pub(crate) fn received_k1_trans<App: ApplicationLayer>(
     }
     result
 }
+/// Corresponds to Transition Algorithm 8 found in Section 4.3.
 pub(crate) fn received_k2_trans<App: ApplicationLayer>(
     zeta: &mut Zeta<App>,
     app: &App,
@@ -1175,7 +1195,7 @@ pub(crate) fn received_k2_trans<App: ApplicationLayer>(
         // Some rekey packet may have arrived extremely delayed.
         return Err(byzantine_fault!(UnknownLocalKeyId, false));
     }
-    if !matches!(&zeta.beta, ZsspAutomata::R1 { .. }) {
+    if !matches!(&zeta.beta, ZetaAutomata::R1 { .. }) {
         // Some rekey packet may have arrived extremely delayed.
         return Err(byzantine_fault!(OutOfSequence, false));
     }
@@ -1191,7 +1211,7 @@ pub(crate) fn received_k2_trans<App: ApplicationLayer>(
     }
     k2.truncate(i);
     let result = (|| {
-        if let ZsspAutomata::R1 { noise, e_secret, .. } = &zeta.beta {
+        if let ZetaAutomata::R1 { noise, e_secret, .. } = &zeta.beta {
             let mut noise = noise.clone();
             let mut i = 0;
             // Process message pattern 2 e token.
@@ -1239,7 +1259,7 @@ pub(crate) fn received_k2_trans<App: ApplicationLayer>(
             zeta.key_creation_counter = zeta.send_counter;
             zeta.timeout_timer = current_time + App::SETTINGS.rekey_timeout as i64;
             zeta.resend_timer = current_time + App::SETTINGS.resend_time as i64;
-            zeta.beta = ZsspAutomata::S1;
+            zeta.beta = ZetaAutomata::S1;
 
             let mut c1 = Vec::new();
             let c = zeta.send_counter;
@@ -1259,6 +1279,7 @@ pub(crate) fn received_k2_trans<App: ApplicationLayer>(
     }
     result
 }
+/// Corresponds to Algorithm 9 found in Section 4.3.
 pub(crate) fn send_payload<App: ApplicationLayer>(
     zeta: &mut Zeta<App>,
     mut payload: Vec<u8>,
@@ -1266,12 +1287,12 @@ pub(crate) fn send_payload<App: ApplicationLayer>(
 ) -> Result<(), SendError> {
     use SendError::*;
 
-    if matches!(&zeta.beta, ZsspAutomata::Null) {
+    if matches!(&zeta.beta, ZetaAutomata::Null) {
         return Err(SessionExpired);
     }
     if !matches!(
         &zeta.beta,
-        ZsspAutomata::S1 | ZsspAutomata::S2 | ZsspAutomata::R1 { .. } | ZsspAutomata::R2 { .. }
+        ZetaAutomata::S1 | ZetaAutomata::S2 | ZetaAutomata::R1 { .. } | ZetaAutomata::R2 { .. }
     ) {
         return Err(SessionNotEstablished);
     }
@@ -1293,6 +1314,7 @@ pub(crate) fn send_payload<App: ApplicationLayer>(
     send(&Packet(zeta.key_ref(false).send.kid.unwrap().get(), n, payload), Some(&zeta.hk_send));
     Ok(())
 }
+/// Corresponds to Algorithm 10 found in Section 4.3.
 pub(crate) fn received_payload_in_place<App: ApplicationLayer>(
     zeta: &mut Zeta<App>,
     kid: NonZeroU32,

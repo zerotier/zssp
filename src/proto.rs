@@ -3,6 +3,8 @@ use crate::crypto::{AES_GCM_TAG_SIZE, KYBER_CIPHERTEXT_SIZE, KYBER_PUBLIC_KEY_SI
 /* Common constants */
 
 /// Minimum physical MTU for ZSSP to function.
+/// If an MTU is passed to ZSSP that is lower than this, it will be ignored and instead this value
+/// will be used.
 pub const MIN_TRANSPORT_MTU: usize = 128;
 
 pub(crate) const KID_SIZE: usize = 4;

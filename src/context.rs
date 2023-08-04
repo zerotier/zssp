@@ -50,11 +50,13 @@ pub(crate) struct ContextInner<App: ApplicationLayer> {
     challenge: Mutex<ChallengeContext>,
 }
 
+/// Corresponds to Figure 10 found in Section 4.3.
 fn to_aes_nonce(pn: &[u8; PACKET_NONCE_SIZE]) -> [u8; AES_GCM_IV_SIZE] {
     let mut an = [0u8; AES_GCM_IV_SIZE];
     an[2..].copy_from_slice(pn);
     an
 }
+/// Corresponds to Figure 14 found near Section 6.
 fn to_packet_nonce(n: &[u8; AES_GCM_IV_SIZE]) -> &[u8; PACKET_NONCE_SIZE] {
     (&n[n.len() - PACKET_NONCE_SIZE..]).try_into().unwrap()
 }
@@ -153,7 +155,7 @@ impl<App: ApplicationLayer> Context<App> {
                         log!(app, ReceivedRawFragment(p, c, frag_no, frag_count));
                     }
                     if p == PACKET_TYPE_HANDSHAKE_RESPONSE {
-                        if !matches!(&zeta.beta, ZsspAutomata::A1(_)) {
+                        if !matches!(&zeta.beta, ZetaAutomata::A1(_)) {
                             // A resent handshake response from Bob may have arrived out of order,
                             // after we already received one.
                             return Err(byzantine_fault!(OutOfSequence, false));

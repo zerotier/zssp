@@ -12,12 +12,13 @@ pub struct ChallengeContext {
     salt: [u8; SALT_SIZE],
 }
 
+/// Corresponds to Algorithm 11 found in Section 5.
 pub fn gen_null_response<Rng: RngCore + CryptoRng>(rng: &mut Rng) -> [u8; CHALLENGE_SIZE] {
     let mut response = [0u8; CHALLENGE_SIZE];
     response[POW_START..].copy_from_slice(&rng.next_u64().to_be_bytes());
     response
 }
-
+/// Corresponds to Algorithm 13 found in Section 5.
 pub fn respond_to_challenge_in_place<Rng: RngCore + CryptoRng, Hash: HashSha512>(
     rng: &mut Rng,
     challenge: &[u8; CHALLENGE_SIZE],
@@ -47,6 +48,7 @@ impl ChallengeContext {
             salt,
         }
     }
+    /// Corresponds to Algorithm 12 found in Section 5.
     pub fn process_hello<Hash: HashSha512>(
         &mut self,
         addr: &impl std::hash::Hash,

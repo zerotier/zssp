@@ -4,6 +4,8 @@ use crate::crypto::{secure_eq, HashSha512};
 use crate::proto::*;
 /// A ratchet key and fingerprint,
 /// along with the length of the ratchet chain the keys were derived from.
+///
+/// Corresponds to the Ratchet Key and Ratchet Fingerprint described in Section 3.
 #[derive(Clone, Eq)]
 pub struct RatchetState {
     pub key: Zeroizing<[u8; RATCHET_SIZE]>,

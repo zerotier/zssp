@@ -9,6 +9,7 @@ use crate::crypto::{PrpAes256, AES_256_KEY_SIZE};
 use crate::proto::*;
 use crate::result::{byzantine_fault, ReceiveError};
 
+/// Corresponds to Figure 13 found in Section 6.
 fn create_fragment_header(kid_send: u32, fragment_count: usize, fragment_no: usize, n: &[u8; PACKET_NONCE_SIZE]) -> [u8; HEADER_SIZE] {
     debug_assert!(fragment_count > 0);
     debug_assert!(fragment_count <= MAX_FRAGMENTS);
@@ -21,6 +22,7 @@ fn create_fragment_header(kid_send: u32, fragment_count: usize, fragment_no: usi
     header
 }
 
+/// Corresponds to the fragmentation algorithm described in Section 6.
 pub fn send_with_fragmentation<App: ApplicationLayer>(
     mut send: impl FnMut(Vec<u8>) -> bool,
     mtu: usize,
@@ -72,6 +74,7 @@ impl DefragBuffer {
         Self { fragment_map: Mutex::new(HashMap::new()), hk_recv }
     }
 
+    /// Corresponds to the authentication and defragmentation algorithm described in Section 6.1.
     pub fn received_fragment<App: ApplicationLayer>(
         &self,
         mut raw_fragment: Vec<u8>,
