@@ -34,7 +34,7 @@ pub(crate) fn to_nonce(packet_type: u8, counter: u64) -> [u8; AES_GCM_IV_SIZE] {
     ret[4..].copy_from_slice(&counter.to_be_bytes());
     ret
 }
-/// Corresponds to Figure 10 found in Section 4.3.
+/// Corresponds to Figure 10 and Figure 14 found in Section 4.3.
 pub(crate) fn from_nonce(n: &[u8]) -> (u8, u64) {
     assert!(n.len() >= PACKET_NONCE_SIZE);
     let c_start = n.len() - 8;
