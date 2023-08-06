@@ -119,14 +119,13 @@ impl<App: ApplicationLayer> SymmetricState<App> {
     pub fn encrypt_and_hash_in_place(&mut self, iv: [u8; AES_GCM_IV_SIZE], plaintext_start: usize, buffer: &mut Vec<u8>) {
         let tag = App::Aead::encrypt_in_place(&self.k, iv, Some(&self.h), &mut buffer[plaintext_start..]);
         buffer.extend(&tag);
-        let mut hash = App::Hash::new();
-        hash.update(&buffer[plaintext_start..]);
-        self.h = hash.finish();
+        self.mix_hash(&buffer[plaintext_start..]);
     }
     /// Corresponds to Noise `DecryptAndHash`.
     #[must_use]
     pub fn decrypt_and_hash_in_place(&mut self, iv: [u8; AES_GCM_IV_SIZE], buffer: &mut [u8], tag: [u8; AES_GCM_TAG_SIZE]) -> bool {
         let mut hash = App::Hash::new();
+        hash.update(&self.h);
         hash.update(buffer);
         hash.update(&tag);
         let ret = App::Aead::decrypt_in_place(&self.k, iv, Some(&self.h), buffer, tag);
