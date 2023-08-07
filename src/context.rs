@@ -102,7 +102,7 @@ impl<App: ApplicationLayer> Context<App> {
         identity: Vec<u8>,
     ) -> Result<Arc<Session<App>>, OpenError<App::StorageError>> {
         mtu = mtu.max(MIN_TRANSPORT_MTU);
-        if identity.len() > MAX_IDENTITY_BLOB_SIZE {
+        if identity.len() > IDENTITY_MAX_SIZE {
             return Err(OpenError::IdentityTooLarge);
         }
         let ctx = &self.0;

@@ -73,7 +73,8 @@ pub const RATCHET_SIZE: usize = 32;
 /// Initial value of 'h'.
 pub(crate) const PROTOCOL_NAME_NOISE_XK: &[u8; HASHLEN] = b"Noise_XKhfs+psk2_P384+Kyber1024_AESGCM_SHA512\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
 /// Initial value of 'ck' for rekeying.
-pub(crate) const PROTOCOL_NAME_NOISE_KK: &[u8; HASHLEN] = b"Noise_KKpsk0_P384_AESGCM_SHA512\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
+pub(crate) const PROTOCOL_NAME_NOISE_KK: &[u8; HASHLEN] =
+    b"Noise_KKpsk0_P384_AESGCM_SHA512\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
 
 pub(crate) const LABEL_OTP_TO_RATCHET: &[u8; 19] = b"ZSSP_OTP_TO_RATCHET";
 pub(crate) const LABEL_KBKDF_CHAIN: &[u8; 4] = b"ZSSP";
@@ -82,7 +83,7 @@ pub(crate) const LABEL_HEADER_KEY: &[u8; 4] = b"ASKH";
 pub(crate) const LABEL_KEX_KEY: &[u8; 4] = b"ASKK";
 
 pub(crate) const INIT_COUNTER: u64 = 0;
-pub(crate) const EXPIRE_AFTER_USES: u64 = 1<<32 - 1;
+pub(crate) const EXPIRE_AFTER_USES: u64 = 1 << 32 - 1;
 /// Determines the number of counters a session will remember. If a counter arrives over
 /// this amount out of order relative to other received counters, it is likely to be
 /// rejected on the basis that the session can't remember if this counter was replayed.
@@ -117,7 +118,7 @@ pub(crate) const HANDSHAKE_HELLO_MAX_SIZE: usize = HANDSHAKE_HELLO_MIN_SIZE + RA
 pub(crate) const HANDSHAKE_RESPONSE_SIZE: usize = P384_PUBLIC_KEY_SIZE + KYBER_CIPHERTEXT_SIZE + AES_GCM_TAG_SIZE + KID_SIZE + AES_GCM_TAG_SIZE;
 
 pub(crate) const HANDSHAKE_COMPLETION_MIN_SIZE: usize = P384_PUBLIC_KEY_SIZE + AES_GCM_TAG_SIZE + 0 + AES_GCM_TAG_SIZE;
-pub(crate) const HANDSHAKE_COMPLETION_MAX_SIZE: usize = HANDSHAKE_COMPLETION_MIN_SIZE + MAX_IDENTITY_BLOB_SIZE;
+pub(crate) const HANDSHAKE_COMPLETION_MAX_SIZE: usize = HANDSHAKE_COMPLETION_MIN_SIZE + IDENTITY_MAX_SIZE;
 
 pub(crate) const KEY_CONFIRMATION_SIZE: usize = AES_GCM_TAG_SIZE;
 pub(crate) const ACKNOWLEDGEMENT_SIZE: usize = AES_GCM_TAG_SIZE;
@@ -131,4 +132,4 @@ pub(crate) const REKEY_SIZE: usize = P384_PUBLIC_KEY_SIZE + KID_SIZE + AES_GCM_T
 /// The combined size of both in bytes must be at most this value.
 ///
 /// If not ZSSP will return `OpenError::DataTooLarge` and refuse to create a session object.
-pub const MAX_IDENTITY_BLOB_SIZE: usize = 4096;
+pub const IDENTITY_MAX_SIZE: usize = 4096;
