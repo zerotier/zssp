@@ -173,22 +173,17 @@ pub trait ApplicationLayer: Sized {
     /// Function to accept sessions after final negotiation.
     /// The second argument is the identity that the remote peer sent us. The application
     /// must verify this identity is associated with the remote peer's static key.
-    /// To prevent desync, if this function returns (Some(_), _), no other open session with the
-    /// same remote peer must exist. Drop or call expire on any pre-existing sessions before returning.
+    /// To prevent desync, if this function specifies that we should connect, no other open session
+    /// with the same remote peer must exist. Drop or call expire on any pre-existing sessions
+    /// before returning.
     fn check_accept_session(&self, remote_static_key: &Self::PublicKey, identity: &[u8]) -> AcceptAction<Self>;
 
     /// Lookup a specific ratchet state based on its ratchet fingerprint.
     /// This function will be called whenever Alice attempts to connect to us with a non-empty
     /// ratchet fingerprint.
     ///
-    /// If the ratchet key was found, the function should return `RestoreAction::RestoreRatchet`. This will
-    /// cause us to connect to Alice using the returned ratchet number and ratchet key.
-    ///
-    /// If the ratchet key could not be found, the application may choose between returning
-    /// `RatchetAction::DowngradeRatchet` or `RatchetAction::FailAuthentication`.
-    /// If `RatchetAction::DowngradeRatchet` is returned we will attempt to convince Alice to downgrade
-    /// to the empty ratchet key, restarting the ratchet chain.
-    /// If `RatchetAction::FailAuthentication` is returned Alice's connection will be silently dropped.
+    /// If a ratchet state with a matching fingerprint could not be found, this function should
+    /// return `Ok(None)`.
     fn restore_by_fingerprint(
         &self,
         ratchet_fingerprint: &[u8; RATCHET_SIZE],
@@ -212,16 +207,9 @@ pub trait ApplicationLayer: Sized {
         remote_static_key: &Self::PublicKey,
         session_data: &Self::SessionData,
     ) -> Result<(RatchetState, Option<RatchetState>), Self::StorageError>;
-    /// Atomically save `current_state1` and `current_state2` so that them and only them can be
-    /// restored with `restore_by_identity` and `restore_by_fingerprint` through a system restart.
-    /// Theses should overwrite the previous ratchet states 1 and 2 saved to storage.
-    ///
-    /// `state_added` will be equal to the brand new ratchet state that was added in this update,
-    /// or `None` if there is not a new ratchet state this update. `state_deleted1` and
-    /// `state_deleted2` will be equal to any ratchet states that are to be deleted and overwritten
-    /// as a result of this update, or `None` if there is not one to be deleted.
-    /// `state_added` will always have a non-empty (`Some()`) ratchet fingerprint, and it will
-    /// always be equal to `current_state1`.
+    /// Atomically commit the update specified by `update_data` to storage, or return an error if
+    /// the update could not be made.
+    /// The implementor is free to choose how to apply these updates to storage.
     ///
     /// If this returns `Err(IoError)`, the packet which triggered this function to be called will be
     /// dropped, and no session state will be mutated, preserving synchronization. The remote peer
@@ -233,8 +221,7 @@ pub trait ApplicationLayer: Sized {
     /// fix is to reset both ratchet keys to empty.
     ///
     /// This function may also save state to volatile storage, in which case all peers which connect
-    /// to us will have to allow downgrade, i.e. `initiator_disallows_downgrade` returns false
-    /// and/or `check_accept_session` returns `(Some(true, _), _)`.
+    /// to us will have to allow downgrade across the board.
     /// Otherwise, when we restart, we will not be allowed to reconnect.
     fn save_ratchet_state(
         &self,
@@ -250,16 +237,43 @@ pub trait ApplicationLayer: Sized {
     fn event_log(&self, event: LogEvent<'_, Self>);
 }
 
+/// A set of references to ratchet states specifying how a remote peer's persistent
+/// storage should be updated.
+///
+/// There should be only up to two ratchet states saved to storage at a time per peer.
+/// Every time a new ratchet state is generated, a previous ratchet state will be deleted.
+///
+/// These are sensitive values should they ought to be securely stored.
 pub struct RatchetUpdate<'a> {
+    /// The ratchet key and fingerprint to store in the first slot.
     pub state1: &'a RatchetState,
+    /// The ratchet key and fingerprint to store in the second slot.
     pub state2: Option<&'a RatchetState>,
+    /// Whether `state1` is a brand new ratchet state, or if it was previously saved.
     pub state1_was_just_added: bool,
+    /// A previous ratchet key and fingerprint that now must be deleted from storage.
+    /// This will have been a previously given value of `state1` or `state2`.
     pub state_deleted1: Option<&'a RatchetState>,
+    /// A previous ratchet key and fingerprint that now must be deleted from storage.
+    /// It is extremely rare that this field is occupied.
     pub state_deleted2: Option<&'a RatchetState>,
 }
 
+/// A collection of fields specifying how to complete the key exchange with a specific remote peer,
+/// used by Bob, the responder, at the very last stage of the key exchange.
+///
+/// Corresponds to the *Accept* callback of Transition Algorithm 4.
 pub struct AcceptAction<App: ApplicationLayer> {
+    /// The data object to be attached to the session if we successfully connect.
+    /// If this field is None then we will not connect to this remote peer.
     pub session_data: Option<App::SessionData>,
+    /// Whether or not we will accept a connection with the remote peer when they do not have a
+    /// ratchet key that we think they should have.
     pub responder_disallows_downgrade: bool,
+    /// Whether or not to send an explicit rejection packet to the remote peer if we do not create
+    /// a session with them.
+    ///
+    /// This field will not be used if `session_data` is `Some` and the remote peer passes all other
+    /// authentication checks.
     pub responder_silently_rejects: bool,
 }
