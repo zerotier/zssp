@@ -71,11 +71,11 @@ impl<App: ApplicationLayer> SymmetricState<App> {
     }
 
     /// Corresponds to Noise `Initialize` on a SymmetricState.
-    pub fn initialize(h: [u8; HASHLEN]) -> Self {
+    pub fn initialize(h: &[u8; HASHLEN]) -> Self {
         Self {
             k: Zeroizing::default(),
-            ck: Zeroizing::new(h),
-            h,
+            ck: Zeroizing::new(*h),
+            h: *h,
             _app: PhantomData,
         }
     }

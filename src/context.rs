@@ -83,9 +83,6 @@ impl<App: ApplicationLayer> Context<App> {
 
     /// Create a new session and send initial packet(s) to other side.
     ///
-    /// This will return SendError::DataTooLarge if the combined size of the metadata and the local
-    /// static public blob (as retrieved from the application layer) exceed MAX_INIT_PAYLOAD_SIZE.
-    ///
     /// * `app` - Application layer instance
     /// * `send` - Function to be called to send one or more initial packets to the remote being
     ///   contacted
@@ -105,6 +102,9 @@ impl<App: ApplicationLayer> Context<App> {
         identity: Vec<u8>,
     ) -> Result<Arc<Session<App>>, OpenError<App::StorageError>> {
         mtu = mtu.max(MIN_TRANSPORT_MTU);
+        if identity.len() > MAX_IDENTITY_BLOB_SIZE {
+            return Err(OpenError::IdentityTooLarge);
+        }
         let ctx = &self.0;
 
         // Process zeta layer.

@@ -82,7 +82,7 @@ impl DefragBuffer {
         vrfy: impl FnOnce(&[u8; PACKET_NONCE_SIZE], usize, usize) -> Result<(), ReceiveError<App::StorageError>>,
     ) -> Result<Option<([u8; PACKET_NONCE_SIZE], Vec<u8>)>, ReceiveError<App::StorageError>> {
         use crate::result::FaultType::*;
-        if raw_fragment.len() < HEADER_AUTH_END {
+        if raw_fragment.len() < MIN_PACKET_SIZE {
             return Err(byzantine_fault!(InvalidPacket, true));
         }
 

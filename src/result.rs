@@ -10,6 +10,8 @@ pub enum OpenError<IoError> {
     /// An invalid parameter was supplied to the function.
     InvalidPublicKey,
 
+    IdentityTooLarge,
+
     RatchetIoError(IoError),
 }
 

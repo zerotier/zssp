@@ -8,7 +8,7 @@ use crate::proto::*;
 pub struct ChallengeContext {
     pub enabled: bool,
     counter: u64,
-    antireplay_window: [u64; COUNTER_WINDOW_MAX_OOO],
+    antireplay_window: [u64; CHALLENGE_COUNTER_WINDOW_MAX_OOO],
     salt: [u8; SALT_SIZE],
 }
 

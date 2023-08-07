@@ -607,7 +607,7 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
 ) -> Result<Arc<Session<App>>, ReceiveError<App::StorageError>> {
     use FaultType::*;
     //    -> s, se
-    if x3.len() < HANDSHAKE_COMPLETION_MIN_SIZE {
+    if !(HANDSHAKE_COMPLETION_MIN_SIZE..=HANDSHAKE_COMPLETION_MAX_SIZE).contains(&x3.len()) {
         return Err(byzantine_fault!(InvalidPacket, true));
     }
     if kid != zeta.kid_recv {
