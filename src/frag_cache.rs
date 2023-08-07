@@ -10,6 +10,7 @@ use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::mem::MaybeUninit;
 
+use crate::crypto::aes::AES_GCM_IV_SIZE;
 use crate::fragged::Assembled;
 use crate::proto::{MAX_FRAGMENTS, MAX_UNASSOCIATED_FRAGMENTS, MAX_UNASSOCIATED_PACKETS, MAX_UNASSOCIATED_PACKET_SIZE};
 
@@ -17,7 +18,7 @@ struct PacketMetadata {
     key: u64,
     frags_idx: u32,
     fragment_have: u64,
-    fragment_count: u32,
+    fragment_count: u8,
     packet_size: u32,
     creation_time: i64,
 }
@@ -55,24 +56,24 @@ impl<Fragment> UnassociatedFragCache<Fragment> {
     /// Will check that aad is the same for all fragments.
     pub(crate) fn assemble(
         &mut self,
-        nonce: [u8; 10],
+        nonce: &[u8; AES_GCM_IV_SIZE],
         remote_address: impl Hash,
         fragment_size: usize,
         fragment: Fragment,
-        fragment_no: u8,
-        fragment_count: u8,
-        timeout: i64,
+        fragment_no: usize,
+        fragment_count: usize,
+        timeout_interval: i64,
         current_time: i64,
         ret_assembled: &mut Assembled<Fragment>,
     ) {
         debug_assert!(MAX_FRAGMENTS < MAX_UNASSOCIATED_FRAGMENTS);
-        if fragment_no >= fragment_count || (fragment_count as usize) > MAX_FRAGMENTS || fragment_size > MAX_UNASSOCIATED_PACKET_SIZE {
+        if fragment_no >= fragment_count || fragment_count > MAX_FRAGMENTS || fragment_size > MAX_UNASSOCIATED_PACKET_SIZE {
             return;
         }
 
         let mut hasher = self.dos_salt.build_hasher();
         remote_address.hash(&mut hasher);
-        hasher.write(&nonce);
+        hasher.write(nonce);
         let mut key = hasher.finish();
         if key == 0 {
             key = 1;
@@ -98,7 +99,7 @@ impl<Fragment> UnassociatedFragCache<Fragment> {
         } else if self.map[idx0].key == 0 || self.map[idx1].key == 0 {
             if (fragment_count as usize) > self.frags_unused_size {
                 // There are not enough free fragment slots so attempt to expire a bunch of entries.
-                self.check_for_expiry(timeout, current_time);
+                self.check_for_expiry(timeout_interval, current_time);
             }
             if self.map[idx0].key == 0 {
                 idx0
@@ -107,7 +108,7 @@ impl<Fragment> UnassociatedFragCache<Fragment> {
             }
         } else {
             // No room for a new entry so attempt to expire a bunch of entries.
-            self.check_for_expiry(timeout, current_time);
+            self.check_for_expiry(timeout_interval, current_time);
             if self.map[idx0].key == 0 {
                 idx0
             } else if self.map[idx1].key == 0 {
@@ -125,7 +126,7 @@ impl<Fragment> UnassociatedFragCache<Fragment> {
                 entry.key = key;
                 entry.frags_idx = self.frags_first_unused as u32;
                 entry.fragment_have = 0;
-                entry.fragment_count = fragment_count as u32;
+                entry.fragment_count = fragment_count as u8;
                 entry.packet_size = 0;
                 entry.creation_time = current_time;
 
@@ -143,7 +144,7 @@ impl<Fragment> UnassociatedFragCache<Fragment> {
 
         let new_size = entry.packet_size + fragment_size as u32;
         let got = 1u64.wrapping_shl(fragment_no as u32);
-        if got & entry.fragment_have == 0 && fragment_count == entry.fragment_count as u8 && new_size <= MAX_UNASSOCIATED_PACKET_SIZE as u32 {
+        if got & entry.fragment_have == 0 && fragment_count == entry.fragment_count as usize && new_size <= MAX_UNASSOCIATED_PACKET_SIZE as u32 {
             entry.packet_size = new_size;
             entry.fragment_have |= got;
 
@@ -272,9 +273,9 @@ fn test_cache() {
                 if drop != j {
                     let fragment = vec![0, 1, 2, 3, 4, 5, 6, r];
                     // If the timeout is 1 we should be guaranteed to get our packet cached.
-                    let mut nonce = [0; 10];
+                    let mut nonce = [0; 12];
                     nonce[..4].copy_from_slice(&i.to_be_bytes());
-                    cache.assemble(nonce, 0, fragment.len(), fragment, j as u8, fragment_count as u8, 1, time, &mut assembled);
+                    cache.assemble(&nonce, 0, fragment.len(), fragment, j, fragment_count, 1, time, &mut assembled);
                     time += 1;
                 }
             }
@@ -297,9 +298,9 @@ fn test_cache() {
                         let (no, fragment) = packet.swap_remove(xorshift64_random() as usize % packet.len());
 
                         assembled.empty();
-                        let mut nonce = [0; 10];
+                        let mut nonce = [0; 12];
                         nonce[..4].copy_from_slice(&id.to_be_bytes());
-                        cache.assemble(nonce, 0, fragment.len(), fragment, no, fragment_count, 1000, time, &mut assembled);
+                        cache.assemble(&nonce, 0, fragment.len(), fragment, no as usize, fragment_count as usize, 1000, time, &mut assembled);
                         time += 1;
                         in_progress_fragments -= 1;
 

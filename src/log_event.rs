@@ -7,7 +7,7 @@
  */
 use std::sync::Arc;
 
-use crate::{ApplicationLayer, zssp::Session};
+use crate::{ApplicationLayer, zeta::Session};
 
 /// ZSSP events that might be interesting to log or aggregate into metrics.
 pub enum LogEvent<'a, Application: ApplicationLayer> {

@@ -54,12 +54,12 @@ impl ChallengeContext {
         &self,
         addr: &impl std::hash::Hash,
         response: &[u8; CHALLENGE_SIZE],
-    ) -> Result<bool, [u8; CHALLENGE_SIZE]> {
+    ) -> Result<(), [u8; CHALLENGE_SIZE]> {
         let c = u64::from_be_bytes(response[..COUNTER_SIZE].try_into().unwrap());
         let mut work_buf = [0u8; SHA512_HASH_SIZE];
         if self.antireplay_window.check(c) && secure_eq(&response[COUNTER_SIZE..POW_START], &self.create_mac::<Hash>(c, addr)) && verify_pow::<Hash>(response, &mut work_buf) {
             self.antireplay_window.update(c);
-            Ok(true)
+            Ok(())
         } else {
             let mut challenge = [0u8; CHALLENGE_SIZE];
             let d = self.counter.fetch_add(1, Ordering::Relaxed);

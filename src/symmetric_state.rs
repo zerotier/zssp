@@ -80,11 +80,11 @@ impl<App: ApplicationLayer> SymmetricState<App> {
     }
 
     /// Corresponds to Noise `Initialize` on a SymmetricState.
-    pub fn initialize(h: [u8; HASHLEN]) -> Self {
+    pub fn initialize(h: &[u8; HASHLEN]) -> Self {
         Self {
             k: Zeroizing::default(),
-            ck: Zeroizing::new(h),
-            h,
+            ck: Zeroizing::new(*h),
+            h: *h,
             _app: PhantomData,
         }
     }
@@ -97,6 +97,14 @@ impl<App: ApplicationLayer> SymmetricState<App> {
 
         *self.ck = *next_ck;
         self.k.clone_from_slice(&temp_k[..AES_256_KEY_SIZE]);
+    }
+    /// Corresponds to Noise `MixKey`.
+    pub fn mix_key_no_init(&mut self, hmac: &mut App::HmacHash, input_key_material: &[u8]) {
+        let mut next_ck = Zeroizing::new([0u8; HASHLEN]);
+
+        self.kbkdf(hmac, input_key_material, LABEL_KBKDF_CHAIN, 2, &mut next_ck, None, None);
+
+        *self.ck = *next_ck;
     }
     /// Corresponds to Noise `MixHash`.
     pub fn mix_hash(&mut self, hash: &mut App::Hash, data: &[u8]) {
@@ -123,6 +131,24 @@ impl<App: ApplicationLayer> SymmetricState<App> {
         *self.ck = *next_ck;
         self.mix_hash(hash, &temp_h);
         self.k.clone_from_slice(&temp_k[..AES_256_KEY_SIZE]);
+    }
+    /// Corresponds to Noise `MixKeyAndHash`.
+    pub fn mix_key_and_hash_no_init(&mut self, hash: &mut App::Hash, hmac: &mut App::HmacHash, input_key_material: &[u8]) {
+        let mut next_ck = Zeroizing::new([0u8; HASHLEN]);
+        let mut temp_h = [0u8; HASHLEN];
+
+        self.kbkdf(
+            hmac,
+            input_key_material,
+            LABEL_KBKDF_CHAIN,
+            3,
+            &mut next_ck,
+            Some(&mut temp_h),
+            None,
+        );
+
+        *self.ck = *next_ck;
+        self.mix_hash(hash, &temp_h);
     }
     /// Corresponds to Noise `EncryptAndHash`.
     #[must_use]

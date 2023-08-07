@@ -14,7 +14,7 @@ use crate::crypto::rand_core::{CryptoRng, RngCore};
 use crate::crypto::sha512::{HmacSha512, HashSha512};
 use crate::RatchetState;
 use crate::proto::RATCHET_SIZE;
-use crate::zssp::Session;
+use crate::zeta::Session;
 //use crate::{log_event::LogEvent, Session};
 
 /// A container for a vast majority of the dynamic settings within ZSSP, including all time-based settings.

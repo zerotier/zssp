@@ -8,20 +8,20 @@
 pub mod crypto;
 
 mod applicationlayer;
-//mod frag_cache;
-//mod fragged;
-//mod handshake_cache;
+mod fragged;
+mod frag_cache;
+mod handshake_cache;
 mod indexed_heap;
-//mod log_event;
+mod log_event;
 mod proto;
 mod ratchet_state;
 mod symmetric_state;
 mod antireplay;
 mod challenge;
 pub mod result;
-//mod zssp;
+mod zssp;
 mod zeta;
-mod context;
+//mod context;
 
 //pub mod error;
 pub use crate::applicationlayer::ApplicationLayer;

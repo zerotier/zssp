@@ -8,6 +8,8 @@ use std::sync::{Arc, Mutex, Weak, RwLock};
 
 use crate::applicationlayer::ApplicationLayer;
 use crate::crypto::aes::{AES_256_KEY_SIZE, AES_GCM_IV_SIZE};
+use crate::frag_cache::UnassociatedFragCache;
+use crate::handshake_cache::UnassociatedHandshakeCache;
 use crate::indexed_heap::IndexedBinaryHeap;
 //use crate::fragmentation::{send_with_fragmentation, DefragBuffer};
 use crate::proto::*;
@@ -46,6 +48,8 @@ pub(crate) struct ContextInner<App: ApplicationLayer> {
     pub(crate) s_secret: App::KeyPair,
     pub(crate) session_queue: Mutex<IndexedBinaryHeap<Weak<Session<App>>, Reverse<i64>>>,
     pub(crate) session_map: SessionMap<App>,
+    unassociated_defrag_cache: Mutex<UnassociatedFragCache<App::IncomingPacketBuffer>>,
+    unassociated_handshake_states: UnassociatedHandshakeCache<App>,
     //pub(crate) b2_map: Mutex<HashMap<NonZeroU32, StateB2<App>>>,
 
     //hello_defrag: Mutex<DefragBuffer>,
@@ -70,19 +74,13 @@ impl<App: ApplicationLayer> Context<App> {
         Self(Arc::new(ContextInner {
             rng: Mutex::new(rng),
             s_secret: static_secret_key,
-            session_map: Mutex::new(HashMap::new()),
-            b2_map: Mutex::new(HashMap::new()),
-            hello_defrag: Mutex::new(DefragBuffer::new(None)),
-            challenge: Mutex::new(challenge),
-            sessions: Mutex::new(HashMap::new()),
+            session_map: RwLock::new(HashMap::new()),
+            challenge,
+            session_queue: Mutex::new(IndexedBinaryHeap::new()),
+            unassociated_defrag_cache: Mutex::new(UnassociatedFragCache::new()),
+            unassociated_handshake_states: UnassociatedHandshakeCache::new(),
         }))
     }
-    /// Enable the ZeroTier Challenge Protocol, to protect this machine from CPU exhaustion DDOS
-    /// attacks.
-    pub fn enable_challenge(&self, enabled: bool) {
-        self.0.challenge.lock().unwrap().enabled = enabled;
-    }
-
     /// Create a new session and send initial packet(s) to other side.
     ///
     /// This will return SendError::DataTooLarge if the combined size of the metadata and the local

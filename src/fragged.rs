@@ -9,7 +9,8 @@
 use std::mem::{needs_drop, zeroed, MaybeUninit};
 use std::ptr::slice_from_raw_parts;
 
-use crate::proto::MAX_FRAGMENTS;
+use crate::crypto::aes::AES_GCM_IV_SIZE;
+use crate::proto::{MAX_FRAGMENTS, NONCE_SIZE_DIFF};
 
 pub(crate) struct Assembled<Fragment>(pub(crate) [MaybeUninit<Fragment>; MAX_FRAGMENTS], pub(crate) usize);
 
@@ -42,9 +43,9 @@ impl<Fragment> Drop for Assembled<Fragment> {
 
 /// Fast packet defragmenter
 pub struct Fragged<Fragment, const MAX_FRAGMENTS: usize> {
-    count: u32,
-    have: u64,
     nonce: [u8; 10],
+    count: u8,
+    have: u64,
     size: usize,
     frags: [MaybeUninit<Fragment>; MAX_FRAGMENTS],
 }
@@ -63,28 +64,29 @@ impl<Fragment, const MAX_FRAGMENTS: usize> Fragged<Fragment, MAX_FRAGMENTS> {
     /// Will check that aad is the same for all fragments.
     pub(crate) fn assemble(
         &mut self,
-        nonce: [u8; 10],
+        nonce: &[u8; AES_GCM_IV_SIZE],
         fragment: Fragment,
-        fragment_no: u8,
-        fragment_count: u8,
+        fragment_no: usize,
+        fragment_count: usize,
         ret_assembled: &mut Assembled<Fragment>,
     ) {
-        if fragment_no < fragment_count && (fragment_count as usize) <= MAX_FRAGMENTS {
+        if fragment_no < fragment_count && fragment_count <= MAX_FRAGMENTS {
+            let nonce = nonce[NONCE_SIZE_DIFF..].try_into().unwrap();
             // If the counter has changed, reset the structure to receive a new packet.
             if nonce != self.nonce {
                 self.drop_in_place();
-                self.count = fragment_count as u32;
+                self.count = fragment_count as u8;
                 self.nonce = nonce;
                 self.size = 0;
             }
 
             let got = 1u64.wrapping_shl(fragment_no as u32);
-            if got & self.have == 0 && self.count as u8 == fragment_count {
+            if got & self.have == 0 && self.count == fragment_count as u8 {
                 self.have |= got;
                 unsafe {
                     self.frags.get_unchecked_mut(fragment_no as usize).write(fragment);
                 }
-                if self.have == 1u64.wrapping_shl(self.count) - 1 {
+                if self.have == 1u64.wrapping_shl(self.count as u32) - 1 {
                     self.have = 0;
                     self.count = 0;
                     self.nonce = [0; 10];

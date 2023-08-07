@@ -10,7 +10,7 @@ use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
-use crate::zssp::NoiseXKBobHandshakeState;
+use crate::zeta::StateB2;
 use crate::{proto::MAX_UNASSOCIATED_HANDSHAKE_STATES, ApplicationLayer};
 
 pub(crate) struct UnassociatedHandshakeCache<Application: ApplicationLayer> {
@@ -18,10 +18,10 @@ pub(crate) struct UnassociatedHandshakeCache<Application: ApplicationLayer> {
     cache: RwLock<CacheInner<Application>>,
 }
 /// SoA format
-struct CacheInner<Application: ApplicationLayer> {
+struct CacheInner<App: ApplicationLayer> {
     local_ids: [Option<NonZeroU32>; MAX_UNASSOCIATED_HANDSHAKE_STATES],
     timeouts: [i64; MAX_UNASSOCIATED_HANDSHAKE_STATES],
-    handshakes: [Option<Arc<NoiseXKBobHandshakeState<Application>>>; MAX_UNASSOCIATED_HANDSHAKE_STATES],
+    handshakes: [Option<Arc<StateB2<App>>>; MAX_UNASSOCIATED_HANDSHAKE_STATES],
 }
 
 /// Linear-search cache for capping the memory consumption of handshake data.
@@ -38,7 +38,7 @@ impl<Application: ApplicationLayer> UnassociatedHandshakeCache<Application> {
             }),
         }
     }
-    pub(crate) fn get(&self, local_id: NonZeroU32) -> Option<Arc<NoiseXKBobHandshakeState<Application>>> {
+    pub(crate) fn get(&self, local_id: NonZeroU32) -> Option<Arc<StateB2<Application>>> {
         let cache = self.cache.read().unwrap();
         for (i, id) in cache.local_ids.iter().enumerate() {
             if *id == Some(local_id) {
@@ -47,7 +47,7 @@ impl<Application: ApplicationLayer> UnassociatedHandshakeCache<Application> {
         }
         None
     }
-    pub(crate) fn insert(&self, local_id: NonZeroU32, state: Arc<NoiseXKBobHandshakeState<Application>>, current_time: i64) {
+    pub(crate) fn insert(&self, local_id: NonZeroU32, state: Arc<StateB2<Application>>, current_time: i64) {
         let mut cache = self.cache.write().unwrap();
         let mut idx = 0;
         for i in 0..cache.local_ids.len() {
@@ -59,7 +59,7 @@ impl<Application: ApplicationLayer> UnassociatedHandshakeCache<Application> {
             }
         }
         cache.local_ids[idx] = Some(local_id);
-        cache.timeouts[idx] = current_time.saturating_add(Application::INITIAL_OFFER_TIMEOUT_MS);
+        cache.timeouts[idx] = current_time + Application::SETTINGS.fragment_assembly_timeout as i64;
         cache.handshakes[idx] = Some(state);
         self.has_pending.store(true, Ordering::Release);
     }
