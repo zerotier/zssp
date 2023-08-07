@@ -1,62 +1,76 @@
-/* This Source Code Form is subject to the terms of the Mozilla Public
- * License, v. 2.0. If a copy of the MPL was not distributed with this
- * file, You can obtain one at https://mozilla.org/MPL/2.0/.
- *
- * (c) ZeroTier, Inc.
- * https://www.zerotier.com/
- */
+use zeroize::Zeroizing;
 
-use std::num::NonZeroU64;
-
-use crate::crypto::secret::Secret;
-use crate::RATCHET_SIZE;
-
-#[derive(Clone, PartialEq, Eq)]
-pub enum RatchetState {
-    Null,
-    Empty,
-    NonEmpty(NonEmptyRatchetState),
-}
-use RatchetState::*;
-impl RatchetState {
-    pub fn new_nonempty(key: Secret<RATCHET_SIZE>, fingerprint: Secret<RATCHET_SIZE>, chain_len: NonZeroU64) -> Self {
-        NonEmpty(NonEmptyRatchetState { key, fingerprint, chain_len })
-    }
-    pub fn new_initial_states() -> [RatchetState; 2] {
-        [RatchetState::Empty, RatchetState::Null]
-    }
-    pub fn is_null(&self) -> bool {
-        matches!(self, Null)
-    }
-    pub fn is_empty(&self) -> bool {
-        matches!(self, Empty)
-    }
-    pub fn nonempty(&self) -> Option<&NonEmptyRatchetState> {
-        match self {
-            NonEmpty(rs) => Some(rs),
-            _ => None,
-        }
-    }
-    pub fn chain_len(&self) -> u64 {
-        self.nonempty().map_or(0, |rs| rs.chain_len.get())
-    }
-    pub fn fingerprint(&self) -> Option<&[u8; RATCHET_SIZE]> {
-        self.nonempty().map(|rs| rs.fingerprint.as_ref())
-    }
-    pub fn key(&self) -> Option<&[u8; RATCHET_SIZE]> {
-        const ZERO_KEY: [u8; RATCHET_SIZE] = [0u8; RATCHET_SIZE];
-        match self {
-            Null => None,
-            Empty => Some(&ZERO_KEY),
-            NonEmpty(rs) => Some(rs.key.as_ref()),
-        }
-    }
-}
+use crate::crypto::secure_eq;
+use crate::proto::*;
 /// A ratchet key and fingerprint,
 /// along with the length of the ratchet chain the keys were derived from.
-#[derive(Clone, PartialEq, Eq)]
-pub struct NonEmptyRatchetState {
-    pub key: Secret<RATCHET_SIZE>,
-    pub fingerprint: Secret<RATCHET_SIZE>,
-    pub chain_len: NonZeroU64,
+///
+/// Corresponds to the Ratchet Key and Ratchet Fingerprint described in Section 3.
+#[derive(Clone, Eq)]
+pub struct RatchetState {
+    pub key: Zeroizing<[u8; RATCHET_SIZE]>,
+    pub fingerprint: Option<Zeroizing<[u8; RATCHET_SIZE]>>,
+    pub chain_len: u64,
+}
+impl PartialEq for RatchetState {
+    fn eq(&self, other: &Self) -> bool {
+        secure_eq(&self.key, &other.key)
+            & (self.chain_len == other.chain_len)
+            & match (self.fingerprint.as_ref(), other.fingerprint.as_ref()) {
+                (Some(rf1), Some(rf2)) => secure_eq(rf1, rf2),
+                (None, None) => true,
+                _ => false,
+            }
+    }
+}
+impl RatchetState {
+    pub fn new(key: Zeroizing<[u8; RATCHET_SIZE]>, fingerprint: Zeroizing<[u8; RATCHET_SIZE]>, chain_len: u64) -> Self {
+        RatchetState { key, fingerprint: Some(fingerprint), chain_len }
+    }
+    pub fn new_raw(key: [u8; RATCHET_SIZE], fingerprint: [u8; RATCHET_SIZE], chain_len: u64) -> Self {
+        RatchetState {
+            key: Zeroizing::new(key),
+            fingerprint: Some(Zeroizing::new(fingerprint)),
+            chain_len,
+        }
+    }
+    pub fn empty() -> Self {
+        RatchetState {
+            key: Zeroizing::new([0u8; RATCHET_SIZE]),
+            fingerprint: None,
+            chain_len: 0,
+        }
+    }
+    //pub fn new_from_otp<Hmac: HmacSha512>(otp: &[u8]) -> RatchetState {
+    //    let mut buffer = Vec::new();
+    //    buffer.push(1);
+    //    buffer.extend(LABEL_OTP_TO_RATCHET);
+    //    buffer.push(0x00);
+    //    buffer.extend((2u16 * 512u16).to_be_bytes());
+    //    let r1 = Hmac::hmac(otp, &buffer);
+    //    buffer[0] = 2;
+    //    let r2 = Hmac::hmac(otp, &buffer);
+    //    Self::new(
+    //        Zeroizing::new(r1[..RATCHET_SIZE].try_into().unwrap()),
+    //        Zeroizing::new(r2[..RATCHET_SIZE].try_into().unwrap()),
+    //        1,
+    //    )
+    //}
+
+    pub fn new_initial_states() -> (RatchetState, Option<RatchetState>) {
+        (RatchetState::empty(), None)
+    }
+    //pub fn new_otp_states<Hmac: HashSha512>(otp: &[u8]) -> (RatchetState, Option<RatchetState>) {
+    //    (RatchetState::new_from_otp::<Hmac>(otp), None)
+    //}
+
+    pub fn is_empty(&self) -> bool {
+        self.fingerprint.is_none()
+    }
+    pub fn fingerprint_eq(&self, rf: &[u8; RATCHET_SIZE]) -> bool {
+        self.fingerprint.as_ref().map_or(false, |rf0| secure_eq(rf0, rf))
+    }
+    pub fn fingerprint(&self) -> Option<&[u8; RATCHET_SIZE]> {
+        self.fingerprint.as_deref()
+    }
 }

@@ -7,7 +7,7 @@
  */
 use std::sync::Arc;
 
-use crate::{ApplicationLayer, Session};
+use crate::{ApplicationLayer, zssp::Session};
 
 /// ZSSP events that might be interesting to log or aggregate into metrics.
 pub enum LogEvent<'a, Application: ApplicationLayer> {
@@ -30,7 +30,7 @@ pub enum LogEvent<'a, Application: ApplicationLayer> {
     ReceiveUncheckedXK2,
     ReceiveValidXK2(&'a Arc<Session<Application>>),
     ReceiveUncheckedXK3,
-    ReceiveValidXK3(&'a Application::Data),
+    ReceiveValidXK3(&'a Application::SessionData),
     ReceiveUncheckedKK1,
     ReceiveValidKK1(&'a Arc<Session<Application>>),
     ReceiveUncheckedKK2,

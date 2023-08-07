@@ -1,7 +1,9 @@
 // (c) 2020-2022 ZeroTier, Inc. -- currently proprietary pending actual release and licensing. See LICENSE.md.
 
-pub const AES_256_BLOCK_SIZE: usize = 16;
 pub const AES_256_KEY_SIZE: usize = 32;
+pub const AES_256_BLOCK_SIZE: usize = 16;
+pub const AES_GCM_TAG_SIZE: usize = 16;
+pub const AES_GCM_IV_SIZE: usize = 12;
 
 /// A trait for encrypting individual blocks of plaintext using AES-256.
 /// It is used for header authentication, for which we have a standard model proof that our
@@ -35,4 +37,34 @@ pub trait AesDec: Send + Sync {
     /// (i.e. AES-256 in zero-padding ECB mode).
     /// The plaintext should be written directly back out to `block`.
     fn decrypt_in_place(&self, block: &mut [u8; AES_256_BLOCK_SIZE]);
+}
+
+
+pub trait AesGcmEncContext {
+    fn encrypt(&mut self, input: &[u8], output: &mut [u8]);
+
+    fn finish(&mut self) -> [u8; AES_GCM_TAG_SIZE];
+}
+
+pub trait AesGcmDecContext {
+    fn decrypt(&mut self, input: &[u8], output: &mut [u8]);
+
+    #[must_use]
+    fn finish(&mut self, tag: &[u8; AES_GCM_TAG_SIZE]) -> bool;
+}
+
+pub trait HighThroughputAesGcmPool: Send + Sync {
+    type EncContext<'a>: AesGcmEncContext where Self: 'a;
+    type DecContext<'a>: AesGcmDecContext where Self: 'a;
+
+    fn new(encrypt_key: &[u8; AES_256_KEY_SIZE], decrypt_key: &[u8; AES_256_KEY_SIZE]) -> Self;
+
+    fn start_enc<'a>(&'a self, iv: &[u8; AES_GCM_IV_SIZE]) -> Self::EncContext<'a>;
+    fn start_dec<'a>(&'a self, iv: &[u8; AES_GCM_IV_SIZE]) -> Self::DecContext<'a>;
+}
+
+pub trait LowThroughputAesGcm {
+    fn encrypt_in_place(key: &[u8; AES_256_KEY_SIZE], iv: &[u8; AES_GCM_IV_SIZE], aad: &[u8], data: &mut [u8]) -> [u8; AES_GCM_TAG_SIZE];
+    #[must_use]
+    fn decrypt_in_place(key: &[u8; AES_256_KEY_SIZE], iv: &[u8; AES_GCM_IV_SIZE], aad: &[u8], data: &mut [u8], tag: &[u8; AES_GCM_TAG_SIZE]) -> bool;
 }

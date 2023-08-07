@@ -16,17 +16,13 @@ use std::ops::DerefMut;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, Weak};
 
-use arrayvec::ArrayVec;
-use zeroize::Zeroizing;
-
-use crate::challenge::ChallengeContext;
-use crate::crypto::aes::{AesDec, AesEnc, AES_256_KEY_SIZE};
+use crate::crypto::aes::{AesDec, AesEnc};
 use crate::crypto::p384::{P384KeyPair, P384PublicKey, P384_ECDH_SHARED_SECRET_SIZE, P384_PUBLIC_KEY_SIZE};
 use crate::crypto::pqc_kyber::KYBER_SECRETKEYBYTES;
 use crate::crypto::rand_core::RngCore;
 use crate::crypto::sha512::{HmacSha512, HashSha512};
 
-use crate::result::{FaultType, OpenError, ReceiveError, SendError};
+use crate::error::{FaultType, OpenError, ReceiveError, SendError};
 use crate::frag_cache::UnassociatedFragCache;
 use crate::fragged::{Assembled, Fragged};
 use crate::handshake_cache::UnassociatedHandshakeCache;
@@ -55,7 +51,9 @@ pub struct ContextInner<Application: ApplicationLayer> {
     /// `session_queue -> state_machine_lock -> state -> session_map`
     session_queue: Mutex<IndexedBinaryHeap<Weak<Session<Application>>, Reverse<i64>>>,
     session_map: RwLock<HashMap<NonZeroU32, (Weak<Session<Application>>, bool)>>,
-    challenge: ChallengeContext,
+    challenge_counter: AtomicU64,
+    challenge_antireplay_window: [AtomicU64; CHALLENGE_COUNTER_WINDOW_MAX_OOO],
+    challenge_salt: [u8; CHALLENGE_SALT_SIZE],
     rng: Mutex<Application::Rng>,
 }
 
@@ -114,18 +112,18 @@ pub enum IncomingSessionAction {
 /// ZeroTier Secure Session Protocol (ZSSP) Session
 ///
 /// A FIPS/NIST compliant variant of Noise_XK with hybrid Kyber1024 PQ data forward secrecy.
-pub struct Session<App: ApplicationLayer> {
+pub struct Session<Application: ApplicationLayer> {
     /// An arbitrary application defined object associated with each session.
-    pub application_data: App::SessionData,
+    pub application_data: Application::SessionData,
     /// Is true if the local peer acted as Bob, the responder in the initial key exchange.
     pub was_bob: bool,
     /// The receive context associated with this session,
     /// only this context can receive messages from the remote peer.
-    context: Weak<ContextInner<App>>,
+    context: Weak<ContextInner<Application>>,
     /// Handle into the session queue for changing the update timer.
     queue_idx: BinaryHeapIndex,
 
-    remote_static_key: App::PublicKey,
+    remote_static_key: Application::PublicKey,
     send_counter: AtomicU64,
     /// This bool signals to all threads to stop incrementing the counter and instead error out.
     session_has_expired: AtomicBool,
@@ -137,14 +135,14 @@ pub struct Session<App: ApplicationLayer> {
     /// it goes `session_queue -> state_machine_lock -> state -> session_map`.
     /// Any lock can be skipped but they must be locked in that order.
     state_machine_lock: Mutex<()>,
-    state: RwLock<SessionMutableState<App>>,
-    defrag: [Mutex<Fragged<App::IncomingPacketBuffer, MAX_FRAGMENTS>>; SESSION_MAX_FRAGMENTS_OOO],
-    header_send_cipher: App::PrpEnc,
-    header_receive_cipher: App::PrpDec,
-    kex_send_cipher: Mutex<Zeroizing<[u8; AES_256_KEY_SIZE]>>,
-    kex_receive_cipher: Mutex<Zeroizing<[u8; AES_256_KEY_SIZE]>>,
+    state: RwLock<SessionMutableState<Application>>,
+    defrag: [Mutex<Fragged<Application::IncomingPacketBuffer, MAX_FRAGMENTS>>; SESSION_MAX_FRAGMENTS_OOO],
+    header_send_cipher: Application::PrpEnc,
+    header_receive_cipher: Application::PrpDec,
+    kex_send_cipher: Mutex<Option<Application::AeadEnc>>,
+    kex_receive_cipher: Mutex<Option<Application::AeadDec>>,
     /// Pre-computed rekeying values.
-    noise_kk_ss: Zeroizing<[u8; P384_ECDH_SHARED_SECRET_SIZE]>,
+    noise_kk_ss: Secret<P384_ECDH_SHARED_SECRET_SIZE>,
     noise_kk_local_init_h: [u8; HASHLEN],
     noise_kk_remote_init_h: [u8; HASHLEN],
 }
@@ -161,8 +159,6 @@ struct SessionMutableState<Application: ApplicationLayer> {
     /// This is the index of `noise_cipher_state` that contains the most recent key.
     /// It will be attached to fragment headers to help with OOO transport.
     current_key: usize,
-    resent_timer: AtomicI64,
-    timeout_timer: i64,
     /// This defines the exact state of the offer state machine we are in.
     outgoing_offer: OfferStateMachine<Application>,
 }
@@ -170,57 +166,73 @@ struct SessionMutableState<Application: ApplicationLayer> {
 /// These offer enums form a state machine.
 /// Documented below are the only legal transitions for this state machine.
 /// A session is initialized with an `outgoing_offer` of either NoiseXKPattern1 or Normal.
-enum OfferStateMachine<App: ApplicationLayer> {
-    Normal, // -> NoiseKKPattern1, NoiseKKPattern2
+enum OfferStateMachine<Application: ApplicationLayer> {
+    Normal {
+        timeout: i64,
+    }, // -> NoiseKKPattern1, NoiseKKPattern2
     /// This state uses a lot of memory so we put it on the heap.
-    NoiseXKPattern1or3(Box<NoiseXKAliceHandshake<App>>), // -> Normal
+    NoiseXKPattern1or3(Box<NoiseXKAliceHandshake<Application>>), // -> Normal
     NoiseKKPattern1 {
+        next_retry_time: AtomicI64,
+        timeout: i64,
         new_key_id: NonZeroU32,
-        noise_e_secret: App::KeyPair,
-        noise_message: ArrayVec<u8, REKEY_SIZE>,
-        noise_ck: SymmetricState<App>,
+        noise_e_secret: Application::KeyPair,
+        noise_message: [u8; NoiseKKPattern1or2::SIZE],
+        noise_ck: SymmetricState,
+        noise_h_pskep: [u8; HASHLEN],
     }, // -> NoiseKKPattern2, KeyConfirm
     NoiseKKPattern2 {
-        noise_message: ArrayVec<u8, REKEY_SIZE>,
-        kex_send_key: Zeroizing<[u8; AES_256_KEY_SIZE]>,
+        next_retry_time: AtomicI64,
+        timeout: i64,
+        noise_message: [u8; NoiseKKPattern1or2::SIZE],
+        kex_send_key: Secret<AES_GCM_KEY_SIZE>,
     }, // -> Normal
-    KeyConfirm, // -> Normal
+    KeyConfirm {
+        next_retry_time: AtomicI64,
+        timeout: i64,
+    }, // -> Normal
     Null,
 }
 
-pub(crate) struct NoiseXKBobHandshakeState<App: ApplicationLayer> {
+pub(crate) struct NoiseXKBobHandshakeState<Application: ApplicationLayer> {
     /// Can never be Null.
     ratchet_state: RatchetState,
     remote_key_id: NonZeroU32,
     local_key_id: NonZeroU32,
-    header_receive_key: Zeroizing<[u8; AES_256_KEY_SIZE]>,
-    header_send_key: Zeroizing<[u8; AES_256_KEY_SIZE]>,
-    noise_e_secret: App::KeyPair,
-    noise_ck_eseeekem1psk: SymmetricState<App>,
-    noise_pattern3_defrag: Mutex<Fragged<App::IncomingPacketBuffer, MAX_FRAGMENTS>>,
+    header_receive_key: Secret<AES_GCM_KEY_SIZE>,
+    header_send_key: Secret<AES_GCM_KEY_SIZE>,
+    noise_h_ee1peekem1pskp: [u8; HASHLEN],
+    noise_e_secret: Application::KeyPair,
+    noise_ck_eseeekem1psk: SymmetricState,
+    noise_k_eseeekem1psk: Secret<AES_GCM_KEY_SIZE>,
+    noise_pattern3_defrag: Mutex<Fragged<Application::IncomingPacketBuffer, MAX_FRAGMENTS>>,
 }
 
-struct NoiseXKAliceHandshake<App: ApplicationLayer> {
+struct NoiseXKAliceHandshake<Application: ApplicationLayer> {
+    next_retry_time: AtomicI64,
+    timeout: i64,
     /// A secure random number put in the header of Alice's fragments to identify them.
     /// If a DDOS attacker could guess this they could block Alice starting the handshake.
     local_key_id: NonZeroU32,
-    alice_identity_blob: App::LocalIdentityBlob,
-    offer: NoiseXKAliceHandshakeState<App>,
+    alice_identity_blob: Application::LocalIdentityBlob,
+    offer: NoiseXKAliceHandshakeState<Application>,
 }
 
-enum NoiseXKAliceHandshakeState<App: ApplicationLayer> {
+enum NoiseXKAliceHandshakeState<Application: ApplicationLayer> {
     NoiseXKPattern1 {
         noise_h_ee1p: [u8; HASHLEN],
-        noise_e_secret: App::KeyPair,
-        noise_e1_secret: App::Kem,
-        noise_ck_es: SymmetricState<App>,
+        noise_e_secret: Application::KeyPair,
+        noise_e1_secret: Secret<KYBER_SECRETKEYBYTES>,
+        noise_ck_es: SymmetricState,
         /// ZSSP assumes an unreliable, out-of-order physical transport environment, so for that
         /// reason we have to resend key offers.
-        noise_message: ArrayVec<u8, HANDSHAKE_HELLO_MAX_SIZE>,
+        noise_message: [u8; NoiseXKPattern1::MAX_SIZE],
+        noise_message_len: usize,
         message_id: u64,
     },
     NoiseXKPattern3 {
-        noise_message: ArrayVec<u8, HANDSHAKE_COMPLETION_MAX_SIZE>,
+        noise_message: [u8; NoiseXKPattern3::MAX_SIZE],
+        noise_message_len: usize,
     },
 }
 

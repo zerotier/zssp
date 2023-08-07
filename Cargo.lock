@@ -3,10 +3,13 @@
 version = 3
 
 [[package]]
-name = "hex-literal"
-version = "0.4.1"
+name = "arrayvec"
+version = "0.7.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6fe2267d4ed49bc07b63801559be28c718ea06c4738b7a03c94df7386d2cde46"
+checksum = "96d30a06541fbafbc7f82ed10c06164cfbd2c401138f6addd8404629c4b16711"
+dependencies = [
+ "zeroize",
+]
 
 [[package]]
 name = "pqc_kyber"
@@ -24,10 +27,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
 
 [[package]]
+name = "zeroize"
+version = "1.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2a0956f1ba7c7909bfb66c2e9e4124ab6f6482560f6628b5aaeba39207c9aad9"
+
+[[package]]
 name = "zssp"
 version = "0.0.3"
 dependencies = [
- "hex-literal",
+ "arrayvec",
  "pqc_kyber",
  "rand_core",
+ "zeroize",
 ]
