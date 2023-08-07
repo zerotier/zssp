@@ -27,7 +27,12 @@ pub trait PrpAes256 {
 pub trait AeadAesGcm {
     /// Encrypt the given `buffer` of plaintext using AES-GCM-256, with the given `key`, `iv` and `aad`.
     /// The ciphertext should be written directly back to `buffer`, and the GCM tag should be returned.
-    fn encrypt_in_place(key: &[u8; AES_256_KEY_SIZE], iv: [u8; AES_GCM_IV_SIZE], aad: Option<&[u8]>, buffer: &mut [u8]) -> [u8; AES_GCM_TAG_SIZE];
+    fn encrypt_in_place(
+        key: &[u8; AES_256_KEY_SIZE],
+        iv: [u8; AES_GCM_IV_SIZE],
+        aad: Option<&[u8]>,
+        buffer: &mut [u8],
+    ) -> [u8; AES_GCM_TAG_SIZE];
     /// Decrypt the given `buffer` of ciphertext using AES-GCM-256, with the given `key`, `iv` and `aad`.
     /// The ciphertext should be written directly back to `buffer`, and the GCM tag should be returned.
     fn decrypt_in_place(

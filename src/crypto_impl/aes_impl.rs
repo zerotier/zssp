@@ -18,7 +18,12 @@ impl PrpAes256 for Aes256 {
 }
 
 impl AeadAesGcm for Aes256Gcm {
-    fn encrypt_in_place(key: &[u8; AES_256_KEY_SIZE], iv: [u8; AES_GCM_IV_SIZE], aad: Option<&[u8]>, buffer: &mut [u8]) -> [u8; AES_GCM_TAG_SIZE] {
+    fn encrypt_in_place(
+        key: &[u8; AES_256_KEY_SIZE],
+        iv: [u8; AES_GCM_IV_SIZE],
+        aad: Option<&[u8]>,
+        buffer: &mut [u8],
+    ) -> [u8; AES_GCM_TAG_SIZE] {
         let key = Key::<Aes256Gcm>::from_slice(key);
         let mut cipher = Aes256Gcm::new(&key);
         cipher

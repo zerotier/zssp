@@ -24,7 +24,10 @@ pub trait PrivateKeyKyber1024<Rng: RngCore + CryptoRng>: Sized + Send + Sync {
     ///
     /// **CRITICAL**: This must return `None` if the given `public_key` is invalid in any way
     /// according to the Kyber1024 spec.
-    fn encapsulate(rng: &mut Rng, public_key: &[u8; KYBER_PUBLIC_KEY_SIZE]) -> Option<([u8; KYBER_CIPHERTEXT_SIZE], [u8; KYBER_PLAINTEXT_SIZE])>;
+    fn encapsulate(
+        rng: &mut Rng,
+        public_key: &[u8; KYBER_PUBLIC_KEY_SIZE],
+    ) -> Option<([u8; KYBER_CIPHERTEXT_SIZE], [u8; KYBER_PLAINTEXT_SIZE])>;
     /// Decapsulate a Kyber1024 `ciphertext` received from the remote peer, retreiving
     /// the raw bytes of the original plaintext. This plaintext is immediately hashed and deleted.
     ///

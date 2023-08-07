@@ -26,6 +26,12 @@ impl<Rng: RngCore + CryptoRng> KeyPairP384<Rng> for EphemeralSecret {
     }
 
     fn agree(&self, public_key: &Self::PublicKey) -> Option<[u8; P384_ECDH_SHARED_SECRET_SIZE]> {
-        Some(self.diffie_hellman(public_key).raw_secret_bytes().as_slice().try_into().unwrap())
+        Some(
+            self.diffie_hellman(public_key)
+                .raw_secret_bytes()
+                .as_slice()
+                .try_into()
+                .unwrap(),
+        )
     }
 }

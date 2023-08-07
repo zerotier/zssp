@@ -189,7 +189,10 @@ pub trait ApplicationLayer: Sized {
     /// If `RatchetAction::DowngradeRatchet` is returned we will attempt to convince Alice to downgrade
     /// to the empty ratchet key, restarting the ratchet chain.
     /// If `RatchetAction::FailAuthentication` is returned Alice's connection will be silently dropped.
-    fn restore_by_fingerprint(&self, ratchet_fingerprint: &[u8; RATCHET_SIZE]) -> Result<Option<RatchetState>, Self::StorageError>;
+    fn restore_by_fingerprint(
+        &self,
+        ratchet_fingerprint: &[u8; RATCHET_SIZE],
+    ) -> Result<Option<RatchetState>, Self::StorageError>;
     /// Lookup the specific ratchet states based on the identity of the peer being communicated with.
     /// This function will be called whenever Alice attempts to open a session, or Bob attempts
     /// to verify Alice's identity.

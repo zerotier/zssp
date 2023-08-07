@@ -149,43 +149,53 @@ impl<App: ApplicationLayer> Context<App> {
             if let Some(Some(session)) = session {
                 // Process recv fragmentation layer.
                 let mut zeta = session.0.lock().unwrap();
-                let result = zeta.defrag.received_fragment::<App>(raw_fragment, app.time(), |n, frag_no, frag_count| {
-                    let (p, c) = from_nonce(n);
-                    if p != PACKET_TYPE_DATA {
-                        log!(app, ReceivedRawFragment(p, c, frag_no, frag_count));
-                    }
-                    if p == PACKET_TYPE_HANDSHAKE_RESPONSE {
-                        if !matches!(&zeta.beta, ZetaAutomata::A1(_)) {
-                            // A resent handshake response from Bob may have arrived out of order,
-                            // after we already received one.
-                            return Err(byzantine_fault!(OutOfSequence, false));
-                        }
-                        if c >= COUNTER_WINDOW_MAX_SKIP_AHEAD {
-                            return Err(byzantine_fault!(ExpiredCounter, true));
-                        }
-                        Ok(())
-                    } else if PACKET_TYPE_USES_COUNTER_RANGE.contains(&p) {
-                        if !zeta.check_counter_window(c) {
-                            // The counter window has finite memory and so will occasionally give
-                            // false positives on very out-of-order packets.
-                            return Err(byzantine_fault!(ExpiredCounter, false));
-                        }
-                        Ok(())
-                    } else if p == PACKET_TYPE_HANDSHAKE_COMPLETION {
-                        // The handshake completion packet could have been resent.
-                        return Err(byzantine_fault!(InvalidPacket, false));
-                    } else {
-                        return Err(byzantine_fault!(InvalidPacket, true));
-                    }
-                })?;
+                let result =
+                    zeta.defrag
+                        .received_fragment::<App>(raw_fragment, app.time(), |n, frag_no, frag_count| {
+                            let (p, c) = from_nonce(n);
+                            if p != PACKET_TYPE_DATA {
+                                log!(app, ReceivedRawFragment(p, c, frag_no, frag_count));
+                            }
+                            if p == PACKET_TYPE_HANDSHAKE_RESPONSE {
+                                if !matches!(&zeta.beta, ZetaAutomata::A1(_)) {
+                                    // A resent handshake response from Bob may have arrived out of order,
+                                    // after we already received one.
+                                    return Err(byzantine_fault!(OutOfSequence, false));
+                                }
+                                if c >= COUNTER_WINDOW_MAX_SKIP_AHEAD {
+                                    return Err(byzantine_fault!(ExpiredCounter, true));
+                                }
+                                Ok(())
+                            } else if PACKET_TYPE_USES_COUNTER_RANGE.contains(&p) {
+                                if !zeta.check_counter_window(c) {
+                                    // The counter window has finite memory and so will occasionally give
+                                    // false positives on very out-of-order packets.
+                                    return Err(byzantine_fault!(ExpiredCounter, false));
+                                }
+                                Ok(())
+                            } else if p == PACKET_TYPE_HANDSHAKE_COMPLETION {
+                                // The handshake completion packet could have been resent.
+                                return Err(byzantine_fault!(InvalidPacket, false));
+                            } else {
+                                return Err(byzantine_fault!(InvalidPacket, true));
+                            }
+                        })?;
                 if let Some((pn, mut assembled_packet)) = result {
                     // Process recv zeta layer.
-                    let send_associated = |Packet(kid, nonce, payload): &Packet, hk: Option<&[u8; AES_256_KEY_SIZE]>| {
-                        if let Some((send_fragment, mut mtu)) = send_to(&session) {
-                            mtu = mtu.max(MIN_TRANSPORT_MTU);
-                            send_with_fragmentation::<App>(send_fragment, mtu, *kid, to_packet_nonce(&nonce), payload, hk);
-                        }
-                    };
+                    let send_associated =
+                        |Packet(kid, nonce, payload): &Packet, hk: Option<&[u8; AES_256_KEY_SIZE]>| {
+                            if let Some((send_fragment, mut mtu)) = send_to(&session) {
+                                mtu = mtu.max(MIN_TRANSPORT_MTU);
+                                send_with_fragmentation::<App>(
+                                    send_fragment,
+                                    mtu,
+                                    *kid,
+                                    to_packet_nonce(&nonce),
+                                    payload,
+                                    hk,
+                                );
+                            }
+                        };
 
                     let (p, _) = from_nonce(&pn);
                     let ret = match p {
@@ -210,8 +220,15 @@ impl<App: ApplicationLayer> Context<App> {
                         }
                         PACKET_TYPE_KEY_CONFIRM => {
                             log!(app, ReceivedRawKeyConfirm);
-                            let result =
-                                received_c1_trans(&mut zeta, &app, &ctx.rng, kid_recv, to_aes_nonce(&pn), assembled_packet, send_associated)?;
+                            let result = received_c1_trans(
+                                &mut zeta,
+                                &app,
+                                &ctx.rng,
+                                kid_recv,
+                                to_aes_nonce(&pn),
+                                assembled_packet,
+                                send_associated,
+                            )?;
                             log!(app, KeyConfirmIsAuthSentAck(&session));
                             if result {
                                 SessionEvent::Established
@@ -221,7 +238,14 @@ impl<App: ApplicationLayer> Context<App> {
                         }
                         PACKET_TYPE_ACK => {
                             log!(app, ReceivedRawAck);
-                            received_c2_trans(&mut zeta, &app, &ctx.rng, kid_recv, to_aes_nonce(&pn), assembled_packet)?;
+                            received_c2_trans(
+                                &mut zeta,
+                                &app,
+                                &ctx.rng,
+                                kid_recv,
+                                to_aes_nonce(&pn),
+                                assembled_packet,
+                            )?;
                             log!(app, AckIsAuth(&session));
                             SessionEvent::Control
                         }
@@ -244,7 +268,14 @@ impl<App: ApplicationLayer> Context<App> {
                         }
                         PACKET_TYPE_REKEY_COMPLETE => {
                             log!(app, ReceivedRawK2);
-                            received_k2_trans(&mut zeta, &app, kid_recv, to_aes_nonce(&pn), assembled_packet, send_associated)?;
+                            received_k2_trans(
+                                &mut zeta,
+                                &app,
+                                kid_recv,
+                                to_aes_nonce(&pn),
+                                assembled_packet,
+                                send_associated,
+                            )?;
                             log!(app, K2IsAuthSentKeyConfirm(&session));
                             SessionEvent::Control
                         }
@@ -266,28 +297,37 @@ impl<App: ApplicationLayer> Context<App> {
                 if let Entry::Occupied(mut entry) = b2_map.entry(kid_recv) {
                     let zeta = entry.get_mut();
                     // Process recv fragmentation layer.
-                    let result = zeta.defrag.received_fragment::<App>(raw_fragment, app.time(), |n, frag_no, frag_count| {
-                        let (p, c) = from_nonce(n);
-                        log!(app, ReceivedRawFragment(p, c, frag_no, frag_count));
-                        if p == PACKET_TYPE_HANDSHAKE_COMPLETION && c == 0 {
-                            Ok(())
-                        } else {
-                            Err(byzantine_fault!(InvalidPacket, true))
-                        }
-                    })?;
+                    let result =
+                        zeta.defrag
+                            .received_fragment::<App>(raw_fragment, app.time(), |n, frag_no, frag_count| {
+                                let (p, c) = from_nonce(n);
+                                log!(app, ReceivedRawFragment(p, c, frag_no, frag_count));
+                                if p == PACKET_TYPE_HANDSHAKE_COMPLETION && c == 0 {
+                                    Ok(())
+                                } else {
+                                    Err(byzantine_fault!(InvalidPacket, true))
+                                }
+                            })?;
                     if let Some((_, assembled_packet)) = result {
                         log!(app, ReceivedRawX3);
                         let zeta = entry.remove();
-                        let session = received_x3_trans(zeta, &app, ctx, kid_recv, assembled_packet, |Packet(kid, nonce, payload), hk| {
-                            send_with_fragmentation::<App>(
-                                send_unassociated_reply,
-                                send_unassociated_mtu,
-                                *kid,
-                                to_packet_nonce(&nonce),
-                                payload,
-                                hk,
-                            );
-                        })?;
+                        let session = received_x3_trans(
+                            zeta,
+                            &app,
+                            ctx,
+                            kid_recv,
+                            assembled_packet,
+                            |Packet(kid, nonce, payload), hk| {
+                                send_with_fragmentation::<App>(
+                                    send_unassociated_reply,
+                                    send_unassociated_mtu,
+                                    *kid,
+                                    to_packet_nonce(&nonce),
+                                    payload,
+                                    hk,
+                                );
+                            },
+                        )?;
                         log!(app, X3IsAuthSentKeyConfirm(&session));
                         Ok(ReceiveOk::Session(session, SessionEvent::NewSession))
                     } else {
@@ -301,11 +341,10 @@ impl<App: ApplicationLayer> Context<App> {
             }
         } else {
             // Process recv fragmentation layer.
-            let result = ctx
-                .hello_defrag
-                .lock()
-                .unwrap()
-                .received_fragment::<App>(raw_fragment, app.time(), |n, frag_no, frag_count| {
+            let result = ctx.hello_defrag.lock().unwrap().received_fragment::<App>(
+                raw_fragment,
+                app.time(),
+                |n, frag_no, frag_count| {
                     let (p, c) = from_nonce(n);
                     log!(app, ReceivedRawFragment(p, c, frag_no, frag_count));
                     if p == PACKET_TYPE_HANDSHAKE_HELLO || p == PACKET_TYPE_CHALLENGE {
@@ -313,18 +352,18 @@ impl<App: ApplicationLayer> Context<App> {
                     } else {
                         Err(byzantine_fault!(InvalidPacket, true))
                     }
-                })?;
+                },
+            )?;
             if let Some((n, mut assembled_packet)) = result {
                 let (p, _) = from_nonce(&n);
                 if p == PACKET_TYPE_HANDSHAKE_HELLO {
                     log!(app, ReceivedRawX1);
                     // Process recv challenge layer.
                     let challenge_start = assembled_packet.len() - CHALLENGE_SIZE;
-                    let result = ctx
-                        .challenge
-                        .lock()
-                        .unwrap()
-                        .process_hello::<App::Hash>(remote_address, (&assembled_packet[challenge_start..]).try_into().unwrap());
+                    let result = ctx.challenge.lock().unwrap().process_hello::<App::Hash>(
+                        remote_address,
+                        (&assembled_packet[challenge_start..]).try_into().unwrap(),
+                    );
                     if let Err(challenge) = result {
                         log!(app, X1FailedChallengeSentNewChallenge);
                         let mut challenge_packet = Vec::new();
@@ -347,16 +386,22 @@ impl<App: ApplicationLayer> Context<App> {
                     assembled_packet.truncate(challenge_start);
 
                     // Process recv zeta layer.
-                    received_x1_trans(&app, &ctx, to_aes_nonce(&n), assembled_packet, |Packet(kid, nonce, payload), hk| {
-                        send_with_fragmentation::<App>(
-                            send_unassociated_reply,
-                            send_unassociated_mtu,
-                            *kid,
-                            to_packet_nonce(&nonce),
-                            payload,
-                            Some(hk),
-                        );
-                    })?;
+                    received_x1_trans(
+                        &app,
+                        &ctx,
+                        to_aes_nonce(&n),
+                        assembled_packet,
+                        |Packet(kid, nonce, payload), hk| {
+                            send_with_fragmentation::<App>(
+                                send_unassociated_reply,
+                                send_unassociated_mtu,
+                                *kid,
+                                to_packet_nonce(&nonce),
+                                payload,
+                                Some(hk),
+                            );
+                        },
+                    )?;
                     log!(app, X1IsAuthSentX2);
                     Ok(ReceiveOk::Unassociated)
                 } else if p == PACKET_TYPE_CHALLENGE {
@@ -365,10 +410,17 @@ impl<App: ApplicationLayer> Context<App> {
                     if assembled_packet.len() != KID_SIZE + CHALLENGE_SIZE {
                         return Err(byzantine_fault!(InvalidPacket, true));
                     }
-                    if let Some(kid_recv) = NonZeroU32::new(u32::from_be_bytes(assembled_packet[..KID_SIZE].try_into().unwrap())) {
-                        if let Some(Some(session)) = ctx.session_map.lock().unwrap().get(&kid_recv).map(|r| r.upgrade()) {
+                    if let Some(kid_recv) =
+                        NonZeroU32::new(u32::from_be_bytes(assembled_packet[..KID_SIZE].try_into().unwrap()))
+                    {
+                        if let Some(Some(session)) = ctx.session_map.lock().unwrap().get(&kid_recv).map(|r| r.upgrade())
+                        {
                             let mut zeta = session.0.lock().unwrap();
-                            respond_to_challenge(&mut zeta, &ctx.rng, &assembled_packet[KID_SIZE..].try_into().unwrap());
+                            respond_to_challenge(
+                                &mut zeta,
+                                &ctx.rng,
+                                &assembled_packet[KID_SIZE..].try_into().unwrap(),
+                            );
                             log!(app, ChallengeIsAuth(&session));
                             return Ok(ReceiveOk::Unassociated);
                         }
@@ -390,7 +442,13 @@ impl<App: ApplicationLayer> Context<App> {
     ///   slice of `data`
     /// * `mtu` - The MTU of the link, all packets passed to `send` will be at most `mtu` in length
     /// * `payload` - Data to send
-    pub fn send(&self, session: &Arc<Session<App>>, send: impl FnMut(Vec<u8>) -> bool, mut mtu: usize, payload: Vec<u8>) -> Result<(), SendError> {
+    pub fn send(
+        &self,
+        session: &Arc<Session<App>>,
+        send: impl FnMut(Vec<u8>) -> bool,
+        mut mtu: usize,
+        payload: Vec<u8>,
+    ) -> Result<(), SendError> {
         mtu = mtu.max(MIN_TRANSPORT_MTU);
         let mut zeta = session.0.lock().unwrap();
         send_payload(&mut zeta, payload, |Packet(kid, nonce, payload), hk| {
@@ -405,7 +463,11 @@ impl<App: ApplicationLayer> Context<App> {
     /// a problem.
     ///
     /// * `send_to` - Function to get a sender and an MTU to send something over an active session
-    pub fn service<SendFn: FnMut(Vec<u8>) -> bool>(&self, app: App, mut send_to: impl FnMut(&Arc<Session<App>>) -> Option<(SendFn, usize)>) -> i64 {
+    pub fn service<SendFn: FnMut(Vec<u8>) -> bool>(
+        &self,
+        app: App,
+        mut send_to: impl FnMut(&Arc<Session<App>>) -> Option<(SendFn, usize)>,
+    ) -> i64 {
         let ctx = &self.0;
         let sessions = ctx.sessions.lock().unwrap();
         let current_time = app.time();
@@ -422,7 +484,14 @@ impl<App: ApplicationLayer> Context<App> {
                     |Packet(kid, nonce, payload): &Packet, hk| {
                         if let Some((send_fragment, mut mtu)) = send_to(&session) {
                             mtu = mtu.max(MIN_TRANSPORT_MTU);
-                            send_with_fragmentation::<App>(send_fragment, mtu, *kid, to_packet_nonce(&nonce), payload, hk);
+                            send_with_fragmentation::<App>(
+                                send_fragment,
+                                mtu,
+                                *kid,
+                                to_packet_nonce(&nonce),
+                                payload,
+                                hk,
+                            );
                         }
                     },
                 );

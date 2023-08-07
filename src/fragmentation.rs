@@ -10,7 +10,12 @@ use crate::proto::*;
 use crate::result::{byzantine_fault, ReceiveError};
 
 /// Corresponds to Figure 13 found in Section 6.
-fn create_fragment_header(kid_send: u32, fragment_count: usize, fragment_no: usize, n: &[u8; PACKET_NONCE_SIZE]) -> [u8; HEADER_SIZE] {
+fn create_fragment_header(
+    kid_send: u32,
+    fragment_count: usize,
+    fragment_no: usize,
+    n: &[u8; PACKET_NONCE_SIZE],
+) -> [u8; HEADER_SIZE] {
     debug_assert!(fragment_count > 0);
     debug_assert!(fragment_count <= MAX_FRAGMENTS);
     debug_assert!(fragment_no < MAX_FRAGMENTS);
@@ -47,7 +52,10 @@ pub fn send_with_fragmentation<App: ApplicationLayer>(
         fragment.extend(&packet[i..j]);
 
         if let Some(hk_send) = hk_send {
-            App::Prp::encrypt_in_place(hk_send, (&mut fragment[HEADER_AUTH_START..HEADER_AUTH_END]).try_into().unwrap());
+            App::Prp::encrypt_in_place(
+                hk_send,
+                (&mut fragment[HEADER_AUTH_START..HEADER_AUTH_END]).try_into().unwrap(),
+            );
         }
         if !send(fragment) {
             return false;
@@ -87,7 +95,12 @@ impl DefragBuffer {
         }
 
         if let Some(hk_recv) = self.hk_recv.as_ref() {
-            App::Prp::decrypt_in_place(hk_recv, (&mut raw_fragment[HEADER_AUTH_START..HEADER_AUTH_END]).try_into().unwrap())
+            App::Prp::decrypt_in_place(
+                hk_recv,
+                (&mut raw_fragment[HEADER_AUTH_START..HEADER_AUTH_END])
+                    .try_into()
+                    .unwrap(),
+            )
         }
 
         let fragment_no = raw_fragment[FRAGMENT_NO_IDX] as usize;

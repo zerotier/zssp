@@ -58,7 +58,10 @@ impl ChallengeContext {
             return Ok(false);
         }
         let c = u64::from_be_bytes(response[..COUNTER_SIZE].try_into().unwrap());
-        if self.check_window(c) && secure_eq(&response[COUNTER_SIZE..POW_START], &self.create_mac::<Hash>(c, addr)) && verify_pow::<Hash>(response) {
+        if self.check_window(c)
+            && secure_eq(&response[COUNTER_SIZE..POW_START], &self.create_mac::<Hash>(c, addr))
+            && verify_pow::<Hash>(response)
+        {
             self.update_window(c);
             Ok(true)
         } else {

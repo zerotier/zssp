@@ -21,7 +21,9 @@ use rand_core::OsRng;
 use rand_core::RngCore;
 use sha2::Sha512;
 
-use zssp_proto::applicationlayer::{AcceptAction, ApplicationLayer, RatchetState, RatchetUpdate, Settings, RATCHET_SIZE};
+use zssp_proto::applicationlayer::{
+    AcceptAction, ApplicationLayer, RatchetState, RatchetUpdate, Settings, RATCHET_SIZE,
+};
 use zssp_proto::crypto_impl::PqcKyberSecretKey;
 use zssp_proto::Session;
 
@@ -81,7 +83,10 @@ impl ApplicationLayer for &TestApplication {
         }
     }
 
-    fn restore_by_fingerprint(&self, ratchet_fingerprint: &[u8; RATCHET_SIZE]) -> Result<Option<RatchetState>, Self::StorageError> {
+    fn restore_by_fingerprint(
+        &self,
+        ratchet_fingerprint: &[u8; RATCHET_SIZE],
+    ) -> Result<Option<RatchetState>, Self::StorageError> {
         let ratchets = self.ratchets.lock().unwrap();
         Ok(ratchets.rf_map.get(ratchet_fingerprint).cloned())
     }
@@ -156,7 +161,14 @@ fn alice_main(
             up = false;
             alice_session = Some(
                 context
-                    .open(alice_app, |b| alice_out.send(b).is_ok(), TEST_MTU, bob_pubkey.clone(), 0, Vec::new())
+                    .open(
+                        alice_app,
+                        |b| alice_out.send(b).is_ok(),
+                        TEST_MTU,
+                        bob_pubkey.clone(),
+                        0,
+                        Vec::new(),
+                    )
                     .unwrap(),
             );
             println!("[alice] opening session");
@@ -225,7 +237,8 @@ fn alice_main(
         }
 
         if current_time >= next_service {
-            next_service = current_time + context.service(alice_app, |_| Some((|b| alice_out.send(b).is_ok(), TEST_MTU)));
+            next_service =
+                current_time + context.service(alice_app, |_| Some((|b| alice_out.send(b).is_ok(), TEST_MTU)));
         }
     }
 }
@@ -345,7 +358,17 @@ fn core(time: u64, packet_success_rate: u32) {
                 )
             });
         }
-        ts.spawn(move || bob_main(run, packet_success_rate, &bob_app, bob_out, bob_in, alice_out, bob_keypair));
+        ts.spawn(move || {
+            bob_main(
+                run,
+                packet_success_rate,
+                &bob_app,
+                bob_out,
+                bob_in,
+                alice_out,
+                bob_keypair,
+            )
+        });
 
         thread::sleep(Duration::from_secs(time));
 

@@ -84,7 +84,14 @@ impl<App: ApplicationLayer> SymmetricState<App> {
         let mut next_ck = [0u8; HASHLEN];
         let mut temp_k = [0u8; HASHLEN];
 
-        self.kbkdf(input_key_material, LABEL_KBKDF_CHAIN, 2, &mut next_ck, Some(&mut temp_k), None);
+        self.kbkdf(
+            input_key_material,
+            LABEL_KBKDF_CHAIN,
+            2,
+            &mut next_ck,
+            Some(&mut temp_k),
+            None,
+        );
 
         *self.ck = next_ck;
         self.k.clone_from_slice(&temp_k[..AES_256_KEY_SIZE]);
@@ -116,14 +123,24 @@ impl<App: ApplicationLayer> SymmetricState<App> {
         self.k.clone_from_slice(&temp_k[..AES_256_KEY_SIZE]);
     }
     /// Corresponds to Noise `EncryptAndHash`.
-    pub fn encrypt_and_hash_in_place(&mut self, iv: [u8; AES_GCM_IV_SIZE], plaintext_start: usize, buffer: &mut Vec<u8>) {
+    pub fn encrypt_and_hash_in_place(
+        &mut self,
+        iv: [u8; AES_GCM_IV_SIZE],
+        plaintext_start: usize,
+        buffer: &mut Vec<u8>,
+    ) {
         let tag = App::Aead::encrypt_in_place(&self.k, iv, Some(&self.h), &mut buffer[plaintext_start..]);
         buffer.extend(&tag);
         self.mix_hash(&buffer[plaintext_start..]);
     }
     /// Corresponds to Noise `DecryptAndHash`.
     #[must_use]
-    pub fn decrypt_and_hash_in_place(&mut self, iv: [u8; AES_GCM_IV_SIZE], buffer: &mut [u8], tag: [u8; AES_GCM_TAG_SIZE]) -> bool {
+    pub fn decrypt_and_hash_in_place(
+        &mut self,
+        iv: [u8; AES_GCM_IV_SIZE],
+        buffer: &mut [u8],
+        tag: [u8; AES_GCM_TAG_SIZE],
+    ) -> bool {
         let mut hash = App::Hash::new();
         hash.update(&self.h);
         hash.update(buffer);
