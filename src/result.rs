@@ -20,9 +20,6 @@ pub enum OpenError<StorageError> {
 /// Depending on the error type trying again may not work.
 #[derive(Debug, PartialEq, Eq, Clone, Hash)]
 pub enum SendError {
-    /// An invalid parameter was supplied to the function.
-    InvalidParameter,
-
     /// The session has been marked as expired and refuses to send data.
     /// Several components of ZSSP can cause this to occur, but the most likely situation to be seen
     /// in practice is where rekeying repeatedly fails due to exceedingly bad network conditions.
