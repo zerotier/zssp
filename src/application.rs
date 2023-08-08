@@ -7,7 +7,7 @@ use crate::LogEvent;
 use crate::Session;
 
 pub use crate::proto::RATCHET_SIZE;
-pub use crate::ratchet_state::RatchetState;
+pub use crate::ratchet_state::*;
 
 /// A container for a vast majority of the dynamic settings within ZSSP, including all time-based settings.
 /// If the user wishes to measure time in units other than milliseconds for some reason, then they can
@@ -206,7 +206,7 @@ pub trait ApplicationLayer: Sized {
         &self,
         remote_static_key: &Self::PublicKey,
         session_data: &Self::SessionData,
-    ) -> Result<(RatchetState, Option<RatchetState>), Self::StorageError>;
+    ) -> Result<Option<RatchetStates>, Self::StorageError>;
     /// Atomically commit the update specified by `update_data` to storage, or return an error if
     /// the update could not be made.
     /// The implementor is free to choose how to apply these updates to storage.
@@ -235,28 +235,6 @@ pub trait ApplicationLayer: Sized {
     /// nothing else. Do not base protocol-level decisions upon the events passed to this function.
     #[cfg(feature = "logging")]
     fn event_log(&self, event: LogEvent<'_, Self>);
-}
-
-/// A set of references to ratchet states specifying how a remote peer's persistent
-/// storage should be updated.
-///
-/// There should be only up to two ratchet states saved to storage at a time per peer.
-/// Every time a new ratchet state is generated, a previous ratchet state will be deleted.
-///
-/// These are sensitive values should they ought to be securely stored.
-pub struct RatchetUpdate<'a> {
-    /// The ratchet key and fingerprint to store in the first slot.
-    pub state1: &'a RatchetState,
-    /// The ratchet key and fingerprint to store in the second slot.
-    pub state2: Option<&'a RatchetState>,
-    /// Whether `state1` is a brand new ratchet state, or if it was previously saved.
-    pub state1_was_just_added: bool,
-    /// A previous ratchet key and fingerprint that now must be deleted from storage.
-    /// This will have been a previously given value of `state1` or `state2`.
-    pub state_deleted1: Option<&'a RatchetState>,
-    /// A previous ratchet key and fingerprint that now must be deleted from storage.
-    /// It is extremely rare that this field is occupied.
-    pub state_deleted2: Option<&'a RatchetState>,
 }
 
 /// A collection of fields specifying how to complete the key exchange with a specific remote peer,

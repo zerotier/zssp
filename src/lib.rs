@@ -5,7 +5,7 @@
 * (c) ZeroTier, Inc.
 * https://www.zerotier.com/
 */
-//#![warn(missing_docs, rust_2018_idioms)]
+#![warn(missing_docs, rust_2018_idioms)]
 //! TODO: docs
 mod challenge;
 mod context;
@@ -17,7 +17,10 @@ mod ratchet_state;
 mod symmetric_state;
 mod zeta;
 
-pub mod applicationlayer;
+/// An abstraction over OS and use-case specific resources and queries.
+/// This allows this library to be platform independent, but a user of this library must implement
+/// the `ApplicationLayer` trait.
+pub mod application;
 /// A collection of implementation-independent traits for the various specific cryptographic
 /// algorithms ZSSP depends on.
 ///
@@ -37,6 +40,7 @@ pub mod crypto;
 ///
 /// This module contains the trait implementations as well as re-exports of those crates.
 pub mod crypto_impl;
+/// The collection of major return types of this library.
 pub mod result;
 
 pub use context::Context;

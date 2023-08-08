@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::applicationlayer::ApplicationLayer;
+use crate::application::ApplicationLayer;
 use crate::Session;
 
 /// ZSSP events that might be interesting to log or aggregate into metrics.

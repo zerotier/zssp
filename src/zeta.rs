@@ -5,14 +5,14 @@ use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Mutex, Weak};
 use zeroize::Zeroizing;
 
-use crate::applicationlayer::ApplicationLayer;
-use crate::applicationlayer::RatchetUpdate;
+use crate::application::ApplicationLayer;
+use crate::application::RatchetUpdate;
 use crate::challenge::{gen_null_response, respond_to_challenge_in_place};
 use crate::context::{log, ContextInner, SessionMap};
 use crate::crypto::*;
 use crate::fragmentation::DefragBuffer;
 use crate::proto::*;
-use crate::ratchet_state::RatchetState;
+use crate::ratchet_state::{RatchetState, RatchetStates};
 use crate::result::{byzantine_fault, FaultType, OpenError, ReceiveError, SendError};
 use crate::symmetric_state::SymmetricState;
 #[cfg(feature = "logging")]
@@ -210,6 +210,19 @@ impl<App: ApplicationLayer> Zeta<App> {
     pub(crate) fn next_timer(&self) -> i64 {
         self.timeout_timer.min(self.resend_timer)
     }
+    fn get_counter(&mut self) -> Option<(u64, bool)> {
+        let c = self.send_counter;
+        if c >= HARD_EXPIRATION {
+            return None;
+        }
+        self.send_counter += 1;
+        Some((
+            c,
+            c >= self
+                .key_creation_counter
+                .saturating_add(App::SETTINGS.rekey_after_key_uses),
+        ))
+    }
 }
 
 fn create_a1_state<App: ApplicationLayer>(
@@ -269,22 +282,16 @@ pub(crate) fn trans_to_a1<App: ApplicationLayer>(
     identity: Vec<u8>,
     send: impl FnOnce(&Packet),
 ) -> Result<Arc<Session<App>>, OpenError<App::StorageError>> {
-    let (ratchet_state1, ratchet_state2) = app
+    let ratchet_states = app
         .restore_by_identity(&s_remote, &session_data)
-        .map_err(|e| OpenError::RatchetIoError(e))?;
+        .map_err(|e| OpenError::StorageError(e))?;
+    let RatchetStates { state1, state2 } = ratchet_states.unwrap_or_default();
 
     let mut session_map = ctx.session_map.lock().unwrap();
     let kid_recv = gen_kid(session_map.deref(), ctx.rng.lock().unwrap().deref_mut());
 
-    let a1 = create_a1_state(
-        &ctx.rng,
-        &s_remote,
-        kid_recv,
-        &ratchet_state1,
-        ratchet_state2.as_ref(),
-        identity,
-    )
-    .ok_or(OpenError::InvalidPublicKey)?;
+    let a1 = create_a1_state(&ctx.rng, &s_remote, kid_recv, &state1, state2.as_ref(), identity)
+        .ok_or(OpenError::InvalidPublicKey)?;
     let packet = a1.packet.clone();
 
     let (hk_recv, hk_send) = a1.noise.get_ask(LABEL_HEADER_KEY);
@@ -295,14 +302,14 @@ pub(crate) fn trans_to_a1<App: ApplicationLayer>(
         session_data,
         was_bob: false,
         s_remote,
-        send_counter: INIT_COUNTER,
+        send_counter: 0,
         key_creation_counter: 0,
         counter_antireplay_window: std::array::from_fn(|_| 0),
         defrag: DefragBuffer::new(Some(hk_recv)),
         key_index: true,
         keys: [DuplexKey::default(), DuplexKey::default()],
-        ratchet_state1,
-        ratchet_state2,
+        ratchet_state1: state1,
+        ratchet_state2: state2,
         hk_send,
         resend_timer: current_time + App::SETTINGS.resend_time as i64,
         timeout_timer: current_time + App::SETTINGS.initial_offer_timeout as i64,
@@ -390,13 +397,14 @@ pub(crate) fn received_x1_trans<App: ApplicationLayer>(
 
     let mut ratchet_state = None;
     while i + RATCHET_SIZE <= j {
-        match app.restore_by_fingerprint((&x1[i..i + RATCHET_SIZE]).try_into().unwrap()) {
+        let rf = (&x1[i..i + RATCHET_SIZE]).try_into().unwrap();
+        match app.restore_by_fingerprint(rf) {
             Ok(None) => {}
             Ok(Some(rs)) => {
                 ratchet_state = Some(rs);
                 break;
             }
-            Err(e) => return Err(ReceiveError::RatchetIoError(e)),
+            Err(e) => return Err(ReceiveError::StorageError(e)),
         }
         i += RATCHET_SIZE;
     }
@@ -587,12 +595,12 @@ pub(crate) fn received_x2_trans<App: ApplicationLayer>(
                     state1: &new_ratchet_state,
                     state2: ratchet_to_preserve,
                     state1_was_just_added: true,
-                    state_deleted1: ratchet_to_delete,
-                    state_deleted2: None,
+                    deleted_state1: ratchet_to_delete,
+                    deleted_state2: None,
                 },
             );
             if let Err(e) = result {
-                return Err(ReceiveError::RatchetIoError(e));
+                return Err(ReceiveError::StorageError(e));
             }
 
             let (kek_recv, kek_send) = noise.get_ask(LABEL_KEX_KEY);
@@ -671,7 +679,7 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
     let identity_end = j;
 
     let (kek_send, kek_recv) = noise.get_ask(LABEL_KEX_KEY);
-    let c = INIT_COUNTER;
+    let c = 0;
 
     let action = app.check_accept_session(&s_remote, &x3[identity_start..identity_end]);
     let responder_disallows_downgrade = action.responder_disallows_downgrade;
@@ -690,8 +698,9 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
     if let Some(session_data) = session_data {
         let result = app.restore_by_identity(&s_remote, &session_data);
         match result {
-            Ok((ratchet_state1, ratchet_state2)) => {
-                if (&zeta.ratchet_state != &ratchet_state1) & (Some(&zeta.ratchet_state) != ratchet_state2.as_ref()) {
+            Ok(rss) => {
+                let RatchetStates { state1, state2 } = rss.unwrap_or_default();
+                if (&zeta.ratchet_state != &state1) & (Some(&zeta.ratchet_state) != state2.as_ref()) {
                     if !responder_disallows_downgrade && zeta.ratchet_state.fingerprint().is_none() {
                         // TODO: add some kind of warning callback or signal.
                     } else {
@@ -712,12 +721,12 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
                         state1: &new_ratchet_state,
                         state2: None,
                         state1_was_just_added: true,
-                        state_deleted1: Some(&ratchet_state1),
-                        state_deleted2: ratchet_state2.as_ref(),
+                        deleted_state1: Some(&state1),
+                        deleted_state2: state2.as_ref(),
                     },
                 );
                 if let Err(e) = result {
-                    return Err(ReceiveError::RatchetIoError(e));
+                    return Err(ReceiveError::StorageError(e));
                 }
 
                 let mut c1 = Vec::new();
@@ -745,8 +754,8 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
                     session_data,
                     was_bob: true,
                     s_remote,
-                    send_counter: INIT_COUNTER + 1,
-                    key_creation_counter: INIT_COUNTER + 1,
+                    send_counter: 1,
+                    key_creation_counter: 1,
                     key_index: false,
                     keys: [keys, DuplexKey::default()],
                     ratchet_state1: new_ratchet_state,
@@ -767,7 +776,7 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
                 send(&Packet(zeta.kid_send.get(), n, c1), Some(&zeta.hk_send));
                 Ok(session)
             }
-            Err(e) => Err(ReceiveError::RatchetIoError(e)),
+            Err(e) => Err(ReceiveError::StorageError(e)),
         }
     } else {
         if !responder_silently_rejects {
@@ -827,12 +836,12 @@ pub(crate) fn received_c1_trans<App: ApplicationLayer>(
                         state1: &zeta.ratchet_state1,
                         state2: None,
                         state1_was_just_added: false,
-                        state_deleted1: zeta.ratchet_state2.as_ref(),
-                        state_deleted2: None,
+                        deleted_state1: zeta.ratchet_state2.as_ref(),
+                        deleted_state2: None,
                     },
                 );
                 if let Err(e) = result {
-                    return Err(ReceiveError::RatchetIoError(e));
+                    return Err(ReceiveError::StorageError(e));
                 }
             }
 
@@ -849,8 +858,7 @@ pub(crate) fn received_c1_trans<App: ApplicationLayer>(
     }
     let mut c2 = Vec::new();
 
-    let c = zeta.send_counter;
-    zeta.send_counter += 1;
+    let (c, _) = zeta.get_counter().ok_or(byzantine_fault!(ExpiredCounter, true))?;
     let n = to_nonce(PACKET_TYPE_ACK, c);
     let latest_confirmed_key = zeta
         .key_ref(false)
@@ -976,20 +984,20 @@ pub(crate) fn service<App: ApplicationLayer>(
                 (PACKET_TYPE_REKEY_COMPLETE, k2.clone())
             }
         };
-        let c = zeta.send_counter;
-        zeta.send_counter += 1;
-        let n = to_nonce(p, c);
-        let tag = App::Aead::encrypt_in_place(
-            zeta.key_ref(false).send.kek.as_ref().unwrap(),
-            n,
-            None,
-            &mut control_payload,
-        );
-        control_payload.extend(&tag);
-        send(
-            &Packet(zeta.key_ref(false).send.kid.unwrap().get(), n, control_payload),
-            Some(&zeta.hk_send),
-        );
+        if let Some((c, _)) = zeta.get_counter() {
+            let n = to_nonce(p, c);
+            let tag = App::Aead::encrypt_in_place(
+                zeta.key_ref(false).send.kek.as_ref().unwrap(),
+                n,
+                None,
+                &mut control_payload,
+            );
+            control_payload.extend(&tag);
+            send(
+                &Packet(zeta.key_ref(false).send.kid.unwrap().get(), n, control_payload),
+                Some(&zeta.hk_send),
+            );
+        }
     }
 }
 fn remap<App: ApplicationLayer>(
@@ -1088,16 +1096,16 @@ fn timeout_trans<App: ApplicationLayer>(
             zeta.resend_timer = current_time + App::SETTINGS.resend_time as i64;
             zeta.beta = ZetaAutomata::R1 { noise, e_secret, k1: k1.clone() };
 
-            let c = zeta.send_counter;
-            zeta.send_counter += 1;
-            let n = to_nonce(PACKET_TYPE_REKEY_INIT, c);
-            let tag = App::Aead::encrypt_in_place(zeta.key_ref(false).send.kek.as_ref().unwrap(), n, None, &mut k1);
-            k1.extend(&tag);
+            if let Some((c, _)) = zeta.get_counter() {
+                let n = to_nonce(PACKET_TYPE_REKEY_INIT, c);
+                let tag = App::Aead::encrypt_in_place(zeta.key_ref(false).send.kek.as_ref().unwrap(), n, None, &mut k1);
+                k1.extend(&tag);
 
-            send(
-                &Packet(zeta.key_ref(false).send.kid.unwrap().get(), n, k1),
-                Some(&zeta.hk_send),
-            );
+                send(
+                    &Packet(zeta.key_ref(false).send.kid.unwrap().get(), n, k1),
+                    Some(&zeta.hk_send),
+                );
+            };
         }
         ZetaAutomata::S1 { .. } => {
             log!(app, TimeoutKeyConfirm(session));
@@ -1220,12 +1228,12 @@ pub(crate) fn received_k1_trans<App: ApplicationLayer>(
                 state1: &new_ratchet_state,
                 state2: Some(&zeta.ratchet_state1),
                 state1_was_just_added: true,
-                state_deleted1: zeta.ratchet_state2.as_ref(),
-                state_deleted2: None,
+                deleted_state1: zeta.ratchet_state2.as_ref(),
+                deleted_state2: None,
             },
         );
         if let Err(e) = result {
-            return Err(ReceiveError::RatchetIoError(e));
+            return Err(ReceiveError::StorageError(e));
         }
         let (kek_send, kek_recv) = noise.get_ask(LABEL_KEX_KEY);
         let (nk_send, nk_recv) = noise.split();
@@ -1244,8 +1252,7 @@ pub(crate) fn received_k1_trans<App: ApplicationLayer>(
         zeta.resend_timer = current_time + App::SETTINGS.resend_time as i64;
         zeta.beta = ZetaAutomata::R2 { k2: k2.clone() };
 
-        let c = zeta.send_counter;
-        zeta.send_counter += 1;
+        let (c, _) = zeta.get_counter().ok_or(byzantine_fault!(ExpiredCounter, true))?;
         let n = to_nonce(PACKET_TYPE_REKEY_COMPLETE, c);
         let tag = App::Aead::encrypt_in_place(zeta.key_ref(false).send.kek.as_ref().unwrap(), n, None, &mut k2);
         k2.extend(&tag);
@@ -1333,12 +1340,12 @@ pub(crate) fn received_k2_trans<App: ApplicationLayer>(
                     state1: &new_ratchet_state,
                     state2: None,
                     state1_was_just_added: true,
-                    state_deleted1: Some(&zeta.ratchet_state1),
-                    state_deleted2: zeta.ratchet_state2.as_ref(),
+                    deleted_state1: Some(&zeta.ratchet_state1),
+                    deleted_state2: zeta.ratchet_state2.as_ref(),
                 },
             );
             if let Err(e) = result {
-                return Err(ReceiveError::RatchetIoError(e));
+                return Err(ReceiveError::StorageError(e));
             }
             let (kek_recv, kek_send) = noise.get_ask(LABEL_KEX_KEY);
             let (nk_recv, nk_send) = noise.split();
@@ -1357,8 +1364,7 @@ pub(crate) fn received_k2_trans<App: ApplicationLayer>(
             zeta.beta = ZetaAutomata::S1;
 
             let mut c1 = Vec::new();
-            let c = zeta.send_counter;
-            zeta.send_counter += 1;
+            let (c, _) = zeta.get_counter().ok_or(byzantine_fault!(ExpiredCounter, true))?;
             let n = to_nonce(PACKET_TYPE_KEY_CONFIRM, c);
             let tag = App::Aead::encrypt_in_place(zeta.key_ref(false).send.kek.as_ref().unwrap(), n, None, &mut []);
             c1.extend(&tag);
@@ -1394,26 +1400,25 @@ pub(crate) fn send_payload<App: ApplicationLayer>(
     ) {
         return Err(SessionNotEstablished);
     }
-    let c = zeta.send_counter;
-    zeta.send_counter += 1;
-    if c >= zeta.key_creation_counter + App::SETTINGS.rekey_after_key_uses {
-        if c >= zeta.key_creation_counter + EXPIRE_AFTER_USES {
-            zeta.expire();
-        } else {
+    if let Some((c, should_rekey)) = zeta.get_counter() {
+        if should_rekey {
             // Cause timeout to occur next service interval.
             zeta.timeout_timer = i64::MIN;
         }
+
+        let n = to_nonce(PACKET_TYPE_DATA, c);
+        let tag = App::Aead::encrypt_in_place(zeta.key_ref(false).send.nk.as_ref().unwrap(), n, None, &mut payload);
+        payload.extend(&tag);
+
+        send(
+            &Packet(zeta.key_ref(false).send.kid.unwrap().get(), n, payload),
+            Some(&zeta.hk_send),
+        );
+        Ok(())
+    } else {
+        zeta.expire();
+        Err(SessionExpired)
     }
-
-    let n = to_nonce(PACKET_TYPE_DATA, c);
-    let tag = App::Aead::encrypt_in_place(zeta.key_ref(false).send.nk.as_ref().unwrap(), n, None, &mut payload);
-    payload.extend(&tag);
-
-    send(
-        &Packet(zeta.key_ref(false).send.kid.unwrap().get(), n, payload),
-        Some(&zeta.hk_send),
-    );
-    Ok(())
 }
 /// Corresponds to Algorithm 10 found in Section 4.3.
 pub(crate) fn received_payload_in_place<App: ApplicationLayer>(

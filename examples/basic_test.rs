@@ -21,8 +21,8 @@ use rand_core::OsRng;
 use rand_core::RngCore;
 use sha2::Sha512;
 
-use zssp_proto::applicationlayer::{
-    AcceptAction, ApplicationLayer, RatchetState, RatchetUpdate, Settings, RATCHET_SIZE,
+use zssp_proto::application::{
+    AcceptAction, ApplicationLayer, RatchetState, RatchetStates, RatchetUpdate, Settings, RATCHET_SIZE,
 };
 use zssp_proto::crypto_impl::PqcKyberSecretKey;
 use zssp_proto::Session;
@@ -37,7 +37,7 @@ struct TestApplication {
 
 struct Ratchets {
     rf_map: HashMap<[u8; RATCHET_SIZE], RatchetState>,
-    peer_map: HashMap<u128, (RatchetState, Option<RatchetState>)>,
+    peer_map: HashMap<u128, RatchetStates>,
 }
 impl Ratchets {
     fn new() -> Self {
@@ -95,13 +95,9 @@ impl ApplicationLayer for &TestApplication {
         &self,
         remote_static_key: &Self::PublicKey,
         session_data: &Self::SessionData,
-    ) -> Result<(RatchetState, Option<RatchetState>), Self::StorageError> {
+    ) -> Result<Option<RatchetStates>, Self::StorageError> {
         let ratchets = self.ratchets.lock().unwrap();
-        Ok(ratchets
-            .peer_map
-            .get(session_data)
-            .cloned()
-            .unwrap_or_else(|| RatchetState::new_initial_states()))
+        Ok(ratchets.peer_map.get(session_data).cloned())
     }
 
     fn save_ratchet_state(
@@ -111,20 +107,16 @@ impl ApplicationLayer for &TestApplication {
         update_data: RatchetUpdate<'_>,
     ) -> Result<(), Self::StorageError> {
         let mut ratchets = self.ratchets.lock().unwrap();
-        ratchets
-            .peer_map
-            .insert(*session_data, (update_data.state1.clone(), update_data.state2.cloned()));
+        ratchets.peer_map.insert(*session_data, update_data.to_states());
 
-        if update_data.state1_was_just_added {
-            ratchets
-                .rf_map
-                .insert(*update_data.state1.fingerprint().unwrap(), update_data.state1.clone());
+        if let Some(rf) = update_data.added_fingerprint() {
+            ratchets.rf_map.insert(*rf, update_data.state1.clone());
             println!("[{}] new ratchet #{}", self.name, update_data.state1.chain_len);
         }
-        if let Some(Some(rf)) = update_data.state_deleted1.map(|rs| rs.fingerprint()) {
+        if let Some(rf) = update_data.deleted_fingerprint1() {
             ratchets.rf_map.remove(rf);
         }
-        if let Some(Some(rf)) = update_data.state_deleted2.map(|rs| rs.fingerprint()) {
+        if let Some(rf) = update_data.deleted_fingerprint2() {
             ratchets.rf_map.remove(rf);
         }
         Ok(())

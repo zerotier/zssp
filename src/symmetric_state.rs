@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use zeroize::Zeroizing;
 
-use crate::applicationlayer::ApplicationLayer;
+use crate::application::ApplicationLayer;
 use crate::crypto::{AeadAesGcm, HashSha512, AES_256_KEY_SIZE, AES_GCM_IV_SIZE, AES_GCM_TAG_SIZE};
 use crate::proto::{HASHLEN, LABEL_KBKDF_CHAIN};
 

@@ -1,18 +1,19 @@
 use std::sync::Arc;
 
-use crate::applicationlayer::ApplicationLayer;
+use crate::application::ApplicationLayer;
 use crate::Session;
 
 /// An error that can occur when attempting to open a session.
 /// Depending on the error type trying again may not work.
 #[derive(Debug, PartialEq, Eq, Clone, Hash)]
-pub enum OpenError<IoError> {
+pub enum OpenError<StorageError> {
     /// An invalid parameter was supplied to the function.
     InvalidPublicKey,
-
+    /// The given identity slice is too large to be fragmented. It must at most than 4096 bytes.
     IdentityTooLarge,
 
-    RatchetIoError(IoError),
+    /// Looking up the ratchet state of the specified peer failed.
+    StorageError(StorageError),
 }
 
 /// An error that can occur when attempting to send data over a session.
@@ -62,7 +63,7 @@ pub enum FaultType {
 
 /// An error that occurred during the receipt of a given packet.
 #[derive(Debug, PartialEq, Eq, Clone, Hash)]
-pub enum ReceiveError<IoError> {
+pub enum ReceiveError<StorageError> {
     /// A type of fault that can occur because a remote peer sent us a bad packet.
     /// Such packets will be ignored by ZSSP but a user of ZSSP might want to log
     /// them for debugging or tracing.
@@ -104,7 +105,7 @@ pub enum ReceiveError<IoError> {
 
     /// One of the ratchet saving or lookup functions returned an error, so the packet had to be
     /// dropped.
-    RatchetIoError(IoError),
+    StorageError(StorageError),
 }
 
 macro_rules! byzantine_fault {
