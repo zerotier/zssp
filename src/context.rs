@@ -206,7 +206,7 @@ impl<App: ApplicationLayer> Context<App> {
                         }
                         PACKET_TYPE_HANDSHAKE_RESPONSE => {
                             log!(app, ReceivedRawX2);
-                            received_x2_trans(
+                            let should_warn_missing_ratchet = received_x2_trans(
                                 &mut zeta,
                                 &session,
                                 &app,
@@ -217,7 +217,11 @@ impl<App: ApplicationLayer> Context<App> {
                                 send_associated,
                             )?;
                             log!(app, X2IsAuthSentX3(&session));
-                            SessionEvent::Control
+                            if should_warn_missing_ratchet {
+                                SessionEvent::DowngradedRatchetKey
+                            } else {
+                                SessionEvent::Control
+                            }
                         }
                         PACKET_TYPE_KEY_CONFIRM => {
                             log!(app, ReceivedRawKeyConfirm);
@@ -312,7 +316,7 @@ impl<App: ApplicationLayer> Context<App> {
                     if let Some((_, assembled_packet)) = result {
                         log!(app, ReceivedRawX3);
                         let zeta = entry.remove();
-                        let session = received_x3_trans(
+                        let (session, should_warn_missing_ratchet) = received_x3_trans(
                             zeta,
                             &app,
                             ctx,
@@ -330,7 +334,11 @@ impl<App: ApplicationLayer> Context<App> {
                             },
                         )?;
                         log!(app, X3IsAuthSentKeyConfirm(&session));
-                        Ok(ReceiveOk::Session(session, SessionEvent::NewSession))
+                        Ok(ReceiveOk::Session(session, if should_warn_missing_ratchet {
+                            SessionEvent::NewDowngradedSession
+                        } else {
+                            SessionEvent::NewSession
+                        }))
                     } else {
                         Ok(ReceiveOk::Unassociated)
                     }

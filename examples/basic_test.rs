@@ -191,9 +191,8 @@ fn alice_main(
                                 assert!(!data.is_empty());
                                 //println!("[alice] received {}", data.len());
                             }
-                            NewSession => panic!(),
-                            Rejected => panic!(),
                             Control => (),
+                            _ => panic!(),
                         },
                         Err(e) => {
                             println!("[alice] ERROR {:?}", e);
@@ -270,7 +269,7 @@ fn bob_main(
                 ) {
                     Ok(Unassociated) => {}
                     Ok(Session(s, event)) => match event {
-                        NewSession => {
+                        NewSession | NewDowngradedSession => {
                             println!("[bob] new session, took {}s", current_time as f32 / 1000.0);
                             let _ = bob_session.replace(s);
                         }
@@ -280,9 +279,8 @@ fn bob_main(
                             transferred += data.len() as u64 * 2; // *2 because we are also sending this many bytes back
                             context.send(&s, |b| bob_out.send(b).is_ok(), TEST_MTU, data).unwrap();
                         }
-                        Established => panic!(),
-                        Rejected => panic!(),
                         Control => (),
+                        _ => panic!(),
                     },
                     Err(e) => {
                         println!("[bob] ERROR {:?}", e);

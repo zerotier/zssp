@@ -142,6 +142,16 @@ pub enum SessionEvent {
     /// If the session Arc returned is dropped, the session with this peer will be immediately
     /// terminated. Save the session Arc to some long lived datastructure to keep it alive.
     NewSession,
+    /// The received packet was valid, and it contained the necessary keys to fully establish a new
+    /// session with Alice, the handshake initiator.
+    ///
+    /// However we had to downgrade our ratchet chain with this peer to a known state,
+    /// meaning either Alice corrupted their ratchet key storage, or someone is impersonating Alice.
+    /// The application should attempt to warn the user of this fact.
+    ///
+    /// If the session Arc returned is dropped, the session with this peer will be immediately
+    /// terminated. Save the session Arc to some long lived datastructure to keep it alive.
+    NewDowngradedSession,
     /// When Alice calls `Context::open`, a session will be created, but Bob will not yet have
     /// received this session. They will have to successfully complete a handshake first.
     ///
@@ -162,4 +172,10 @@ pub enum SessionEvent {
     Data(Vec<u8>),
     /// The received packet was some authentic protocol control packet. No action needs to be taken.
     Control,
+    /// In the process of establishing a session with Bob, the responder,
+    /// we had to downgrade our ratchet chain with this peer to a known state.
+    /// This means either Bob corrupted their ratchet key storage, or someone is impersonating Alice.
+    /// The application should attempt to warn the user of this fact.
+    DowngradedRatchetKey,
+
 }

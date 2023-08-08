@@ -482,7 +482,7 @@ pub(crate) fn received_x2_trans<App: ApplicationLayer>(
     n: [u8; AES_GCM_NONCE_SIZE],
     mut x2: Vec<u8>,
     send: impl FnOnce(&Packet, Option<&[u8; AES_256_KEY_SIZE]>),
-) -> Result<(), ReceiveError<App::StorageError>> {
+) -> Result<bool, ReceiveError<App::StorageError>> {
     use FaultType::*;
     //    <- e, ee, ekem1, psk
     //    -> s, se
@@ -496,6 +496,7 @@ pub(crate) fn received_x2_trans<App: ApplicationLayer>(
     if c >= COUNTER_WINDOW_MAX_SKIP_AHEAD || &n[AES_GCM_NONCE_SIZE - 3..] != &x2[x2.len() - 3..] {
         return Err(byzantine_fault!(FailedAuth, true));
     }
+    let mut should_warn_missing_ratchet = false;
     let result = (|| {
         if let ZetaAutomata::A1(StateA1 { noise, e_secret, e1_secret, identity, .. }) = &zeta.beta {
             let mut noise = noise.clone();
@@ -560,6 +561,7 @@ pub(crate) fn received_x2_trans<App: ApplicationLayer>(
                 result = test_ratchet_key(&[0u8; RATCHET_SIZE]);
                 if result.is_some() {
                     // TODO: add some kind of warning callback or signal.
+                    should_warn_missing_ratchet = true;
                 }
             }
 
@@ -631,7 +633,7 @@ pub(crate) fn received_x2_trans<App: ApplicationLayer>(
         Ok(packet) => send(packet, Some(&zeta.hk_send)),
         _ => {}
     }
-    result.map(|_| ())
+    result.map(|_| should_warn_missing_ratchet)
 }
 fn send_control<App: ApplicationLayer>(
     zeta: &mut Zeta<App>,
@@ -662,7 +664,7 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
     kid: NonZeroU32,
     mut x3: Vec<u8>,
     send: impl FnOnce(&Packet, Option<&[u8; AES_256_KEY_SIZE]>),
-) -> Result<Arc<Session<App>>, ReceiveError<App::StorageError>> {
+) -> Result<(Arc<Session<App>>, bool), ReceiveError<App::StorageError>> {
     use FaultType::*;
     //    -> s, se
     if !(HANDSHAKE_COMPLETION_MIN_SIZE..=HANDSHAKE_COMPLETION_MAX_SIZE).contains(&x3.len()) {
@@ -720,9 +722,11 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
         match result {
             Ok(rss) => {
                 let RatchetStates { state1, state2 } = rss.unwrap_or_default();
+                let mut should_warn_missing_ratchet = false;
+
                 if (&zeta.ratchet_state != &state1) & (Some(&zeta.ratchet_state) != state2.as_ref()) {
                     if !responder_disallows_downgrade && zeta.ratchet_state.fingerprint().is_none() {
-                        // TODO: add some kind of warning callback or signal.
+                        should_warn_missing_ratchet = true;
                     } else {
                         if !responder_silently_rejects {
                             send(&create_reject(), Some(&zeta.hk_send))
@@ -793,7 +797,7 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
                     .insert(Arc::as_ptr(&session), Arc::downgrade(&session));
 
                 send(&Packet(zeta.kid_send.get(), n, c1), Some(&zeta.hk_send));
-                Ok(session)
+                Ok((session, should_warn_missing_ratchet))
             }
             Err(e) => Err(ReceiveError::StorageError(e)),
         }
