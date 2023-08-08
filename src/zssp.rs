@@ -490,7 +490,7 @@ impl<App: ApplicationLayer> Context<App> {
                 }
             }
 
-            let mut buffer = ArrayVec::<u8, HANDSHAKE_HELLO_MAX_SIZE>::new();
+            let mut buffer = ArrayVec::<u8, HANDSHAKE_HELLO_CHALLENGE_MAX_SIZE>::new();
             let assembled_packet = if fragment_count > 1 {
                 self.0.unassociated_defrag_cache.lock().unwrap().assemble(
                     &nonce,

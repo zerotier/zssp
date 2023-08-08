@@ -132,6 +132,7 @@ impl ApplicationLayer for &TestApplication {
     }
 }
 
+#[allow(unused)]
 fn alice_main(
     run: &AtomicBool,
     packet_success_rate: u32,
@@ -205,8 +206,8 @@ fn alice_main(
                             }
                         }
                     }
-                } else if OsRng.next_u32() | 1 > 0 {
-                    let _ = recursive_out.send(pkt);
+                //} else if OsRng.next_u32() | 1 > 0 {
+                //    let _ = recursive_out.send(pkt);
                 }
             } else {
                 break;
@@ -239,6 +240,7 @@ fn alice_main(
     }
 }
 
+#[allow(unused)]
 fn bob_main(
     run: &AtomicBool,
     packet_success_rate: u32,
@@ -304,8 +306,8 @@ fn bob_main(
                         }
                     }
                 }
-            } else if OsRng.next_u32() | 1 > 0 {
-                let _ = recursive_out.try_send(pkt);
+            //} else if OsRng.next_u32() | 1 > 0 {
+            //    let _ = recursive_out.try_send(pkt);
             }
         }
 
@@ -387,7 +389,7 @@ fn core(time: u64, packet_success_rate: u32) {
 fn main() {
     let args = std::env::args();
     let packet_success_rate = if args.len() <= 1 {
-        let default_success_rate = 1.0;
+        let default_success_rate = 0.5;
         ((u32::MAX as f64) * default_success_rate) as u32
     } else {
         ((u32::MAX as f64) * f64::from_str(args.last().unwrap().as_str()).unwrap()) as u32
