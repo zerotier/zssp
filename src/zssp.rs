@@ -1,13 +1,3 @@
-/* This Source Code Form is subject to the terms of the Mozilla Public
-* License, v. 2.0. If a copy of the MPL was not distributed with this
-* file, You can obtain one at https://mozilla.org/MPL/2.0/.
-*
-* (c) ZeroTier, Inc.
-* https://www.zerotier.com/
-*/
-// ZSSP: ZeroTier Secure Session Protocol
-// FIPS compliant Noise_XK with Jedi powers (Kyber1024) and built-in attack-resistant large payload (fragmentation) support.
-
 use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::hash::Hash;

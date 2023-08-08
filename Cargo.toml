@@ -19,12 +19,11 @@ pqc_kyber = { version = "0.6.0", default-features = false, features = ["kyber102
 p384 = { version = "0.13.0", default-features = false, features = ["ecdh"], optional = true }
 sha2 = { version = "0.10.7", default-features = false, optional = true }
 hmac = { version = "0.12.1", default-features = false, optional = true }
-openssl-sys = { version = "0.9.91", default-features = false }
+openssl-sys = { version = "0.9.91", default-features = false, optional = true }
 
 [features]
-default = ["debug", "p384", "hmac", "pqc_kyber"]
-sha2 = ["dep:sha2"]
-hmac = ["dep:hmac", "sha2"]
+default = ["debug", "p384", "sha2", "pqc_kyber", "openssl-sys"]
+sha2 = ["dep:sha2", "dep:hmac"]
 logging = []
 debug = ["logging"]
 

@@ -14,6 +14,7 @@ pub use kyber1024::*;
 // exact version of them.
 pub use rand_core;
 pub use zeroize;
+pub use arrayvec;
 
 /// Constant time byte slice equality.
 pub fn secure_eq<A: AsRef<[u8]> + ?Sized, B: AsRef<[u8]> + ?Sized>(a: &A, b: &B) -> bool {
