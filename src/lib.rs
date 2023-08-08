@@ -8,24 +8,24 @@
 pub mod crypto;
 
 mod antireplay;
-mod applicationlayer;
+pub mod applicationlayer;
 mod challenge;
 mod frag_cache;
 mod fragged;
 mod handshake_cache;
 mod indexed_heap;
-mod log_event;
-mod proto;
-mod ratchet_state;
+pub mod log_event;
+pub mod proto;
+pub mod ratchet_state;
 pub mod result;
 mod symmetric_state;
-mod zeta;
-mod zssp;
+pub mod zeta;
+pub mod zssp;
 //mod context;
 
 //pub mod error;
-pub use crate::applicationlayer::ApplicationLayer;
+//pub use crate::applicationlayer::ApplicationLayer;
 //pub use crate::log_event::LogEvent;
 //pub use crate::proto::{MAX_IDENTITY_BLOB_SIZE, MIN_PACKET_SIZE, MIN_TRANSPORT_MTU, RATCHET_SIZE};
-pub use crate::ratchet_state::RatchetState;
+//pub use crate::ratchet_state::RatchetState;
 //pub use crate::zssp::{Context, ContextInner, IncomingSessionAction, ReceiveResult, Session, SessionEvent};

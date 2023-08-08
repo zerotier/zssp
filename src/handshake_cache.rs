@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
 use crate::zeta::StateB2;
-use crate::{proto::MAX_UNASSOCIATED_HANDSHAKE_STATES, ApplicationLayer};
+use crate::{proto::MAX_UNASSOCIATED_HANDSHAKE_STATES, applicationlayer::ApplicationLayer};
 
 pub(crate) struct UnassociatedHandshakeCache<Application: ApplicationLayer> {
     has_pending: AtomicBool, // Allowed to be falsely positive

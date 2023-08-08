@@ -6,14 +6,14 @@ use std::io::Write;
 use std::num::NonZeroU32;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockWriteGuard, Weak};
+use std::sync::{Arc, Mutex, RwLock, Weak};
 use zeroize::Zeroizing;
 
 use crate::antireplay::Window;
 use crate::applicationlayer::ApplicationLayer;
 use crate::applicationlayer::RatchetUpdate;
 use crate::challenge::{gen_null_response, respond_to_challenge_in_place};
-use crate::zssp::{log, ContextInner};
+use crate::zssp::{log, ContextInner, SessionQueue};
 //use crate::context::{log, ContextInner, SessionMap};
 use crate::crypto::aes::*;
 use crate::crypto::kyber1024::{
@@ -25,7 +25,7 @@ use crate::fragged::Fragged;
 use crate::indexed_heap::BinaryHeapIndex;
 use crate::proto::*;
 use crate::ratchet_state::RatchetState;
-use crate::result::{byzantine_fault, FaultType, OpenError, ReceiveError, ReceiveOk, SendError};
+use crate::result::{byzantine_fault, FaultType, OpenError, ReceiveError, SendError};
 use crate::symmetric_state::SymmetricState;
 #[cfg(feature = "logging")]
 use crate::LogEvent::*;
@@ -71,8 +71,12 @@ fn get_counter<App: ApplicationLayer>(session: &Session<App>, state: &MutableSta
         None
     } else {
         let c = session.send_counter.fetch_add(1, Ordering::Relaxed);
+        if c > state.key_creation_counter + EXPIRE_AFTER_USES {
+            session.session_has_expired.store(true, Ordering::SeqCst);
+            return None;
+        }
         if c > THREAD_SAFE_COUNTER_HARD_EXPIRE {
-            session.session_has_expired.store(true, Ordering::SeqCst)
+            session.session_has_expired.store(true, Ordering::SeqCst);
         }
         Some((c, c > state.key_creation_counter + App::SETTINGS.rekey_after_key_uses))
     }
@@ -1109,8 +1113,6 @@ pub(crate) fn received_c2_trans<App: ApplicationLayer>(
 /// Corresponds to the trivial Transition Algorithm described for processing D packets found in
 /// Section 4.3.
 pub(crate) fn received_d_trans<App: ApplicationLayer>(
-    app: &App,
-    ctx: &Arc<ContextInner<App>>,
     session: &Arc<Session<App>>,
     kid: NonZeroU32,
     n: &[u8; AES_GCM_IV_SIZE],
@@ -1137,8 +1139,10 @@ pub(crate) fn received_d_trans<App: ApplicationLayer>(
     if !session.window.update(c) {
         return Err(byzantine_fault!(ExpiredCounter, true));
     }
+
     drop(state);
-    session.expire_inner(kex_lock, session.state.write().unwrap());
+    drop(kex_lock);
+    session.expire();
     Ok(())
 }
 /// Corresponds to the timer rules of the Zeta State Machine found in Section 4.1 - Definition 3.
@@ -1152,7 +1156,7 @@ pub(crate) fn process_timers<App: ApplicationLayer>(
     send: impl FnOnce(&mut [u8], Option<&App::PrpEnc>),
 ) -> Option<i64> {
     let kex_lock = session.state_machine_lock.lock().unwrap();
-    let mut state = session.state.read().unwrap();
+    let state = session.state.read().unwrap();
     if force_timeout || state.timeout_timer <= current_time {
         // Corresponds to the timeout timer Transition Algorithm described in Section 4.1 - Definition 3.
         match &state.beta {
@@ -1221,8 +1225,8 @@ pub(crate) fn process_timers<App: ApplicationLayer>(
                 //    ...
                 //    -> psk, e, es, ss
                 let mut noise = SymmetricState::initialize(PROTOCOL_NAME_NOISE_KK);
-                let mut hash = &mut App::Hash::new();
-                let mut hmac = &mut App::HmacHash::new();
+                let hash = &mut App::Hash::new();
+                let hmac = &mut App::HmacHash::new();
                 let mut k1 = ArrayVec::<u8, HEADERED_REKEY_SIZE>::new();
                 k1.extend([0u8; HEADER_SIZE]);
                 // Noise process prologue.
@@ -1650,10 +1654,77 @@ pub(crate) fn received_k2_trans<App: ApplicationLayer>(
     }
     result
 }
+/// Corresponds to Algorithm 9 found in Section 4.3.
+pub(crate) fn send_payload<App: ApplicationLayer>(
+    ctx: &Arc<ContextInner<App>>,
+    session: &Arc<Session<App>>,
+    payload: &[u8],
+    mut send: impl FnMut(&[u8]) -> bool,
+    mtu_sized_buffer: &mut [u8],
+) -> Result<(), SendError> {
+    use SendError::*;
+    let mtu = mtu_sized_buffer.len();
+    if mtu < MIN_TRANSPORT_MTU {
+        return Err(InvalidParameter);
+    }
+
+    let state = session.state.read().unwrap();
+    if matches!(&state.beta, ZetaAutomata::Null) {
+        return Err(SessionExpired);
+    }
+    if !matches!(
+        &state.beta,
+        ZetaAutomata::S1 | ZetaAutomata::S2 | ZetaAutomata::R1 { .. } | ZetaAutomata::R2 { .. }
+    ) {
+        return Err(SessionNotEstablished);
+    }
+    let (c, should_rekey) = get_counter(session, &state).ok_or(SessionExpired)?;
+    let nonce = to_nonce(PACKET_TYPE_DATA, c);
+
+    let key = state.key_ref(false);
+    let mut cipher = key.nk.as_ref().unwrap().start_enc(&nonce);
+
+    let payload_mtu = mtu - HEADER_SIZE;
+    debug_assert!(payload_mtu >= 4);
+    let fragment_count = payload.len().saturating_add(payload_mtu - 1) / payload_mtu; // Ceiling div.
+    let fragment_base_size = payload.len() / fragment_count;
+    let fragment_size_remainder = payload.len() % fragment_count;
+
+    mtu_sized_buffer[..KID_SIZE].copy_from_slice(&key.send.kid.unwrap().get().to_be_bytes());
+    mtu_sized_buffer[FRAGMENT_COUNT_IDX] = fragment_count as u8;
+    mtu_sized_buffer[PACKET_NONCE_START..].copy_from_slice(&nonce[NONCE_SIZE_DIFF..]);
+
+    let mut i = 0;
+    for fragment_no in 0..fragment_count {
+        let fragment_len = fragment_base_size + (fragment_no < fragment_size_remainder) as usize;
+        let j = i + fragment_len;
+
+        mtu_sized_buffer[FRAGMENT_NO_IDX] = fragment_no as u8;
+        cipher.encrypt(&payload[i..j], &mut mtu_sized_buffer[HEADER_SIZE..HEADER_SIZE + fragment_len]);
+
+        session.hk_send.encrypt_in_place((&mut mtu_sized_buffer[HEADER_AUTH_START..HEADER_AUTH_END]).try_into().unwrap());
+
+        if !send(&mtu_sized_buffer[..HEADER_SIZE + fragment_len]) {
+            return Ok(());
+        }
+        i = j;
+    }
+    drop(cipher);
+    drop(state);
+
+    if should_rekey {
+        let mut state = session.state.write().unwrap();
+        state.timeout_timer = i64::MIN;
+        drop(state);
+        ctx.session_queue
+            .lock()
+            .unwrap()
+            .change_priority(session.queue_idx, Reverse(i64::MIN));
+    }
+    Ok(())
+}
 /// Corresponds to Algorithm 10 found in Section 4.3.
 pub(crate) fn receive_payload_in_place<App: ApplicationLayer>(
-    app: &App,
-    ctx: &Arc<ContextInner<App>>,
     session: &Arc<Session<App>>,
     kid: NonZeroU32,
     n: &[u8; AES_GCM_IV_SIZE],
@@ -1662,7 +1733,6 @@ pub(crate) fn receive_payload_in_place<App: ApplicationLayer>(
 ) -> Result<(), ReceiveError<App::StorageError>> {
     use FaultType::*;
 
-    let kex_lock = session.state_machine_lock.lock().unwrap();
     let state = session.state.read().unwrap();
     let is_other = if Some(kid) == state.key_ref(true).recv.kid {
         true
@@ -1722,13 +1792,20 @@ impl<App: ApplicationLayer> Session<App> {
     /// receive or send data or control packets. It is recommended to simply `drop` the session
     /// instead, but this can provide some reassurance in complex shared ownership situations.
     pub fn expire(&self) {
-        self.expire_inner(self.state_machine_lock.lock().unwrap(), self.state.write().unwrap());
+        if let Some(ctx) = self.ctx.upgrade() {
+            self.expire_inner(Some(&ctx), Some(&mut ctx.session_queue.lock().unwrap()));
+        } else {
+            self.expire_inner(None, None);
+        }
     }
+    /// Allows us to expire sessions with the correct locking order, preventing deadlock.
     pub(crate) fn expire_inner(
         &self,
-        kex_lock: MutexGuard<'_, ()>,
-        mut state: RwLockWriteGuard<'_, MutableState<App>>,
+        ctx: Option<&Arc<ContextInner<App>>>,
+        session_queue: Option<&mut SessionQueue<App>>,
     ) {
+        let _kex_lock = self.state_machine_lock.lock().unwrap();
+        let mut state = self.state.write().unwrap();
         let mut kids_to_remove = None;
         if !matches!(&state.beta, ZetaAutomata::Null) {
             self.session_has_expired.store(true, Ordering::Relaxed);
@@ -1738,15 +1815,13 @@ impl<App: ApplicationLayer> Session<App> {
             state.timeout_timer = i64::MAX;
             state.beta = ZetaAutomata::Null;
         }
-        drop(state);
-        drop(kex_lock);
-        if let Some(kids_to_remove) = kids_to_remove {
-            if let Some(ctx) = self.ctx.upgrade() {
-                ctx.session_queue.lock().unwrap().remove(self.queue_idx);
-                let mut session_map = ctx.session_map.write().unwrap();
-                for kid_recv in kids_to_remove.iter().flatten() {
-                    session_map.remove(kid_recv);
-                }
+        if let Some(session_queue) = session_queue {
+            session_queue.remove(self.queue_idx);
+        }
+        if let (Some(ctx), Some(kids_to_remove)) = (ctx, kids_to_remove) {
+            let mut session_map = ctx.session_map.write().unwrap();
+            for kid_recv in kids_to_remove.iter().flatten() {
+                session_map.remove(kid_recv);
             }
         }
     }

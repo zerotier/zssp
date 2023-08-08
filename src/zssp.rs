@@ -36,7 +36,7 @@ use crate::log_event::LogEvent;
 use crate::proto::*;
 use crate::result::{byzantine_fault, FaultType, OpenError, ReceiveError, ReceiveOk, SendError, SessionEvent};
 use crate::symmetric_state::SymmetricState;
-use crate::{applicationlayer::*, RatchetState};
+use crate::{applicationlayer::*, ratchet_state::RatchetState};
 
 /// Macro to turn off logging at compile time.
 macro_rules! log {
@@ -315,7 +315,7 @@ impl<App: ApplicationLayer> Context<App> {
                     } else {
                         std::slice::from_mut(&mut incoming_fragment_buf)
                     };
-                    receive_payload_in_place(app, ctx, &session, kid_recv, &nonce, fragments, output_buffer)?;
+                    receive_payload_in_place(&session, kid_recv, &nonce, fragments, output_buffer)?;
                     SessionEvent::Data
                 } else {
                     let mut buffer = ArrayVec::<u8, HANDSHAKE_RESPONSE_SIZE>::new();
@@ -395,7 +395,7 @@ impl<App: ApplicationLayer> Context<App> {
                         }
                         PACKET_TYPE_SESSION_REJECTED => {
                             log!(app, ReceivedRawD);
-                            received_d_trans(app, ctx, &session, kid_recv, &nonce, assembled_packet)?;
+                            received_d_trans(&session, kid_recv, &nonce, assembled_packet)?;
                             log!(app, DIsAuthClosedSession(&session));
                             SessionEvent::Rejected
                         }
@@ -569,7 +569,6 @@ impl<App: ApplicationLayer> Context<App> {
             }
         }
     }
-    /*
     /// Send data over the session.
     ///
     /// * `session` - The session to send to
@@ -581,70 +580,11 @@ impl<App: ApplicationLayer> Context<App> {
     pub fn send(
         &self,
         session: &Arc<Session<App>>,
-        mut send: impl FnMut(&mut [u8]) -> bool,
+        send: impl FnMut(&[u8]) -> bool,
         mtu_sized_buffer: &mut [u8],
-        mut data: &[u8],
-        current_time: i64,
+        data: &[u8],
     ) -> Result<(), SendError> {
-        if mtu_sized_buffer.len() < MIN_TRANSPORT_MTU {
-            return Err(SendError::InvalidParameter);
-        }
-        let state = session.state.read().unwrap();
-        let key = state.cipher_states[state.current_key].as_ref().ok_or(SendError::SessionNotEstablished)?;
-        let counter = session.get_next_outgoing_counter()?;
-
-        let mut c = key.get_send_cipher(counter)?;
-        c.set_iv(&create_message_nonce(PACKET_TYPE_DATA, counter));
-
-        let fragment_max_chunk_size = mtu_sized_buffer.len() - HEADER_SIZE;
-        let fragment_count = (data.len() + AES_GCM_TAG_SIZE + (fragment_max_chunk_size - 1)) / fragment_max_chunk_size;
-        if fragment_count > MAX_FRAGMENTS {
-            return Err(SendError::DataTooLarge);
-        }
-        let last_fragment_no = fragment_count - 1;
-
-        for fragment_no in 0..fragment_count {
-            let chunk_size = fragment_max_chunk_size.min(data.len());
-            let mut fragment_size = chunk_size + HEADER_SIZE;
-
-            set_packet_header(
-                mtu_sized_buffer,
-                fragment_count as u8,
-                fragment_no as u8,
-                PACKET_TYPE_DATA,
-                key.remote_key_id.get(),
-                counter,
-            );
-
-            c.encrypt(&data[..chunk_size], &mut mtu_sized_buffer[HEADER_SIZE..fragment_size]);
-            data = &data[chunk_size..];
-
-            if fragment_no == last_fragment_no {
-                debug_assert!(data.is_empty());
-                let tagged_fragment_size = fragment_size + AES_GCM_TAG_SIZE;
-                c.finish_encrypt((&mut mtu_sized_buffer[fragment_size..tagged_fragment_size]).try_into().unwrap());
-                fragment_size = tagged_fragment_size;
-            }
-
-            session.header_send_cipher.encrypt_in_place(
-                (&mut mtu_sized_buffer[HEADER_PROTECT_ENC_START..HEADER_PROTECT_ENC_END])
-                    .try_into()
-                    .unwrap(),
-            );
-            if !send(&mut mtu_sized_buffer[..fragment_size]) {
-                break;
-            }
-        }
-        drop(c);
-        if counter >= key.rekey_at_counter {
-            if let OfferStateMachine::Normal { .. } = &state.outgoing_offer {
-                drop(state);
-                if let Ok(timer) = initiate_rekey(&self.0, session, send, current_time) {
-                    self.0.session_queue.lock().unwrap().change_priority(session.queue_idx, Reverse(timer));
-                }
-            }
-        }
-        Ok(())
+        send_payload(&self.0, session, data, send, mtu_sized_buffer)
     }
 
     /// Perform periodic background service and cleanup tasks.
@@ -660,20 +600,19 @@ impl<App: ApplicationLayer> Context<App> {
     ///   should rekey.
     pub fn service<SendFn: FnMut(&mut [u8]) -> bool>(
         &self,
-        app: &App,
+        app: App,
         mut send_to: impl FnMut(&Arc<Session<App>>) -> Option<(SendFn, usize)>,
         current_time: i64,
     ) -> i64 {
-        let retry_next = current_time.saturating_add(App::RETRY_INTERVAL_MS);
-        let mut next_service_time = 2 * App::RETRY_INTERVAL_MS;
-
-        let mut session_queue = self.0.session_queue.lock().unwrap();
+        let ctx = &self.0;
+        let mut session_queue = ctx.session_queue.lock().unwrap();
+        let mut next_service_time = current_time + App::SETTINGS.fragment_assembly_timeout as i64;
         // This update system takes heavy advantage of the fact that sessions only need to be updated
         // either roughly every second or roughly every hour. That big gap allows for minor optimizations.
         // If the gap changes (unlikely) this code may need to be rewritten.
-        while let Some((session, timer, queue_idx)) = session_queue.peek() {
-            if timer.0 >= current_time {
-                next_service_time = next_service_time.min(timer.0 - current_time);
+        while let Some((session, Reverse(timer), queue_idx)) = session_queue.peek() {
+            if *timer >= current_time {
+                next_service_time = next_service_time.min(*timer);
                 break;
             }
             let session = match session.upgrade() {
@@ -683,127 +622,23 @@ impl<App: ApplicationLayer> Context<App> {
                     continue;
                 }
             };
-            let state = session.state.read().unwrap();
-            let next_timer = match &state.outgoing_offer {
-                Normal { timeout, .. } => {
-                    if *timeout <= current_time {
-                        drop(state);
-                        if let Some((send, _)) = send_to(&session) {
-                            let result = initiate_rekey(&self.0, &session, send, current_time);
-                            if result.is_ok() {
-                                app.event_log(LogEvent::ServiceKKStart(&session), current_time);
-                            }
-                            result.unwrap_or(retry_next)
-                        } else {
-                            retry_next
-                        }
-                    } else {
-                        *timeout
-                    }
+            let result = process_timers(&app, ctx, &session, current_time, false, false, |packet, hk_send| {
+                if let Some((send_fragment, mut mtu)) = send_to(&session) {
+                    mtu = mtu.max(MIN_TRANSPORT_MTU);
+                    send_with_fragmentation(
+                        send_fragment,
+                        mtu,
+                        packet,
+                        hk_send
+                    );
                 }
-                // If there's an outstanding attempt to open a session, retransmit this
-                // periodically in case the initial packet doesn't make it.
-                NoiseXKPattern1or3(handshake_state) => {
-                    if let Some(ts) = process_timer(&handshake_state.next_retry_time, App::RETRY_INTERVAL_MS, current_time) {
-                        ts
-                    } else {
-                        // We have to eventually time out NoiseXKPattern3 because of unreliable network conditions.
-                        if handshake_state.timeout <= current_time {
-                            drop(state);
-                            let _kex_lock = session.state_machine_lock.lock().unwrap();
-                            let mut state = session.state.write().unwrap();
-                            let ratchet_state = state.ratchet_states.clone();
-                            // Since we dropped the lock we must re-check if we are in the correct state.
-                            if let NoiseXKPattern1or3(handshake_state) = &mut state.outgoing_offer {
-                                if handshake_state.timeout <= current_time {
-                                    app.event_log(LogEvent::ServiceXKTimeout(&session), current_time);
-                                    handshake_state.reinitialize(
-                                        &session,
-                                        &ratchet_state,
-                                        &mut self.0.session_map.write().unwrap(),
-                                        &mut self.0.rng.lock().unwrap(),
-                                        current_time,
-                                    );
-                                }
-                            }
-                        } else if let Some((mut send, mut mtu)) = send_to(&session) {
-                            mtu = mtu.max(MIN_TRANSPORT_MTU);
-                            match &handshake_state.offer {
-                                NoiseXKAliceHandshakeState::NoiseXKPattern1 { noise_message, noise_message_len, message_id, .. } => {
-                                    app.event_log(LogEvent::ServiceXK1Resend(&session), current_time);
-                                    // We are in state NoiseXKPattern1 so resend noise_pattern1.
-                                    send_with_fragmentation(
-                                        &mut send,
-                                        mtu,
-                                        &mut noise_message.clone()[..*noise_message_len],
-                                        PACKET_TYPE_NOISE_XK_PATTERN_1,
-                                        None,
-                                        *message_id,
-                                        None::<&App::PrpEnc>,
-                                    );
-                                }
-                                NoiseXKAliceHandshakeState::NoiseXKPattern3 { noise_message, noise_message_len, .. } => {
-                                    app.event_log(LogEvent::ServiceXK3Resend(&session), current_time);
-                                    send_with_fragmentation(
-                                        &mut send,
-                                        mtu,
-                                        &mut noise_message.clone()[..*noise_message_len],
-                                        PACKET_TYPE_NOISE_XK_PATTERN_3,
-                                        state.cipher_states[0].as_ref().map(|k| k.remote_key_id),
-                                        0,
-                                        Some(&session.header_send_cipher),
-                                    );
-                                }
-                            }
-                        }
-                        retry_next
-                    }
-                }
-                NoiseKKPattern1 { next_retry_time, timeout, noise_message, .. } | NoiseKKPattern2 { next_retry_time, timeout, noise_message, .. } => {
-                    if let Some(ts) = process_timer(next_retry_time, App::RETRY_INTERVAL_MS, current_time) {
-                        ts
-                    } else {
-                        if *timeout <= current_time {
-                            app.event_log(LogEvent::ServiceKKTimeout(&session), current_time);
-                            next_retry_time.store(i64::MAX, Ordering::Relaxed);
-                            drop(state);
-                            session.expire_inner(&self.0, &mut session_queue);
-                        } else {
-                            let packet_type = if let NoiseKKPattern1 { .. } = &state.outgoing_offer {
-                                app.event_log(LogEvent::ServiceKK1Resend(&session), current_time);
-                                PACKET_TYPE_NOISE_KK_PATTERN_1
-                            } else {
-                                app.event_log(LogEvent::ServiceKK2Resend(&session), current_time);
-                                PACKET_TYPE_NOISE_KK_PATTERN_2
-                            };
-                            if let Some((send, _)) = send_to(&session) {
-                                let _ = session.send_control(&state, send, packet_type, noise_message);
-                            }
-                        }
-                        retry_next
-                    }
-                }
-                KeyConfirm { next_retry_time, timeout, .. } => {
-                    if let Some(ts) = process_timer(next_retry_time, App::RETRY_INTERVAL_MS, current_time) {
-                        ts
-                    } else {
-                        if *timeout <= current_time {
-                            app.event_log(LogEvent::ServiceKeyConfirmTimeout(&session), current_time);
-                            next_retry_time.store(i64::MAX, Ordering::Relaxed);
-                            drop(state);
-                            session.expire_inner(&self.0, &mut session_queue);
-                        } else {
-                            app.event_log(LogEvent::ServiceKeyConfirmResend(&session), current_time);
-                            if let Some((send, _)) = send_to(&session) {
-                                let _ = session.send_control(&state, send, PACKET_TYPE_KEY_CONFIRM, &[]);
-                            }
-                        }
-                        retry_next
-                    }
-                }
-                Null => retry_next,
-            };
-            session_queue.change_priority(queue_idx, Reverse(next_timer));
+            });
+            if let Some(next_timer) = result {
+                next_service_time = next_service_time.min(next_timer);
+                session_queue.change_priority(queue_idx, Reverse(next_timer));
+            } else {
+                session.expire_inner(Some(ctx), Some(&mut session_queue));
+            }
         }
         drop(session_queue);
 
@@ -811,9 +646,9 @@ impl<App: ApplicationLayer> Context<App> {
             .unassociated_defrag_cache
             .lock()
             .unwrap()
-            .check_for_expiry(App::INITIAL_OFFER_TIMEOUT_MS, current_time);
+            .check_for_expiry(App::SETTINGS.fragment_assembly_timeout as i64, current_time);
         self.0.unassociated_handshake_states.service(current_time);
 
         next_service_time
-    } */
+    }
 }
