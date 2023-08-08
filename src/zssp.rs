@@ -27,9 +27,10 @@ use crate::frag_cache::UnassociatedFragCache;
 use crate::fragged::Assembled;
 use crate::handshake_cache::UnassociatedHandshakeCache;
 use crate::indexed_heap::IndexedBinaryHeap;
-use crate::log_event::LogEvent;
 use crate::proto::*;
 use crate::result::{byzantine_fault, FaultType, OpenError, ReceiveError, ReceiveOk, SendError, SessionEvent};
+#[cfg(feature = "logging")]
+use crate::LogEvent::*;
 
 /// Macro to turn off logging at compile time.
 macro_rules! log {
@@ -70,13 +71,13 @@ pub struct ContextInner<App: ApplicationLayer> {
 
 fn parse_fragment_header<StorageError>(
     incoming_fragment: &[u8],
-) -> Result<(usize, usize, [u8; AES_GCM_IV_SIZE]), ReceiveError<StorageError>> {
+) -> Result<(usize, usize, [u8; AES_GCM_NONCE_SIZE]), ReceiveError<StorageError>> {
     let fragment_no = incoming_fragment[FRAGMENT_NO_IDX] as usize;
     let fragment_count = incoming_fragment[FRAGMENT_COUNT_IDX] as usize;
     if fragment_no >= fragment_count || fragment_count > MAX_FRAGMENTS {
         return Err(byzantine_fault!(FaultType::InvalidPacket, true));
     }
-    let mut nonce = [0u8; AES_GCM_IV_SIZE];
+    let mut nonce = [0u8; AES_GCM_NONCE_SIZE];
     nonce[2..].copy_from_slice(&incoming_fragment[PACKET_NONCE_START..HEADER_SIZE]);
     Ok((fragment_no, fragment_count, nonce))
 }
@@ -230,7 +231,8 @@ impl<App: ApplicationLayer> Context<App> {
             let session = ctx.session_map.read().unwrap().get(&kid_recv).map(|r| r.upgrade());
             if let Some(Some(session)) = session {
                 drop(session_map);
-                session.hk_recv.decrypt_in_place(
+                let state = session.state.read().unwrap();
+                state.hk_recv.decrypt_in_place(
                     (&mut incoming_fragment[HEADER_AUTH_START..HEADER_AUTH_END])
                         .try_into()
                         .unwrap(),
@@ -238,14 +240,17 @@ impl<App: ApplicationLayer> Context<App> {
 
                 let (fragment_no, fragment_count, nonce) = parse_fragment_header(incoming_fragment)?;
                 let (packet_type, incoming_counter) = from_nonce(&nonce);
+                if packet_type != PACKET_TYPE_DATA {
+                    log!(
+                        app,
+                        ReceivedRawFragment(packet_type, incoming_counter, fragment_no, fragment_count)
+                    );
+                }
 
                 {
                     //vrfy
-                    if packet_type != PACKET_TYPE_DATA {
-                        log!(app, ReceivedRawFragment(p, c, fragment_no, fragment_count));
-                    }
                     if packet_type == PACKET_TYPE_HANDSHAKE_RESPONSE {
-                        if !matches!(&session.state.read().unwrap().beta, ZetaAutomata::A1(_)) {
+                        if !matches!(&state.beta, ZetaAutomata::A1(_)) {
                             // A resent handshake response from Bob may have arrived out of order,
                             // after we already received one.
                             return Err(byzantine_fault!(OutOfSequence, false));
@@ -299,9 +304,12 @@ impl<App: ApplicationLayer> Context<App> {
                     } else {
                         std::slice::from_mut(&mut incoming_fragment_buf)
                     };
-                    receive_payload_in_place(&session, kid_recv, &nonce, fragments, output_buffer)?;
+
+                    receive_payload_in_place(&session, state, kid_recv, &nonce, fragments, output_buffer)?;
+
                     SessionEvent::Data
                 } else {
+                    drop(state);
                     let mut buffer = ArrayVec::<u8, HANDSHAKE_RESPONSE_SIZE>::new();
                     let assembled_packet = if fragment_count > 1 {
                         let idx = incoming_counter as usize % session.defrag.len();
@@ -424,13 +432,13 @@ impl<App: ApplicationLayer> Context<App> {
 
                     let (fragment_no, fragment_count, nonce) = parse_fragment_header(incoming_fragment)?;
                     let (packet_type, incoming_counter) = from_nonce(&nonce);
+                    log!(
+                        app,
+                        ReceivedRawFragment(packet_type, incoming_counter, fragment_no, fragment_count)
+                    );
 
                     {
                         //vrfy
-                        log!(
-                            app,
-                            ReceivedRawFragment(packet_type, incoming_counter, frag_no, frag_count)
-                        );
                         if packet_type != PACKET_TYPE_HANDSHAKE_COMPLETION || incoming_counter != 0 {
                             return Err(byzantine_fault!(InvalidPacket, true));
                         }
@@ -480,10 +488,10 @@ impl<App: ApplicationLayer> Context<App> {
         } else {
             let (fragment_no, fragment_count, nonce) = parse_fragment_header(incoming_fragment)?;
             let (packet_type, _c) = from_nonce(&nonce);
+            log!(app, ReceivedRawFragment(packet_type, _c, fragment_no, fragment_count));
 
             {
                 //vrfy
-                log!(app, ReceivedRawFragment(packet_type, _c, frag_no, frag_count));
                 if packet_type != PACKET_TYPE_HANDSHAKE_HELLO && packet_type != PACKET_TYPE_CHALLENGE {
                     return Err(byzantine_fault!(InvalidPacket, true));
                 }

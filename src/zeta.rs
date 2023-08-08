@@ -32,8 +32,8 @@ use crate::LogEvent::*;
 /// the key id.
 ///
 /// Corresponds to Figure 10 found in Section 4.3.
-pub(crate) fn to_nonce(packet_type: u8, counter: u64) -> [u8; AES_GCM_IV_SIZE] {
-    let mut ret = [0u8; AES_GCM_IV_SIZE];
+pub(crate) fn to_nonce(packet_type: u8, counter: u64) -> [u8; AES_GCM_NONCE_SIZE] {
+    let mut ret = [0u8; AES_GCM_NONCE_SIZE];
     ret[3] = packet_type;
     // Noise requires a big endian counter at the end of the Nonce
     ret[4..].copy_from_slice(&counter.to_be_bytes());
@@ -90,8 +90,6 @@ pub struct Session<App: ApplicationLayer> {
 
     pub window: Window<COUNTER_WINDOW_MAX_OOO, COUNTER_WINDOW_MAX_SKIP_AHEAD>,
     pub(crate) defrag: [Mutex<Fragged<App::IncomingPacketBuffer, MAX_FRAGMENTS>>; SESSION_MAX_FRAGMENTS_OOO],
-    pub(crate) hk_send: App::PrpEnc,
-    pub(crate) hk_recv: App::PrpDec,
 
     /// `session_queue -> state_machine_lock -> state -> session_map`
     state_machine_lock: Mutex<()>,
@@ -105,13 +103,15 @@ pub(crate) struct MutableState<App: ApplicationLayer> {
     ratchet_state1: RatchetState,
     ratchet_state2: Option<RatchetState>,
 
+    pub(crate) hk_send: App::PrpEnc,
+    pub(crate) hk_recv: App::PrpDec,
     key_creation_counter: u64,
     key_index: bool,
     keys: [DuplexKey<App>; 2],
 
     resend_timer: AtomicI64,
     timeout_timer: i64,
-    pub beta: ZetaAutomata<App>,
+    pub(crate) beta: ZetaAutomata<App>,
 }
 
 /// Corresponds to State B_2 of the Zeta State Machine found in Section 4.1 - Definition 3.
@@ -294,7 +294,7 @@ impl<App: ApplicationLayer> MutableState<App> {
     }
 }
 
-fn set_header(packet: &mut [u8], kid_send: u32, nonce: &[u8; AES_GCM_IV_SIZE]) {
+fn set_header(packet: &mut [u8], kid_send: u32, nonce: &[u8; AES_GCM_NONCE_SIZE]) {
     packet[..KID_SIZE].copy_from_slice(&kid_send.to_be_bytes());
     packet[PACKET_NONCE_START..HEADER_SIZE].copy_from_slice(&nonce[NONCE_SIZE_DIFF..]);
 }
@@ -328,7 +328,7 @@ fn create_a1_state<App: ApplicationLayer>(
     let i = x1.len();
     let (e1_secret, e1_public) = App::Kem::generate(rng.lock().unwrap().deref_mut());
     x1.extend(e1_public);
-    x1.extend([0u8; AES_GCM_IV_SIZE]);
+    x1.extend([0u8; AES_GCM_NONCE_SIZE]);
     let tag = noise.encrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_HANDSHAKE_HELLO, 0), &mut x1[i..]);
     x1.extend(tag);
     // Process message pattern 1 payload.
@@ -416,6 +416,8 @@ pub(crate) fn trans_to_a1<App: ApplicationLayer>(
         state: RwLock::new(MutableState {
             ratchet_state1: state1.clone(),
             ratchet_state2: state2.clone(),
+            hk_send: App::PrpEnc::new((&hk_send[..AES_256_KEY_SIZE]).try_into().unwrap()),
+            hk_recv: App::PrpDec::new((&hk_recv[..AES_256_KEY_SIZE]).try_into().unwrap()),
             key_creation_counter: 0,
             key_index: true,
             keys: [DuplexKey::default(), DuplexKey::default()],
@@ -425,8 +427,6 @@ pub(crate) fn trans_to_a1<App: ApplicationLayer>(
         }),
         noise_kk_ss: noise_kk_ss.clone(),
         defrag: std::array::from_fn(|_| Mutex::new(Fragged::new())),
-        hk_send: App::PrpEnc::new((&hk_send[..AES_256_KEY_SIZE]).try_into().unwrap()),
-        hk_recv: App::PrpDec::new((&hk_recv[..AES_256_KEY_SIZE]).try_into().unwrap()),
     });
     {
         let mut state = session.state.write().unwrap();
@@ -460,7 +460,7 @@ pub(crate) fn respond_to_challenge<App: ApplicationLayer>(
 pub(crate) fn received_x1_trans<App: ApplicationLayer>(
     app: &App,
     ctx: &ContextInner<App>,
-    n: &[u8; AES_GCM_IV_SIZE],
+    n: &[u8; AES_GCM_NONCE_SIZE],
     x1: &mut [u8],
     send: impl FnOnce(&mut [u8], Option<&App::PrpEnc>),
 ) -> Result<(), ReceiveError<App::StorageError>> {
@@ -473,7 +473,7 @@ pub(crate) fn received_x1_trans<App: ApplicationLayer>(
         return Err(byzantine_fault!(InvalidPacket, true));
     }
 
-    if &n[AES_GCM_IV_SIZE - 8..] != &x1[x1.len() - 8..] {
+    if &n[AES_GCM_NONCE_SIZE - 8..] != &x1[x1.len() - 8..] {
         return Err(byzantine_fault!(FailedAuth, true));
     }
     let hash = &mut App::Hash::new();
@@ -609,7 +609,7 @@ pub(crate) fn received_x2_trans<App: ApplicationLayer>(
     ctx: &Arc<ContextInner<App>>,
     session: &Arc<Session<App>>,
     kid: NonZeroU32,
-    n: &[u8; AES_GCM_IV_SIZE],
+    n: &[u8; AES_GCM_NONCE_SIZE],
     x2: &mut [u8],
     send: impl FnOnce(&mut [u8], Option<&App::PrpEnc>),
 ) -> Result<(), ReceiveError<App::StorageError>> {
@@ -629,7 +629,7 @@ pub(crate) fn received_x2_trans<App: ApplicationLayer>(
         return Err(byzantine_fault!(UnknownLocalKeyId, true));
     }
     let (_, c) = from_nonce(n);
-    if c >= COUNTER_WINDOW_MAX_SKIP_AHEAD || &n[AES_GCM_IV_SIZE - 3..] != &x2[x2.len() - 3..] {
+    if c >= COUNTER_WINDOW_MAX_SKIP_AHEAD || &n[AES_GCM_NONCE_SIZE - 3..] != &x2[x2.len() - 3..] {
         return Err(byzantine_fault!(FailedAuth, true));
     }
     let mut result = (|| {
@@ -797,7 +797,7 @@ pub(crate) fn received_x2_trans<App: ApplicationLayer>(
             let state = session.state.read().unwrap();
             timeout_trans(app, ctx, session, kex_lock, state, app.time(), send);
         }
-        Ok(ref mut packet) => send(packet, Some(&session.hk_send)),
+        Ok(ref mut packet) => send(packet, Some(&session.state.read().unwrap().hk_send)),
         _ => {}
     }
     result.map(|_| ())
@@ -815,7 +815,7 @@ fn send_control<App: ApplicationLayer, const CAP: usize>(
             let tag = App::Aead::encrypt_in_place(kek, &nonce, &[], &mut payload[HEADER_SIZE..]);
             payload.extend(tag);
             set_header(&mut payload, kid.get(), &nonce);
-            send(&mut payload, Some(&session.hk_send));
+            send(&mut payload, Some(&state.hk_send));
             true
         } else {
             false
@@ -961,6 +961,8 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
                         state: RwLock::new(MutableState {
                             ratchet_state1: new_ratchet_state.clone(),
                             ratchet_state2: None,
+                            hk_send: App::PrpEnc::new(&zeta.hk_send),
+                            hk_recv: App::PrpDec::new(&zeta.hk_recv),
                             key_creation_counter: c + 1,
                             key_index: false,
                             keys: [DuplexKey::default(), DuplexKey::default()],
@@ -972,8 +974,6 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
                         queue_idx,
                         noise_kk_ss: noise_kk_ss.clone(),
                         defrag: std::array::from_fn(|_| Mutex::new(Fragged::new())),
-                        hk_send: App::PrpEnc::new(&zeta.hk_send),
-                        hk_recv: App::PrpDec::new(&zeta.hk_recv),
                     });
                     {
                         let mut state = session.state.write().unwrap();
@@ -1012,7 +1012,7 @@ pub(crate) fn received_c1_trans<App: ApplicationLayer>(
     ctx: &Arc<ContextInner<App>>,
     session: &Arc<Session<App>>,
     kid: NonZeroU32,
-    n: &[u8; AES_GCM_IV_SIZE],
+    n: &[u8; AES_GCM_NONCE_SIZE],
     c1: &[u8],
     send: impl FnOnce(&mut [u8], Option<&App::PrpEnc>),
 ) -> Result<bool, ReceiveError<App::StorageError>> {
@@ -1103,7 +1103,7 @@ pub(crate) fn received_c2_trans<App: ApplicationLayer>(
     ctx: &Arc<ContextInner<App>>,
     session: &Arc<Session<App>>,
     kid: NonZeroU32,
-    n: &[u8; AES_GCM_IV_SIZE],
+    n: &[u8; AES_GCM_NONCE_SIZE],
     c2: &[u8],
 ) -> Result<(), ReceiveError<App::StorageError>> {
     use FaultType::*;
@@ -1156,7 +1156,7 @@ pub(crate) fn received_c2_trans<App: ApplicationLayer>(
 pub(crate) fn received_d_trans<App: ApplicationLayer>(
     session: &Arc<Session<App>>,
     kid: NonZeroU32,
-    n: &[u8; AES_GCM_IV_SIZE],
+    n: &[u8; AES_GCM_NONCE_SIZE],
     d: &[u8],
 ) -> Result<(), ReceiveError<App::StorageError>> {
     use FaultType::*;
@@ -1231,12 +1231,8 @@ fn timeout_trans<App: ApplicationLayer>(
                 drop(state);
                 let resend_timer = {
                     let mut state = session.state.write().unwrap();
-                    session
-                        .hk_recv
-                        .reset((&hk_recv[..AES_256_KEY_SIZE]).try_into().unwrap());
-                    session
-                        .hk_send
-                        .reset((&hk_send[..AES_256_KEY_SIZE]).try_into().unwrap());
+                    state.hk_recv.reset((&hk_recv[..AES_256_KEY_SIZE]).try_into().unwrap());
+                    state.hk_send.reset((&hk_send[..AES_256_KEY_SIZE]).try_into().unwrap());
                     *state.key_mut(true) = DuplexKey::default();
                     state.key_mut(true).recv.kid = Some(new_kid_recv);
                     let resend_timer = current_time + App::SETTINGS.resend_time as i64;
@@ -1343,7 +1339,7 @@ pub(crate) fn process_timers<App: ApplicationLayer>(
                 }
                 ZetaAutomata::A3(a3) => {
                     log!(app, ResentX3(session));
-                    send(&mut a3.x3.clone(), Some(&session.hk_send));
+                    send(&mut a3.x3.clone(), Some(&state.hk_send));
                     return Some(resend_next);
                 }
                 ZetaAutomata::S1 => {
@@ -1391,7 +1387,7 @@ pub(crate) fn received_k1_trans<App: ApplicationLayer>(
     ctx: &Arc<ContextInner<App>>,
     session: &Arc<Session<App>>,
     kid: NonZeroU32,
-    n: &[u8; AES_GCM_IV_SIZE],
+    n: &[u8; AES_GCM_NONCE_SIZE],
     k1: &mut [u8],
     send: impl FnOnce(&mut [u8], Option<&App::PrpEnc>),
 ) -> Result<(), ReceiveError<App::StorageError>> {
@@ -1553,7 +1549,7 @@ pub(crate) fn received_k2_trans<App: ApplicationLayer>(
     ctx: &Arc<ContextInner<App>>,
     session: &Arc<Session<App>>,
     kid: NonZeroU32,
-    n: &[u8; AES_GCM_IV_SIZE],
+    n: &[u8; AES_GCM_NONCE_SIZE],
     k2: &mut [u8],
     send: impl FnOnce(&mut [u8], Option<&App::PrpEnc>),
 ) -> Result<(), ReceiveError<App::StorageError>> {
@@ -1732,7 +1728,7 @@ pub(crate) fn send_payload<App: ApplicationLayer>(
             &mut mtu_sized_buffer[HEADER_SIZE..HEADER_SIZE + fragment_len],
         );
 
-        session.hk_send.encrypt_in_place(
+        state.hk_send.encrypt_in_place(
             (&mut mtu_sized_buffer[HEADER_AUTH_START..HEADER_AUTH_END])
                 .try_into()
                 .unwrap(),
@@ -1760,14 +1756,14 @@ pub(crate) fn send_payload<App: ApplicationLayer>(
 /// Corresponds to Algorithm 10 found in Section 4.3.
 pub(crate) fn receive_payload_in_place<App: ApplicationLayer>(
     session: &Arc<Session<App>>,
+    state: RwLockReadGuard<'_, MutableState<App>>,
     kid: NonZeroU32,
-    n: &[u8; AES_GCM_IV_SIZE],
+    n: &[u8; AES_GCM_NONCE_SIZE],
     fragments: &mut [App::IncomingPacketBuffer],
     mut output_buffer: impl Write,
 ) -> Result<(), ReceiveError<App::StorageError>> {
     use FaultType::*;
 
-    let state = session.state.read().unwrap();
     let is_other = if Some(kid) == state.key_ref(true).recv.kid {
         true
     } else if Some(kid) == state.key_ref(false).recv.kid {
@@ -1792,7 +1788,7 @@ pub(crate) fn receive_payload_in_place<App: ApplicationLayer>(
         i += 1;
     }
     let fragment = &mut fragments[i].as_mut()[HEADER_SIZE..];
-    let tag_idx = fragment.len() - AES_GCM_IV_SIZE;
+    let tag_idx = fragment.len() - AES_GCM_NONCE_SIZE;
     cipher.decrypt_in_place(&mut fragment[..tag_idx]);
     if cipher.finish((&fragment[tag_idx..]).try_into().unwrap()) {
         return Err(byzantine_fault!(FailedAuth, true));

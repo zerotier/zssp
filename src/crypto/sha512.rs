@@ -17,6 +17,10 @@ pub trait HashSha512 {
 /// Does not need to be threadsafe.
 pub trait HmacSha512 {
     /// Allocate space on the stack or heap for repeated Hmac invocations.
+    ///
+    /// Many FIPS compliant libraries, namely OpenSSL, require initializing an Hmac context on the
+    /// heap before operating on it.
+    /// If you are using a more sane library feel free to make this return an empty type.
     fn new() -> Self;
     /// Pure function for computing a single HMAC Hash. Repeat invocations of this function should
     /// have no effect on each other.

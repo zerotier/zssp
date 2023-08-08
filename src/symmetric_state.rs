@@ -165,7 +165,7 @@ impl<App: ApplicationLayer> SymmetricState<App> {
     pub fn encrypt_and_hash_in_place(
         &mut self,
         hash: &mut App::Hash,
-        iv: [u8; AES_GCM_IV_SIZE],
+        iv: [u8; AES_GCM_NONCE_SIZE],
         data: &mut [u8],
     ) -> [u8; AES_GCM_TAG_SIZE] {
         let tag = App::Aead::encrypt_in_place(&self.k, &iv, &self.h, data);
@@ -180,7 +180,7 @@ impl<App: ApplicationLayer> SymmetricState<App> {
     pub fn decrypt_and_hash_in_place(
         &mut self,
         hash: &mut App::Hash,
-        iv: [u8; AES_GCM_IV_SIZE],
+        iv: [u8; AES_GCM_NONCE_SIZE],
         data: &mut [u8],
         tag: [u8; AES_GCM_TAG_SIZE],
     ) -> bool {

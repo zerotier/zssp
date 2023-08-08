@@ -3,7 +3,7 @@
 pub const AES_256_KEY_SIZE: usize = 32;
 pub const AES_256_BLOCK_SIZE: usize = 16;
 pub const AES_GCM_TAG_SIZE: usize = 16;
-pub const AES_GCM_IV_SIZE: usize = 12;
+pub const AES_GCM_NONCE_SIZE: usize = 12;
 
 /// A trait for encrypting individual blocks of plaintext using AES-256.
 /// It is used for header authentication, for which we have a standard model proof that our
@@ -15,7 +15,7 @@ pub trait AesEnc: Send + Sync {
 
     /// Change the encryption key to `key` so that all future encryption is performed with it.
     /// This function is very rarely called so it does not have to be particularly efficient.
-    fn reset(&self, key: &[u8; AES_256_KEY_SIZE]);
+    fn reset(&mut self, key: &[u8; AES_256_KEY_SIZE]);
 
     /// Decrypt the given `block` of plaintext directly using the AES block cipher
     /// (i.e. AES-256 in zero-padding ECB mode).
@@ -31,7 +31,7 @@ pub trait AesDec: Send + Sync {
 
     /// Change the decryption key to `key` so that all future decryption is performed with it.
     /// This function is very rarely called so it does not have to be particularly efficient.
-    fn reset(&self, key: &[u8; AES_256_KEY_SIZE]);
+    fn reset(&mut self, key: &[u8; AES_256_KEY_SIZE]);
 
     /// Decrypt the given `block` of ciphertext directly using the AES 256 block cipher
     /// (i.e. AES-256 in zero-padding ECB mode).
@@ -62,21 +62,21 @@ pub trait HighThroughputAesGcmPool: Send + Sync {
 
     fn new(encrypt_key: &[u8; AES_256_KEY_SIZE], decrypt_key: &[u8; AES_256_KEY_SIZE]) -> Self;
 
-    fn start_enc<'a>(&'a self, iv: &[u8; AES_GCM_IV_SIZE]) -> Self::EncContext<'a>;
-    fn start_dec<'a>(&'a self, iv: &[u8; AES_GCM_IV_SIZE]) -> Self::DecContext<'a>;
+    fn start_enc<'a>(&'a self, iv: &[u8; AES_GCM_NONCE_SIZE]) -> Self::EncContext<'a>;
+    fn start_dec<'a>(&'a self, iv: &[u8; AES_GCM_NONCE_SIZE]) -> Self::DecContext<'a>;
 }
 
 pub trait LowThroughputAesGcm {
     fn encrypt_in_place(
         key: &[u8; AES_256_KEY_SIZE],
-        iv: &[u8; AES_GCM_IV_SIZE],
+        iv: &[u8; AES_GCM_NONCE_SIZE],
         aad: &[u8],
         data: &mut [u8],
     ) -> [u8; AES_GCM_TAG_SIZE];
     #[must_use]
     fn decrypt_in_place(
         key: &[u8; AES_256_KEY_SIZE],
-        iv: &[u8; AES_GCM_IV_SIZE],
+        iv: &[u8; AES_GCM_NONCE_SIZE],
         aad: &[u8],
         data: &mut [u8],
         tag: &[u8; AES_GCM_TAG_SIZE],

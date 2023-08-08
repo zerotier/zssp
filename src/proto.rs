@@ -51,7 +51,7 @@ pub(crate) const FRAGMENT_COUNT_IDX: usize = 5;
 /// into this number of fragments it will be dropped.
 pub(crate) const MAX_FRAGMENTS: usize = 48;
 
-pub(crate) const NONCE_SIZE_DIFF: usize = AES_GCM_IV_SIZE - PACKET_NONCE_SIZE;
+pub(crate) const NONCE_SIZE_DIFF: usize = AES_GCM_NONCE_SIZE - PACKET_NONCE_SIZE;
 
 /* Key exchange constants */
 /*

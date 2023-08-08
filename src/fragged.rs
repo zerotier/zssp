@@ -9,7 +9,7 @@
 use arrayvec::ArrayVec;
 use std::mem::{needs_drop, zeroed, MaybeUninit};
 
-use crate::crypto::AES_GCM_IV_SIZE;
+use crate::crypto::AES_GCM_NONCE_SIZE;
 use crate::proto::{MAX_FRAGMENTS, NONCE_SIZE_DIFF};
 
 pub type Assembled<Fragment> = ArrayVec<Fragment, MAX_FRAGMENTS>;
@@ -37,7 +37,7 @@ impl<Fragment, const MAX_FRAGMENTS: usize> Fragged<Fragment, MAX_FRAGMENTS> {
     /// Will check that aad is the same for all fragments.
     pub(crate) fn assemble(
         &mut self,
-        nonce: &[u8; AES_GCM_IV_SIZE],
+        nonce: &[u8; AES_GCM_NONCE_SIZE],
         fragment: Fragment,
         fragment_no: usize,
         fragment_count: usize,

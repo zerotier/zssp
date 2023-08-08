@@ -10,7 +10,7 @@ use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::mem::MaybeUninit;
 
-use crate::crypto::AES_GCM_IV_SIZE;
+use crate::crypto::AES_GCM_NONCE_SIZE;
 use crate::fragged::Assembled;
 use crate::proto::{MAX_FRAGMENTS, MAX_UNASSOCIATED_FRAGMENTS, MAX_UNASSOCIATED_PACKETS, MAX_UNASSOCIATED_PACKET_SIZE};
 
@@ -56,7 +56,7 @@ impl<Fragment> UnassociatedFragCache<Fragment> {
     /// Will check that aad is the same for all fragments.
     pub(crate) fn assemble(
         &mut self,
-        nonce: &[u8; AES_GCM_IV_SIZE],
+        nonce: &[u8; AES_GCM_NONCE_SIZE],
         remote_address: impl Hash,
         fragment_size: usize,
         fragment: Fragment,
