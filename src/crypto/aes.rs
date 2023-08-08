@@ -47,7 +47,7 @@ pub trait AesGcmEncContext {
 }
 
 pub trait AesGcmDecContext {
-    fn decrypt(&mut self, input: &[u8], output: &mut [u8]);
+    fn decrypt_in_place(&mut self, data: &mut [u8]);
 
     #[must_use]
     fn finish(&mut self, tag: &[u8; AES_GCM_TAG_SIZE]) -> bool;

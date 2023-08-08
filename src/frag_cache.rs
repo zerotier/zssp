@@ -152,24 +152,12 @@ impl<Fragment> UnassociatedFragCache<Fragment> {
             self.frags[frag_idx].write(fragment);
 
             if entry.fragment_have == 1u64.wrapping_shl(fragment_count as u32) - 1 {
-                ret_assembled.empty();
-                ret_assembled.1 = fragment_count as usize;
+                debug_assert!(ret_assembled.is_empty());
                 let start_idx = entry.frags_idx as usize;
-                // This is a ring buffer copy into ret_assembled.
-                // The fragments are moved into the `ret_assembled` container and returned.
-                // That container will drop them when it is dropped.
-                if start_idx + ret_assembled.1 <= self.frags.len() {
-                    // Copy does not occur at the buffer's boundary
-                    unsafe {
-                        std::ptr::copy_nonoverlapping(&self.frags[start_idx], &mut ret_assembled.0[0], ret_assembled.1);
-                    }
-                } else {
-                    // Copy does occur at the buffer's boundary
-                    let first_chunk_size = self.frags.len() - start_idx;
-                    let second_chunk_size = ret_assembled.1 - first_chunk_size;
-                    unsafe {
-                        std::ptr::copy_nonoverlapping(&self.frags[start_idx], &mut ret_assembled.0[0], first_chunk_size);
-                        std::ptr::copy_nonoverlapping(&self.frags[0], &mut ret_assembled.0[first_chunk_size], second_chunk_size);
+                unsafe {
+                    for i in start_idx..start_idx + fragment_count {
+
+                        ret_assembled.push(self.frags[i % self.frags.len()].assume_init_read())
                     }
                 }
                 self.invalidate::<false>(idx);
@@ -267,7 +255,7 @@ fn test_cache() {
             }
             in_progress.push((i, fragment_count as u8, packet));
         } else {
-            assembled.empty();
+            assembled.clear();
             let drop = xorshift64_random() as usize % (2 * fragment_count);
             for j in 0..fragment_count {
                 if drop != j {
@@ -297,7 +285,7 @@ fn test_cache() {
                     for _ in 0..((xorshift64_random() as usize % packet.len()) + 1) {
                         let (no, fragment) = packet.swap_remove(xorshift64_random() as usize % packet.len());
 
-                        assembled.empty();
+                        assembled.clear();
                         let mut nonce = [0; 12];
                         nonce[..4].copy_from_slice(&id.to_be_bytes());
                         cache.assemble(&nonce, 0, fragment.len(), fragment, no as usize, fragment_count as usize, 1000, time, &mut assembled);

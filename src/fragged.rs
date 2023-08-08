@@ -6,40 +6,13 @@
  * https://www.zerotier.com/
  */
 
+use arrayvec::ArrayVec;
 use std::mem::{needs_drop, zeroed, MaybeUninit};
-use std::ptr::slice_from_raw_parts;
 
 use crate::crypto::aes::AES_GCM_IV_SIZE;
 use crate::proto::{MAX_FRAGMENTS, NONCE_SIZE_DIFF};
 
-pub(crate) struct Assembled<Fragment>(pub(crate) [MaybeUninit<Fragment>; MAX_FRAGMENTS], pub(crate) usize);
-
-impl<Fragment> Assembled<Fragment> {
-    pub(crate) fn new() -> Self {
-        Self(unsafe { MaybeUninit::<[MaybeUninit<_>; MAX_FRAGMENTS]>::uninit().assume_init() }, 0)
-    }
-    pub(crate) fn is_empty(&self) -> bool {
-        self.1 == 0
-    }
-    pub(crate) fn empty(&mut self) {
-        for i in 0..self.1 {
-            unsafe {
-                self.0.get_unchecked_mut(i).assume_init_drop();
-            }
-        }
-        self.1 = 0;
-    }
-}
-impl<Fragment> AsRef<[Fragment]> for Assembled<Fragment> {
-    fn as_ref(&self) -> &[Fragment] {
-        unsafe { &*slice_from_raw_parts(self.0.as_ptr().cast::<Fragment>(), self.1) }
-    }
-}
-impl<Fragment> Drop for Assembled<Fragment> {
-    fn drop(&mut self) {
-        self.empty()
-    }
-}
+pub type Assembled<Fragment> = ArrayVec<Fragment, MAX_FRAGMENTS>;
 
 /// Fast packet defragmenter
 pub struct Fragged<Fragment, const MAX_FRAGMENTS: usize> {
@@ -94,10 +67,10 @@ impl<Fragment, const MAX_FRAGMENTS: usize> Fragged<Fragment, MAX_FRAGMENTS> {
                     // Setting 'have' to 0 resets the state of this object, and the fragments
                     // are effectively moved into the Assembled<> container and returned. That
                     // container will drop them when it is dropped.
-                    ret_assembled.empty();
-                    ret_assembled.1 = fragment_count as usize;
                     unsafe {
-                        std::ptr::copy_nonoverlapping(&self.frags[0], &mut ret_assembled.0[0], ret_assembled.1);
+                        for i in 0..fragment_count {
+                            ret_assembled.push(self.frags[i].assume_init_read());
+                        }
                     }
                 }
             }

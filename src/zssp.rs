@@ -10,6 +10,7 @@
 
 use std::cmp::Reverse;
 use std::collections::HashMap;
+use std::io::Write;
 use std::hash::Hash;
 use std::num::{NonZeroU32, NonZeroU64};
 use std::ops::DerefMut;
@@ -60,16 +61,17 @@ impl<Application: ApplicationLayer> Clone for Context<Application> {
 }
 
 pub(crate) type SessionMap<App> = RwLock<HashMap<NonZeroU32, Weak<Session<App>>>>;
-pub(crate) struct ContextInner<App: ApplicationLayer> {
+pub(crate) type SessionQueue<App> = IndexedBinaryHeap<Weak<Session<App>>, Reverse<i64>>;
+pub struct ContextInner<App: ApplicationLayer> {
     pub rng: Mutex<App::Rng>,
     pub(crate) s_secret: App::KeyPair,
-    pub(crate) session_queue: Mutex<IndexedBinaryHeap<Weak<Session<App>>, Reverse<i64>>>,
+    /// `session_queue -> state_machine_lock -> state -> session_map`
+    pub(crate) session_queue: Mutex<SessionQueue<App>>,
+    /// `session_queue -> state_machine_lock -> state -> session_map`
     pub(crate) session_map: SessionMap<App>,
     pub(crate) unassociated_defrag_cache: Mutex<UnassociatedFragCache<App::IncomingPacketBuffer>>,
     pub(crate) unassociated_handshake_states: UnassociatedHandshakeCache<App>,
-    //pub(crate) b2_map: Mutex<HashMap<NonZeroU32, StateB2<App>>>,
 
-    //hello_defrag: Mutex<DefragBuffer>,
     pub(crate) challenge: ChallengeContext,
 }
 
@@ -80,7 +82,7 @@ pub enum IncomingSessionAction {
     Drop,
 }
 
-fn parse_fragment_header<App: ApplicationLayer>(incoming_fragment: &[u8]) -> Result<(usize, usize, [u8; AES_GCM_IV_SIZE]), ReceiveError<App::StorageError>> {
+fn parse_fragment_header<StorageError>(incoming_fragment: &[u8]) -> Result<(usize, usize, [u8; AES_GCM_IV_SIZE]), ReceiveError<StorageError>> {
     let fragment_no = incoming_fragment[FRAGMENT_NO_IDX] as usize;
     let fragment_count = incoming_fragment[FRAGMENT_COUNT_IDX] as usize;
     if fragment_no >= fragment_count || fragment_count > MAX_FRAGMENTS {
@@ -91,6 +93,43 @@ fn parse_fragment_header<App: ApplicationLayer>(incoming_fragment: &[u8]) -> Res
     Ok((fragment_no, fragment_count, nonce))
 }
 
+
+/// Fragments and sends the packet, destroying it in the process.
+///
+/// Corresponds to the fragmentation algorithm described in Section 6.
+fn send_with_fragmentation<PrpEnc: AesEnc>(
+    mut send: impl FnMut(&mut [u8]) -> bool,
+    mtu: usize,
+    headered_packet: &mut [u8],
+    hk_send: Option<&PrpEnc>,
+) -> bool {
+    let payload_len = headered_packet.len() - HEADER_SIZE;
+    let payload_mtu = mtu - HEADER_SIZE;
+    debug_assert!(payload_mtu >= 4);
+    let fragment_count = payload_len.saturating_add(payload_mtu - 1) / payload_mtu; // Ceiling div.
+    let fragment_base_size = payload_len / fragment_count;
+    let fragment_size_remainder = payload_len % fragment_count;
+
+    let mut i = HEADER_SIZE;
+    for fragment_no in 0..fragment_count {
+        let j = i + fragment_base_size + (fragment_no < fragment_size_remainder) as usize;
+        let fragment = &mut headered_packet[i - HEADER_SIZE..j];
+
+        fragment[FRAGMENT_NO_IDX] = fragment_no as u8;
+        fragment[FRAGMENT_COUNT_IDX] = fragment_count as u8;
+
+        if let Some(hk_send) = hk_send {
+            hk_send.encrypt_in_place(
+                (&mut fragment[HEADER_AUTH_START..HEADER_AUTH_END]).try_into().unwrap(),
+            );
+        }
+        if !send(fragment) {
+            return false;
+        }
+        i = j;
+    }
+    true
+}
 
 impl<App: ApplicationLayer> Context<App> {
     /// Create a new session context.
@@ -143,6 +182,9 @@ impl<App: ApplicationLayer> Context<App> {
             static_remote_key,
             session_data,
             identity,
+            |packet, hk_send| {
+                send_with_fragmentation(send, mtu, packet, hk_send);
+            }
         )
     }
 
@@ -186,9 +228,8 @@ impl<App: ApplicationLayer> Context<App> {
         mut send_unassociated_mtu: usize,
         mut send_to: impl FnMut(&Arc<Session<App>>) -> Option<(SendFn, usize)>,
         remote_address: &impl Hash,
-        data_buf: &'a mut [u8],
         mut incoming_fragment_buf: App::IncomingPacketBuffer,
-        current_time: i64,
+        output_buffer: impl Write,
     ) -> Result<ReceiveOk<App>, ReceiveError<App::StorageError>> {
         use crate::result::FaultType::*;
         let ctx = &self.0;
@@ -198,21 +239,175 @@ impl<App: ApplicationLayer> Context<App> {
             return Err(byzantine_fault!(FaultType::InvalidPacket, false));
         }
 
-        // The first section parses the header and looks up relevant state information. If it's a DATA
-        // or NOP packet it gets handled right here, otherwise we pull out a set of variables and
-        // continue to the logic that handles KEX and session control packets.
+        let mut fragment_buffer = Assembled::new();
 
-        let mut assembled_packet = Assembled::new(); // needs to outlive the block below
-        let mut incoming = None;
-        let (session, packet_type, fragments) = {
-            let kid_recv = incoming_fragment[0..KID_SIZE].try_into().unwrap();
-            // `from_ne_bytes` because this id was generated locally.
-            if let Some(kid_recv) = NonZeroU32::new(u32::from_ne_bytes(kid_recv)) {
-                let session_map = self.0.session_map.read().unwrap();
-                let session = ctx.session_map.read().unwrap().get(&kid_recv).map(|r| r.upgrade());
-                if let Some(Some(session)) = session {
-                    drop(session_map);
-                    session.hk_recv.decrypt_in_place(
+        let kid_recv = incoming_fragment[0..KID_SIZE].try_into().unwrap();
+        if let Some(kid_recv) = NonZeroU32::new(u32::from_be_bytes(kid_recv)) {
+            let session_map = self.0.session_map.read().unwrap();
+            let session = ctx.session_map.read().unwrap().get(&kid_recv).map(|r| r.upgrade());
+            if let Some(Some(session)) = session {
+                drop(session_map);
+                session.hk_recv.decrypt_in_place(
+                    (&mut incoming_fragment[HEADER_AUTH_START..HEADER_AUTH_END])
+                        .try_into()
+                        .unwrap(),
+                );
+
+                let (fragment_no, fragment_count, nonce) = parse_fragment_header(incoming_fragment)?;
+                let (packet_type, incoming_counter) = from_nonce(&nonce);
+
+                {//vrfy
+                    if packet_type != PACKET_TYPE_DATA {
+                        log!(app, ReceivedRawFragment(p, c, fragment_no, fragment_count));
+                    }
+                    if packet_type == PACKET_TYPE_HANDSHAKE_RESPONSE {
+                        if !matches!(&session.state.read().unwrap().beta, ZetaAutomata::A1(_)) {
+                            // A resent handshake response from Bob may have arrived out of order,
+                            // after we already received one.
+                            return Err(byzantine_fault!(OutOfSequence, false));
+                        }
+                        if incoming_counter >= COUNTER_WINDOW_MAX_SKIP_AHEAD {
+                            return Err(byzantine_fault!(ExpiredCounter, true));
+                        }
+                    } else if PACKET_TYPE_USES_COUNTER_RANGE.contains(&packet_type) {
+                        // For DOS resistant reply-protection we need to check that the given counter is
+                        // in the window of valid counters immediately.
+                        // But for packets larger than 1 fragment we can't actually record the
+                        // counter as received until we've authenticated the packet.
+                        // So we check the counter window twice, and only update it the second time
+                        // after the packet has been authenticated.
+                        if !session.window.check(incoming_counter) {
+                            // This can occur naturally if packets arrive way out of order, or
+                            // if they are duplicates.
+                            // This can also be naturally triggered if Bob has just successfully
+                            // received the first session key and is reject all of Alice's resends.
+                            // This can also occur if a session was manually expired, but not
+                            // dropped, and the remote party is still sending us data.
+                            return Err(byzantine_fault!(ExpiredCounter, false));
+                        }
+                    } else if packet_type == PACKET_TYPE_HANDSHAKE_COMPLETION {
+                        // This can be triggered if Bob successfully received a session key and
+                        // needs to reject all of Alice's resends of PACKET_TYPE_NOISE_XK_PATTERN_3.
+                        return Err(byzantine_fault!(InvalidPacket, false));
+                    } else {
+                        return Err(byzantine_fault!(InvalidPacket, true));
+                    }
+                }
+
+                // Handle defragmentation.
+                let ret = if packet_type == PACKET_TYPE_DATA {
+                    let fragments = if fragment_count > 1 {
+                        let idx = incoming_counter as usize % session.defrag.len();
+                        session.defrag[idx].lock().unwrap().assemble(
+                            &nonce,
+                            incoming_fragment_buf,
+                            fragment_no,
+                            fragment_count,
+                            &mut fragment_buffer,
+                        );
+                        if fragment_buffer.is_empty() {
+                            return Ok(ReceiveOk::Unassociated);
+                        } else {
+                            // We have not yet authenticated the sender so we do not report
+                            // receiving a packet from them.
+                            fragment_buffer.as_mut()
+                        }
+                    } else {
+                        std::slice::from_mut(&mut incoming_fragment_buf)
+                    };
+                    receive_payload_in_place(app, ctx, &session, kid_recv, &nonce, fragments, output_buffer)?;
+                    SessionEvent::Data
+                } else {
+                    let mut buffer = ArrayVec::<u8, HANDSHAKE_RESPONSE_SIZE>::new();
+                    let assembled_packet = if fragment_count > 1 {
+                        let idx = incoming_counter as usize % session.defrag.len();
+                        session.defrag[idx].lock().unwrap().assemble(
+                            &nonce,
+                            incoming_fragment_buf,
+                            fragment_no,
+                            fragment_count,
+                            &mut fragment_buffer,
+                        );
+                        if fragment_buffer.is_empty() {
+                            return Ok(ReceiveOk::Unassociated);
+                        } else {
+                            for fragment in fragment_buffer.as_ref() {
+                                buffer.try_extend_from_slice(&fragment.as_ref()[HEADER_SIZE..]).map_err(|_| byzantine_fault!(InvalidPacket, true))?;
+                            }
+                            // We have not yet authenticated the sender so we do not report
+                            // receiving a packet from them.
+                            buffer.as_mut()
+                        }
+                    } else {
+                        &mut incoming_fragment_buf.as_mut()[HEADER_SIZE..]
+                    };
+
+                    let send_associated = |packet: &mut [u8], hk_send: Option<&App::PrpEnc>| {
+                        if let Some((send_fragment, mut mtu)) = send_to(&session) {
+                            mtu = mtu.max(MIN_TRANSPORT_MTU);
+                            send_with_fragmentation(send_fragment, mtu, packet, hk_send);
+                        }
+                    };
+                    match packet_type {
+                        PACKET_TYPE_HANDSHAKE_RESPONSE => {
+                            log!(app, ReceivedRawX2);
+                            received_x2_trans(
+                                app,
+                                ctx,
+                                &session,
+                                kid_recv,
+                                &nonce,
+                                assembled_packet,
+                                send_associated,
+                            )?;
+                            log!(app, X2IsAuthSentX3(&session));
+                            SessionEvent::Control
+                        }
+                        PACKET_TYPE_KEY_CONFIRM => {
+                            log!(app, ReceivedRawKeyConfirm);
+                            let result =
+                                received_c1_trans(app, ctx, &session, kid_recv, &nonce, assembled_packet,send_associated)?;
+                            log!(app, KeyConfirmIsAuthSentAck(&session));
+                            if result {
+                                SessionEvent::Established
+                            } else {
+                                SessionEvent::Control
+                            }
+                        }
+                        PACKET_TYPE_ACK => {
+                            log!(app, ReceivedRawAck);
+                            received_c2_trans(app, ctx, &session, kid_recv, &nonce, assembled_packet)?;
+                            log!(app, AckIsAuth(&session));
+                            SessionEvent::Control
+                        }
+                        PACKET_TYPE_REKEY_INIT => {
+                            log!(app, ReceivedRawK1);
+                            received_k1_trans(app, ctx, &session, kid_recv, &nonce, assembled_packet, send_associated)?;
+                            log!(app, K1IsAuthSentK2(&session));
+                            SessionEvent::Control
+                        }
+                        PACKET_TYPE_REKEY_COMPLETE => {
+                            log!(app, ReceivedRawK2);
+                            received_k2_trans(app, ctx, &session, kid_recv, &nonce, assembled_packet, send_associated)?;
+                            log!(app, K2IsAuthSentKeyConfirm(&session));
+                            SessionEvent::Control
+                        }
+                        PACKET_TYPE_SESSION_REJECTED => {
+                            log!(app, ReceivedRawD);
+                            received_d_trans(app, ctx, &session, kid_recv, &nonce, assembled_packet)?;
+                            log!(app, DIsAuthClosedSession(&session));
+                            SessionEvent::Rejected
+                        }
+                        _ => return Err(byzantine_fault!(InvalidPacket, true)), // This is unreachable.
+                    }
+                };
+                Ok(ReceiveOk::Session(session, ret))
+            } else {
+                drop(session_map);
+                // Check for and handle PACKET_TYPE_ALICE_NOISE_XK_PATTERN_3
+                let zeta = self.0.unassociated_handshake_states.get(kid_recv);
+                if let Some(zeta) = zeta {
+                    App::PrpDec::new(&zeta.hk_recv).decrypt_in_place(
                         (&mut incoming_fragment[HEADER_AUTH_START..HEADER_AUTH_END])
                             .try_into()
                             .unwrap(),
@@ -222,211 +417,150 @@ impl<App: ApplicationLayer> Context<App> {
                     let (packet_type, incoming_counter) = from_nonce(&nonce);
 
                     {//vrfy
-                        if packet_type != PACKET_TYPE_DATA {
-                            log!(app, ReceivedRawFragment(p, c, fragment_no, fragment_count));
-                        }
-                        if packet_type == PACKET_TYPE_HANDSHAKE_RESPONSE {
-                            if !matches!(&session.state.read().unwrap().beta, ZetaAutomata::A1(_)) {
-                                // A resent handshake response from Bob may have arrived out of order,
-                                // after we already received one.
-                                return Err(byzantine_fault!(OutOfSequence, false));
-                            }
-                            if incoming_counter >= COUNTER_WINDOW_MAX_SKIP_AHEAD {
-                                return Err(byzantine_fault!(ExpiredCounter, true));
-                            }
-                        } else if PACKET_TYPE_USES_COUNTER_RANGE.contains(&packet_type) {
-                            // For DOS resistant reply-protection we need to check that the given counter is
-                            // in the window of valid counters immediately.
-                            // But for packets larger than 1 fragment we can't actually record the
-                            // counter as received until we've authenticated the packet.
-                            // So we check the counter window twice, and only update it the second time
-                            // after the packet has been authenticated.
-                            if !session.window.check(incoming_counter) {
-                                // This can occur naturally if packets arrive way out of order, or
-                                // if they are duplicates.
-                                // This can also be naturally triggered if Bob has just successfully
-                                // received the first session key and is reject all of Alice's resends.
-                                // This can also occur if a session was manually expired, but not
-                                // dropped, and the remote party is still sending us data.
-                                return Err(byzantine_fault!(ExpiredCounter, false));
-                            }
-                        } else if packet_type == PACKET_TYPE_HANDSHAKE_COMPLETION {
-                            // This can be triggered if Bob successfully received a session key and
-                            // needs to reject all of Alice's resends of PACKET_TYPE_NOISE_XK_PATTERN_3.
-                            return Err(byzantine_fault!(InvalidPacket, false));
-                        } else {
-                            return Err(byzantine_fault!(InvalidPacket, true));
+                        log!(app, ReceivedRawFragment(packet_type, incoming_counter, frag_no, frag_count));
+                        if packet_type != PACKET_TYPE_HANDSHAKE_COMPLETION || incoming_counter != 0 {
+                            return Err(byzantine_fault!(InvalidPacket, true))
                         }
                     }
 
-                    // Handle defragmentation.
-                    let fragments = if fragment_count > 1 {
-                        let idx = incoming_counter as usize % session.defrag.len();
-                        session.defrag[idx].lock().unwrap().assemble(
+                    let mut buffer = ArrayVec::<u8, HANDSHAKE_COMPLETION_MAX_SIZE>::new();
+                    let assembled_packet = if fragment_count > 1 {
+                        zeta.defrag.lock().unwrap().assemble(
                             &nonce,
                             incoming_fragment_buf,
                             fragment_no,
                             fragment_count,
-                            &mut assembled_packet,
+                            &mut fragment_buffer
                         );
-                        if assembled_packet.is_empty() {
-                            // We have not yet authenticated the sender so we do not report
-                            // receiving a packet from them.
+                        if fragment_buffer.is_empty() {
                             return Ok(ReceiveOk::Unassociated);
                         } else {
-                            assembled_packet.as_ref()
+                            for fragment in fragment_buffer.as_ref() {
+                                buffer.try_extend_from_slice(&fragment.as_ref()[HEADER_SIZE..]).map_err(|_| byzantine_fault!(InvalidPacket, true))?;
+                            }
+                            buffer.as_mut()
                         }
                     } else {
-                        std::slice::from_ref(&incoming_fragment_buf)
+                        &mut incoming_fragment_buf.as_mut()[HEADER_SIZE..]
                     };
-
-                    match packet_type {
-                        PACKET_TYPE_DATA => {
-                            let state = session.state.read().unwrap();
-                            // The error here can occur because the other party is using a brand new
-                            // session key that we have not received yet.
-                            let key = state.cipher_states[key_index]
-                                .as_ref()
-                                .ok_or(byzantine_fault!(FaultType::OutOfSequence, true))?;
-                            let mut c = key.get_receive_cipher(incoming_counter);
-                            c.set_iv(&create_message_nonce(packet_type, incoming_counter));
-
-                            let mut data_len = 0;
-
-                            // Decrypt fragments 0..N-1 where N is the number of fragments.
-                            for f in fragments[..(fragments.len() - 1)].iter() {
-                                let f: &[u8] = f.as_ref();
-                                debug_assert!(f.len() >= HEADER_SIZE);
-                                let current_frag_data_start = data_len;
-                                data_len += f.len() - HEADER_SIZE;
-                                if data_len > data_buf.len() {
-                                    return Err(ReceiveError::DataBufferTooSmall);
-                                }
-                                c.decrypt(&f[HEADER_SIZE..], &mut data_buf[current_frag_data_start..data_len]);
-                            }
-
-                            // Decrypt final fragment (or only fragment if not fragmented)
-                            let current_frag_data_start = data_len;
-                            let last_fragment = fragments.last().unwrap().as_ref();
-                            if last_fragment.len() < (HEADER_SIZE + AES_GCM_TAG_SIZE) {
-                                return Err(byzantine_fault!(FaultType::InvalidPacket, false));
-                            }
-                            data_len += last_fragment.len() - (HEADER_SIZE + AES_GCM_TAG_SIZE);
-                            if data_len > data_buf.len() {
-                                return Err(ReceiveError::DataBufferTooSmall);
-                            }
-                            let payload_end = last_fragment.len() - AES_GCM_TAG_SIZE;
-                            c.decrypt(&last_fragment[HEADER_SIZE..payload_end], &mut data_buf[current_frag_data_start..data_len]);
-
-                            let aead_authentication_ok = c.finish_decrypt(&last_fragment[payload_end..].try_into().unwrap());
-                            drop(c);
-                            drop(state);
-
-                            if !aead_authentication_ok {
-                                return Err(byzantine_fault!(FaultType::FailedAuthentication, false));
-                            }
-                            if !session.update_receive_window(incoming_counter) {
-                                // This can be naturally triggered because Bob has just
-                                // successfully received a session key and needs to reject
-                                // all of Alice's resends.
-                                // This can also occur naturally if some part of the outer
-                                // system is duplicating the packets being sent to us.
-                                // We are safely deduplicating them here.
-                                return Err(byzantine_fault!(FaultType::ExpiredCounter, true));
-                            }
-                            // Packet fully authenticated
-                            return Ok(ReceiveOk::Session(session, SessionEvent::Data(&mut data_buf[..data_len])));
-                        }
-                        PACKET_TYPE_HANDSHAKE_RESPONSE => {
-                            (Some(session), packet_type, fragments)
-                        }
-                    }
-                } else {
-                    drop(session_map);
-                    // Check for and handle PACKET_TYPE_ALICE_NOISE_XK_PATTERN_3
-                    incoming = self.0.unassociated_handshake_states.get(kid_recv);
-                    if let Some(incoming) = incoming.as_ref() {
-                        App::PrpDec::new(&incoming.hk_recv).decrypt_in_place(
-                            (&mut incoming_fragment[HEADER_AUTH_START..HEADER_AUTH_END])
-                                .try_into()
-                                .unwrap(),
-                        );
-
-                        let (fragment_no, fragment_count, nonce) = parse_fragment_header(incoming_fragment)?;
-                        let (packet_type, incoming_counter) = from_nonce(&nonce);
-
-                        {//vrfy
-                            log!(app, ReceivedRawFragment(packet_type, incoming_counter, frag_no, frag_count));
-                            if packet_type != PACKET_TYPE_HANDSHAKE_COMPLETION || incoming_counter != 0 {
-                               return Err(byzantine_fault!(InvalidPacket, true))
-                            }
-                        }
-
-                        let fragments = if fragment_count > 1 {
-                            incoming.defrag.lock().unwrap().assemble(
-                                &nonce,
-                                incoming_fragment_buf,
-                                fragment_no,
-                                fragment_count,
-                                &mut assembled_packet,
-                            );
-                            if !assembled_packet.is_empty() {
-                                assembled_packet.as_ref()
-                            } else {
-                                return Ok(ReceiveOk::Unassociated);
-                            }
-                        } else {
-                            std::slice::from_ref(&incoming_fragment_buf)
-                        };
-                        // We must guarantee that this incoming handshake is processed once and only
-                        // once. This prevents catastrophic nonce reuse caused by multithreading.
-                        if self.0.unassociated_handshake_states.remove(kid_recv) {
-                            (None, PACKET_TYPE_HANDSHAKE_COMPLETION, fragments)
-                        } else {
-                            return Ok(ReceiveOk::Unassociated);
-                        }
-                    } else {
-                        // This can occur naturally because either Bob's incoming_sessions cache got
-                        // full so Alice's incoming session was dropped, or the session this packet
-                        // was for was dropped by the application.
-                        return Err(byzantine_fault!(UnknownLocalKeyId, true));
-                    }
-                }
-            } else {
-                let (fragment_no, fragment_count, nonce) = parse_fragment_header(incoming_fragment)?;
-                let (packet_type, incoming_counter) = from_nonce(&nonce);
-
-                {//vrfy
-                    log!(app, ReceivedRawFragment(packet_type, incoming_counter, frag_no, frag_count));
-                    if packet_type != PACKET_TYPE_HANDSHAKE_HELLO && packet_type != PACKET_TYPE_CHALLENGE {
-                        return Err(byzantine_fault!(InvalidPacket, true))
-                    }
-                }
-
-                let fragments = if fragment_count > 1 {
-                    self.0.unassociated_defrag_cache.lock().unwrap().assemble(
-                        &nonce,
-                        remote_address,
-                        incoming_fragment.len() - HEADER_SIZE,
-                        incoming_fragment_buf,
-                        fragment_no,
-                        fragment_count,
-                        App::SETTINGS.resend_time as i64,
-                        current_time,
-                        &mut assembled_packet,
-                    );
-                    if !assembled_packet.is_empty() {
-                        assembled_packet.as_ref()
-                    } else {
+                    // We must guarantee that this incoming handshake is processed once and only
+                    // once. This prevents catastrophic nonce reuse caused by multithreading.
+                    if !self.0.unassociated_handshake_states.remove(kid_recv) {
                         return Ok(ReceiveOk::Unassociated);
                     }
+
+                    log!(app, ReceivedRawX3);
+                    let session = received_x3_trans(app, ctx, zeta, kid_recv, assembled_packet, |packet, hk_send| {
+                        send_with_fragmentation(
+                            send_unassociated_reply,
+                            send_unassociated_mtu,
+                            packet,
+                            hk_send,
+                        );
+                    })?;
+                    log!(app, X3IsAuthSentKeyConfirm(&session));
+                    Ok(ReceiveOk::Session(session, SessionEvent::NewSession))
                 } else {
-                    std::array::from_ref(&incoming_fragment_buf)
-                };
-                (None, packet_type, fragments)
+                    // This can occur naturally because either Bob's incoming_sessions cache got
+                    // full so Alice's incoming session was dropped, or the session this packet
+                    // was for was dropped by the application.
+                    return Err(byzantine_fault!(UnknownLocalKeyId, true));
+                }
             }
-        };
+        } else {
+            let (fragment_no, fragment_count, nonce) = parse_fragment_header(incoming_fragment)?;
+            let (packet_type, _c) = from_nonce(&nonce);
+
+            {//vrfy
+                log!(app, ReceivedRawFragment(packet_type, _c, frag_no, frag_count));
+                if packet_type != PACKET_TYPE_HANDSHAKE_HELLO && packet_type != PACKET_TYPE_CHALLENGE {
+                    return Err(byzantine_fault!(InvalidPacket, true))
+                }
+            }
+
+            let mut buffer = ArrayVec::<u8, HANDSHAKE_HELLO_MAX_SIZE>::new();
+            let assembled_packet = if fragment_count > 1 {
+                self.0.unassociated_defrag_cache.lock().unwrap().assemble(
+                    &nonce,
+                    remote_address,
+                    incoming_fragment.len() - HEADER_SIZE,
+                    incoming_fragment_buf,
+                    fragment_no,
+                    fragment_count,
+                    App::SETTINGS.resend_time as i64,
+                    app.time(),
+                    &mut fragment_buffer
+                );
+                if fragment_buffer.is_empty() {
+                    return Ok(ReceiveOk::Unassociated);
+                } else {
+                    for fragment in fragment_buffer.as_ref() {
+                        buffer.try_extend_from_slice(&fragment.as_ref()[HEADER_SIZE..]).map_err(|_| byzantine_fault!(InvalidPacket, true))?;
+                    }
+                    buffer.as_mut()
+                }
+            } else {
+                &mut incoming_fragment_buf.as_mut()[HEADER_SIZE..]
+            };
+
+            if packet_type == PACKET_TYPE_HANDSHAKE_HELLO {
+                log!(app, ReceivedRawX1);
+
+                if !(HANDSHAKE_HELLO_CHALLENGE_MIN_SIZE..=HANDSHAKE_HELLO_CHALLENGE_MAX_SIZE).contains(&assembled_packet.len()) {
+                    return Err(byzantine_fault!(InvalidPacket, true));
+                }
+                // Process recv challenge layer.
+                let challenge_start = assembled_packet.len() - CHALLENGE_SIZE;
+                let result = ctx.challenge.process_hello::<App::Hash>(remote_address, (&assembled_packet[challenge_start..]).try_into().unwrap());
+                if let Err(challenge) = result {
+                    log!(app, X1FailedChallengeSentNewChallenge);
+                    let mut challenge_packet = ArrayVec::<u8, HEADERED_CHALLENGE_SIZE>::new();
+                    challenge_packet.extend([0u8; HEADER_SIZE]);
+                    challenge_packet.try_extend_from_slice(&assembled_packet[..KID_SIZE]).unwrap();
+                    challenge_packet.extend(challenge);
+                    let nonce = to_nonce(PACKET_TYPE_CHALLENGE, ctx.rng.lock().unwrap().next_u64());
+                    challenge_packet[FRAGMENT_COUNT_IDX] = 1;
+                    challenge_packet[PACKET_NONCE_START..HEADER_SIZE].copy_from_slice(&nonce);
+
+                    send_unassociated_reply(&mut challenge_packet);
+                    // If we issue a challenge the first hello packet will always fail.
+                    return Err(byzantine_fault!(FailedAuth, false));
+                } else {
+                    log!(app, X1SucceededChallenge);
+                }
+
+                // Process recv zeta layer.
+                received_x1_trans(app, ctx, &nonce, assembled_packet, |packet, hk_send| {
+                    send_with_fragmentation(
+                        send_unassociated_reply,
+                        send_unassociated_mtu,
+                        packet,
+                        hk_send,
+                    );
+                })?;
+                log!(app, X1IsAuthSentX2);
+
+                Ok(ReceiveOk::Unassociated)
+            } else if packet_type == PACKET_TYPE_CHALLENGE {
+                log!(app, ReceivedRawChallenge);
+                // Process recv challenge layer.
+                if assembled_packet.len() != KID_SIZE + CHALLENGE_SIZE {
+                    return Err(byzantine_fault!(InvalidPacket, true));
+                }
+                if let Some(kid_recv) = NonZeroU32::new(u32::from_be_bytes(assembled_packet[..KID_SIZE].try_into().unwrap())) {
+                    if let Some(Some(session)) = ctx.session_map.read().unwrap().get(&kid_recv).map(|r| r.upgrade()) {
+                        respond_to_challenge(ctx, &session, &assembled_packet[KID_SIZE..].try_into().unwrap());
+                        log!(app, ChallengeIsAuth(&session));
+                        return Ok(ReceiveOk::Unassociated);
+                    }
+                }
+                Err(byzantine_fault!(UnknownLocalKeyId, true))
+            } else {
+                Err(byzantine_fault!(InvalidPacket, true))
+            }
+        }
     }
+    /*
     /// Send data over the session.
     ///
     /// * `session` - The session to send to
@@ -672,60 +806,5 @@ impl<App: ApplicationLayer> Context<App> {
         self.0.unassociated_handshake_states.service(current_time);
 
         next_service_time
-    }
-}
-
-impl<Application: ApplicationLayer> Session<Application> {
-    ///
-    ///// The current ratchet state of this session.
-    ///// The returned values are sensitive and should be securely erased before being dropped.
-    //pub fn ratchet_states(&self) -> [RatchetState; 2] {
-    //    let state = self.state.read().unwrap();
-    //    state.ratchet_states.clone()
-    //}
-    /// The current ratchet count of this session.
-    //pub fn ratchet_count(&self) -> u64 {
-    //    self.state.read().unwrap().
-    //}
-    /// Mark a session as expired. This will make it impossible for this session to successfully
-    /// receive or send data or control packets. It is recommended to simply `drop` the session
-    /// instead, but this can provide some reassurance in complex shared ownership situations.
-    //pub fn expire(&self) {
-    //    if let Some(context) = self.context.upgrade() {
-    //        self.expire_inner(&context, &mut context.session_queue.lock().unwrap());
-    //    }
-    //}
-    //fn expire_inner(
-    //    &self,
-    //    context: &Arc<ContextInner<Application>>,
-    //    session_queue: &mut IndexedBinaryHeap<Weak<Session<Application>>, Reverse<i64>>,
-    //) {
-    //    // Prevent this session from being updated.
-    //    session_queue.remove(self.queue_idx);
-    //    self.session_has_expired.store(true, Ordering::Relaxed);
-    //    let _kex_lock = self.state_machine_lock.lock().unwrap();
-    //    let mut state = self.state.write().unwrap();
-    //    let mut session_map = context.session_map.write().unwrap();
-    //    for key in &state.cipher_states {
-    //        if let Some(pre_id) = key.as_ref().map(|k| k.local_key_id) {
-    //            session_map.remove(&pre_id);
-    //        }
-    //    }
-    //    use OfferStateMachine::*;
-    //    match &state.outgoing_offer {
-    //        NoiseXKPattern1or3(handshake_state) => session_map.remove(&handshake_state.local_key_id),
-    //        NoiseKKPattern1 { new_key_id, .. } => session_map.remove(new_key_id),
-    //        _ => None,
-    //    };
-    //    state.outgoing_offer = OfferStateMachine::Null;
-    //}
-    /// Check whether this session is established.
-    pub fn established(&self) -> bool {
-        let state = self.state.read().unwrap();
-        !matches!(&state.beta, ZetaAutomata::A1(_) | ZetaAutomata::A3 {..} | ZetaAutomata::Null)
-    }
-    /// The static public key of the remote peer.
-    pub fn remote_static_key(&self) -> &Application::PublicKey {
-        &self.s_remote
-    }
+    } */
 }

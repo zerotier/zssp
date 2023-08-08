@@ -61,8 +61,8 @@ pub enum FaultType {
 }
 
 /// An error that occurred during the receipt of a given packet.
-#[derive(Debug, PartialEq, Eq, Clone, Hash)]
-pub enum ReceiveError<IoError> {
+#[derive(Debug)]
+pub enum ReceiveError<StorageError> {
     /// A type of fault that can occur because a remote peer sent us a bad packet.
     /// Such packets will be ignored by ZSSP but a user of ZSSP might want to log
     /// them for debugging or tracing.
@@ -104,7 +104,9 @@ pub enum ReceiveError<IoError> {
 
     /// One of the ratchet saving or lookup functions returned an error, so the packet had to be
     /// dropped.
-    RatchetIoError(IoError),
+    StorageError(StorageError),
+
+    IoError(std::io::Error),
 }
 
 macro_rules! byzantine_fault {
@@ -158,7 +160,7 @@ pub enum SessionEvent {
     /// This return value cannot occur after a session is fully established.
     Rejected,
     /// The received packet was valid and a data payload was decoded and authenticated.
-    Data(Vec<u8>),
+    Data,
     /// The received packet was some authentic protocol control packet. No action needs to be taken.
     Control,
 }

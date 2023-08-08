@@ -152,7 +152,7 @@ impl<App: ApplicationLayer> SymmetricState<App> {
     }
     /// Corresponds to Noise `EncryptAndHash`.
     #[must_use]
-    pub fn encrypt_and_hash_in_place<const CAP: usize>(&mut self, hash: &mut App::Hash, iv: [u8; AES_GCM_IV_SIZE], data: &mut [u8]) -> [u8; AES_GCM_TAG_SIZE] {
+    pub fn encrypt_and_hash_in_place(&mut self, hash: &mut App::Hash, iv: [u8; AES_GCM_IV_SIZE], data: &mut [u8]) -> [u8; AES_GCM_TAG_SIZE] {
         let tag = App::Aead::encrypt_in_place(&self.k, &iv, &self.h, data);
         hash.update(&self.h);
         hash.update(data);

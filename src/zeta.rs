@@ -2,10 +2,11 @@ use arrayvec::ArrayVec;
 use rand_core::RngCore;
 use std::cmp::Reverse;
 use std::collections::HashMap;
+use std::io::Write;
 use std::num::NonZeroU32;
 use std::ops::{Deref, DerefMut};
-use std::sync::atomic::{AtomicU64, Ordering, AtomicBool};
-use std::sync::{Arc, Mutex, Weak, RwLock};
+use std::sync::atomic::{AtomicU64, Ordering, AtomicBool, AtomicI64};
+use std::sync::{Arc, Mutex, Weak, RwLock, MutexGuard, RwLockWriteGuard};
 use zeroize::Zeroizing;
 
 use crate::antireplay::Window;
@@ -21,7 +22,7 @@ use crate::crypto::kyber1024::{Kyber1024PrivateKey, KYBER_PUBLIC_KEY_SIZE, KYBER
 use crate::indexed_heap::BinaryHeapIndex;
 use crate::proto::*;
 use crate::ratchet_state::RatchetState;
-use crate::result::{byzantine_fault, FaultType, OpenError, ReceiveError, SendError};
+use crate::result::{byzantine_fault, FaultType, OpenError, ReceiveError, SendError, ReceiveOk};
 use crate::symmetric_state::SymmetricState;
 use crate::fragged::Fragged;
 #[cfg(feature = "logging")]
@@ -68,8 +69,8 @@ fn get_counter<App: ApplicationLayer>(session: &Session<App>, state: &MutableSta
 }
 
 /// Corresponds to the Zeta State Machine found in Section 4.1.
-pub(crate) struct Session<App: ApplicationLayer> {
-    //ctx: Weak<ContextInner<App>>,
+pub struct Session<App: ApplicationLayer> {
+    ctx: Weak<ContextInner<App>>,
     /// An arbitrary application defined object associated with each session.
     pub session_data: App::SessionData,
     /// Is true if the local peer acted as Bob, the responder in the initial key exchange.
@@ -85,7 +86,9 @@ pub(crate) struct Session<App: ApplicationLayer> {
     pub(crate) hk_send: App::PrpEnc,
     pub(crate) hk_recv: App::PrpDec,
 
+    /// `session_queue -> state_machine_lock -> state -> session_map`
     state_machine_lock: Mutex<()>,
+    /// `session_queue -> state_machine_lock -> state -> session_map`
     pub(crate) state: RwLock<MutableState<App>>,
 
     /// Pre-computed rekeying value.
@@ -99,7 +102,7 @@ pub(crate) struct MutableState<App: ApplicationLayer> {
     key_index: bool,
     keys: [DuplexKey<App>; 2],
 
-    resend_timer: i64,
+    resend_timer: AtomicI64,
     timeout_timer: i64,
     pub beta: ZetaAutomata<App>,
 }
@@ -190,7 +193,7 @@ impl<App: ApplicationLayer> SymmetricState<App> {
         self.mix_key(hmac, &pub_key);
         e_secret
     }
-    fn read_e<const CAP: usize>(&mut self, hash: &mut App::Hash, hmac: &mut App::HmacHash, i: &mut usize, packet: &[u8]) -> Option<App::PublicKey> {
+    fn read_e(&mut self, hash: &mut App::Hash, hmac: &mut App::HmacHash, i: &mut usize, packet: &[u8]) -> Option<App::PublicKey> {
         let j = *i + P384_PUBLIC_KEY_SIZE;
         let pub_key = &packet[*i..j];
         self.mix_hash(hash, pub_key);
@@ -227,9 +230,6 @@ impl<App: ApplicationLayer> MutableState<App> {
     fn key_mut(&mut self, is_next: bool) -> &mut DuplexKey<App> {
         &mut self.keys[(self.key_index ^ is_next) as usize]
     }
-    pub(crate) fn next_timer(&self) -> i64 {
-        self.timeout_timer.min(self.resend_timer)
-    }
 }
 
 fn set_header(packet: &mut [u8], kid_send: u32, nonce: &[u8; AES_GCM_IV_SIZE]) {
@@ -265,7 +265,8 @@ fn create_a1_state<App: ApplicationLayer>(
     let (e1_secret, e1_public) = App::Kem::generate(rng.lock().unwrap().deref_mut());
     x1.extend(e1_public);
     x1.extend([0u8; AES_GCM_IV_SIZE]);
-    x1.extend(noise.encrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_HANDSHAKE_HELLO, 0), &mut x1[i..]));
+    let tag = noise.encrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_HANDSHAKE_HELLO, 0), &mut x1[i..]);
+    x1.extend(tag);
     // Process message pattern 1 payload.
     let i = x1.len();
     if let Some(rf) = ratchet_state1.fingerprint() {
@@ -274,7 +275,8 @@ fn create_a1_state<App: ApplicationLayer>(
     if let Some(Some(rf)) = ratchet_state2.map(|rs| rs.fingerprint()) {
         x1.try_extend_from_slice(rf).unwrap();
     }
-    x1.extend(noise.encrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_HANDSHAKE_HELLO, 1), &mut x1[i..]));
+    let tag = noise.encrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_HANDSHAKE_HELLO, 1), &mut x1[i..]);
+    x1.extend(tag);
 
     let c = u64::from_be_bytes(x1[x1.len() - 8..].try_into().unwrap());
 
@@ -325,7 +327,9 @@ pub(crate) fn trans_to_a1<App: ApplicationLayer>(
 
     let current_time = app.time();
     let queue_idx = session_queue.reserve_index();
-    let mut session = Arc::new(Session {
+    let resend_timer = current_time + App::SETTINGS.resend_time as i64;
+    let session = Arc::new(Session {
+        ctx: Arc::downgrade(ctx),
         session_data,
         was_bob: false,
         queue_idx,
@@ -340,7 +344,7 @@ pub(crate) fn trans_to_a1<App: ApplicationLayer>(
             key_creation_counter: 0,
             key_index: true,
             keys: [DuplexKey::default(), DuplexKey::default()],
-            resend_timer: current_time + App::SETTINGS.resend_time as i64,
+            resend_timer: AtomicI64::new(resend_timer),
             timeout_timer: current_time + App::SETTINGS.initial_offer_timeout as i64,
             beta: ZetaAutomata::A1(a1),
         }),
@@ -349,14 +353,16 @@ pub(crate) fn trans_to_a1<App: ApplicationLayer>(
         hk_send: App::PrpEnc::new((&hk_send[..AES_256_KEY_SIZE]).try_into().unwrap()),
         hk_recv: App::PrpDec::new((&hk_recv[..AES_256_KEY_SIZE]).try_into().unwrap()),
     });
-    let mut state = session.state.write().unwrap();
-    state.key_mut(true).recv.kid = Some(kid_recv);
+    {
+        let mut state = session.state.write().unwrap();
+        state.key_mut(true).recv.kid = Some(kid_recv);
+    }
 
     session_map.insert(kid_recv, Arc::downgrade(&session));
     session_queue.push_reserved(
         queue_idx,
         Arc::downgrade(&session),
-        Reverse(state.next_timer()),
+        Reverse(resend_timer),
     );
 
     send(&mut x1, None);
@@ -364,12 +370,12 @@ pub(crate) fn trans_to_a1<App: ApplicationLayer>(
     Ok(session)
 }
 /// Corresponds to Algorithm 13 found in Section 5.
-pub(crate) fn respond_to_challenge<App: ApplicationLayer>(session: &mut Session<App>, rng: &Mutex<App::Rng>, challenge: &[u8; CHALLENGE_SIZE]) {
+pub(crate) fn respond_to_challenge<App: ApplicationLayer>(ctx: &Arc<ContextInner<App>>, session: &Session<App>,  challenge: &[u8; CHALLENGE_SIZE]) {
     let mut state = session.state.write().unwrap();
     if let ZetaAutomata::A1(a1) = &mut state.beta {
         let response_start = a1.x1.len() - CHALLENGE_SIZE;
         respond_to_challenge_in_place::<App::Rng, App::Hash>(
-            rng.lock().unwrap().deref_mut(),
+            ctx.rng.lock().unwrap().deref_mut(),
             challenge,
             (&mut a1.x1[response_start..]).try_into().unwrap(),
         );
@@ -379,8 +385,7 @@ pub(crate) fn respond_to_challenge<App: ApplicationLayer>(session: &mut Session<
 pub(crate) fn received_x1_trans<App: ApplicationLayer>(
     app: &App,
     ctx: &ContextInner<App>,
-    remote_address: &impl std::hash::Hash,
-    n: [u8; AES_GCM_IV_SIZE],
+    n: &[u8; AES_GCM_IV_SIZE],
     x1: &mut [u8],
     send: impl FnOnce(&mut [u8], Option<&App::PrpEnc>),
 ) -> Result<(), ReceiveError<App::StorageError>> {
@@ -391,12 +396,6 @@ pub(crate) fn received_x1_trans<App: ApplicationLayer>(
     //    <- e, ee, ekem1, psk
     if !(HANDSHAKE_HELLO_CHALLENGE_MIN_SIZE..=HANDSHAKE_HELLO_CHALLENGE_MAX_SIZE).contains(&x1.len()) {
         return Err(byzantine_fault!(InvalidPacket, true));
-    }
-
-    if let Err(challenge) = ctx.challenge.process_hello::<App::Hash>(remote_address, (&x1[x1.len() - CHALLENGE_SIZE..]).try_into().unwrap()) {
-        ///
-
-        return Err(byzantine_fault!(FailedAuth, false));
     }
 
     if &n[AES_GCM_IV_SIZE - 8..] != &x1[x1.len() - 8..] {
@@ -442,7 +441,7 @@ pub(crate) fn received_x1_trans<App: ApplicationLayer>(
                 ratchet_state = Some(rs);
                 break;
             }
-            Err(e) => return Err(ReceiveError::RatchetIoError(e)),
+            Err(e) => return Err(ReceiveError::StorageError(e)),
         }
         i += RATCHET_SIZE;
     }
@@ -470,7 +469,8 @@ pub(crate) fn received_x1_trans<App: ApplicationLayer>(
         let mut ekem1_secret = Zeroizing::new([0u8; KYBER_PLAINTEXT_SIZE]);
         let ekem1 = App::Kem::encapsulate(ctx.rng.lock().unwrap().deref_mut(), (&x1[e1_start..e1_end]).try_into().unwrap(), &mut ekem1_secret).ok_or(byzantine_fault!(FailedAuth, true))?;
         x2.extend(ekem1);
-        x2.extend(noise.encrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_HANDSHAKE_RESPONSE, 0), &mut x2[i..]));
+        let tag = noise.encrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_HANDSHAKE_RESPONSE, 0), &mut x2[i..]);
+        x2.extend(tag);
         noise.mix_key(hmac, ekem1_secret.as_ref());
     }
     // Process message pattern 2 psk2 token.
@@ -480,7 +480,8 @@ pub(crate) fn received_x1_trans<App: ApplicationLayer>(
 
     let i = x2.len();
     x2.extend(kid_recv.get().to_be_bytes());
-    x2.extend(noise.encrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_HANDSHAKE_RESPONSE, 0), &mut x2[i..]));
+    let tag = noise.encrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_HANDSHAKE_RESPONSE, 0), &mut x2[i..]);
+    x2.extend(tag);
 
     let i = x2.len();
     let mut c = 0u64.to_be_bytes();
@@ -515,8 +516,8 @@ pub(crate) fn received_x2_trans<App: ApplicationLayer>(
     ctx: &Arc<ContextInner<App>>,
     session: &Arc<Session<App>>,
     kid: NonZeroU32,
-    n: [u8; AES_GCM_IV_SIZE],
-    mut x2: &[u8],
+    n: &[u8; AES_GCM_IV_SIZE],
+    x2: &mut [u8],
     send: impl FnOnce(&mut [u8], Option<&App::PrpEnc>),
 ) -> Result<(), ReceiveError<App::StorageError>> {
     use FaultType::*;
@@ -534,122 +535,128 @@ pub(crate) fn received_x2_trans<App: ApplicationLayer>(
     if Some(kid) != state.key_ref(true).recv.kid {
         return Err(byzantine_fault!(UnknownLocalKeyId, true));
     }
-    let (_, c) = from_nonce(&n);
+    let (_, c) = from_nonce(n);
     if c >= COUNTER_WINDOW_MAX_SKIP_AHEAD || &n[AES_GCM_IV_SIZE - 3..] != &x2[x2.len() - 3..] {
         return Err(byzantine_fault!(FailedAuth, true));
     }
     let mut result = (|| {
-        if let ZetaAutomata::A1(a1) = &state.beta {
-            let mut noise = a1.noise.clone();
-            let mut i = 0;
-            // Process message pattern 2 e token.
-            let e_remote = noise.read_e(hash, hmac, &mut i, &x2).ok_or(byzantine_fault!(FailedAuth, true))?;
-            // Process message pattern 2 ee token.
-            noise.mix_dh(hmac, &a1.e_secret, &e_remote).ok_or(byzantine_fault!(FailedAuth, true))?;
-            // Process message pattern 2 ekem1 token.
-            let j = i + KYBER_CIPHERTEXT_SIZE;
-            let k = j + AES_GCM_TAG_SIZE;
-            let tag = x2[j..k].try_into().unwrap();
-            if !noise.decrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_HANDSHAKE_RESPONSE, 0), &mut x2[i..j], tag) {
-                return Err(byzantine_fault!(FailedAuth, true));
+        let a1 = if let ZetaAutomata::A1(a1) = &state.beta {
+            a1
+        } else {
+            return Err(byzantine_fault!(FailedAuth, true));
+        };
+        let mut noise = a1.noise.clone();
+        let mut i = 0;
+        // Process message pattern 2 e token.
+        let e_remote = noise.read_e(hash, hmac, &mut i, &x2).ok_or(byzantine_fault!(FailedAuth, true))?;
+        // Process message pattern 2 ee token.
+        noise.mix_dh(hmac, &a1.e_secret, &e_remote).ok_or(byzantine_fault!(FailedAuth, true))?;
+        // Process message pattern 2 ekem1 token.
+        let j = i + KYBER_CIPHERTEXT_SIZE;
+        let k = j + AES_GCM_TAG_SIZE;
+        let tag = x2[j..k].try_into().unwrap();
+        if !noise.decrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_HANDSHAKE_RESPONSE, 0), &mut x2[i..j], tag) {
+            return Err(byzantine_fault!(FailedAuth, true));
+        }
+        let mut ekem1_secret = Zeroizing::new([0u8; KYBER_PLAINTEXT_SIZE]);
+        if !a1.e1_secret.decapsulate((&x2[i..j]).try_into().unwrap(), &mut ekem1_secret) {
+            return Err(byzantine_fault!(FailedAuth, true));
+        }
+        noise.mix_key(hmac, ekem1_secret.as_ref());
+        drop(ekem1_secret);
+        i = j;
+        // We attempt to decrypt the payload at most three times. First two times with
+        // the ratchet key Alice remembers, and final time with a ratchet
+        // key of zero if Alice allows ratchet downgrades.
+        // The following code is not constant time, meaning we leak to an
+        // attacker whether or not we downgraded.
+        // We don't currently consider this sensitive enough information to hide.
+        let j = i + KID_SIZE;
+        let k = j + AES_GCM_TAG_SIZE;
+        let payload: [u8; KID_SIZE] = x2[i..j].try_into().unwrap();
+        let tag = x2[j..k].try_into().unwrap();
+        // Check for which ratchet key Bob wants to use.
+        let mut test_ratchet_key = |ratchet_key| -> Option<(NonZeroU32, SymmetricState<App>)> {
+            let mut noise = noise.clone();
+            let mut payload = payload.clone();
+            // Process message pattern 2 psk token.
+            noise.mix_key_and_hash(hash, hmac, ratchet_key);
+            // Process message pattern 2 payload.
+            if !noise.decrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_HANDSHAKE_RESPONSE, 0), &mut payload, tag) {
+                return None;
             }
-            let mut ekem1_secret = Zeroizing::new([0u8; KYBER_PLAINTEXT_SIZE]);
-            if !a1.e1_secret.decapsulate((&x2[i..j]).try_into().unwrap(), &mut ekem1_secret) {
-                return Err(byzantine_fault!(FailedAuth, true));
+            NonZeroU32::new(u32::from_be_bytes(payload)).map(|kid2| (kid2, noise))
+        };
+        // Check first key.
+        let mut ratchet_i = 1;
+        let mut chain_len = state.ratchet_state1.chain_len;
+        let mut result = test_ratchet_key(state.ratchet_state1.key.as_ref());
+        // Check second key.
+        if result.is_none() {
+            ratchet_i = 2;
+            if let Some(rs) = state.ratchet_state2.as_ref() {
+                chain_len = rs.chain_len;
+                result = test_ratchet_key(rs.key.as_ref());
             }
-            noise.mix_key(hmac, ekem1_secret.as_ref());
-            drop(ekem1_secret);
-            i = j;
-            // We attempt to decrypt the payload at most three times. First two times with
-            // the ratchet key Alice remembers, and final time with a ratchet
-            // key of zero if Alice allows ratchet downgrades.
-            // The following code is not constant time, meaning we leak to an
-            // attacker whether or not we downgraded.
-            // We don't currently consider this sensitive enough information to hide.
-            let j = i + KID_SIZE;
-            let k = j + AES_GCM_TAG_SIZE;
-            let payload: [u8; KID_SIZE] = x2[i..j].try_into().unwrap();
-            let tag = x2[j..k].try_into().unwrap();
-            // Check for which ratchet key Bob wants to use.
-            let mut test_ratchet_key = |ratchet_key| -> Option<(NonZeroU32, SymmetricState<App>)> {
-                let mut noise = noise.clone();
-                let mut payload = payload.clone();
-                // Process message pattern 2 psk token.
-                noise.mix_key_and_hash(hash, hmac, ratchet_key);
-                // Process message pattern 2 payload.
-                if !noise.decrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_HANDSHAKE_RESPONSE, 0), &mut payload, tag) {
-                    return None;
-                }
-                NonZeroU32::new(u32::from_be_bytes(payload)).map(|kid2| (kid2, noise))
-            };
-            // Check first key.
-            let mut ratchet_i = 1;
-            let mut chain_len = state.ratchet_state1.chain_len;
-            let mut result = test_ratchet_key(state.ratchet_state1.key.as_ref());
-            // Check second key.
-            if result.is_none() {
-                ratchet_i = 2;
-                if let Some(rs) = state.ratchet_state2.as_ref() {
-                    chain_len = rs.chain_len;
-                    result = test_ratchet_key(rs.key.as_ref());
-                }
+        }
+        // Check zero key.
+        if result.is_none() && !app.initiator_disallows_downgrade(session) {
+            chain_len = 0;
+            result = test_ratchet_key(&[0u8; RATCHET_SIZE]);
+            if result.is_some() {
+                // TODO: add some kind of warning callback or signal.
             }
-            // Check zero key.
-            if result.is_none() && !app.initiator_disallows_downgrade(session) {
-                chain_len = 0;
-                result = test_ratchet_key(&[0u8; RATCHET_SIZE]);
-                if result.is_some() {
-                    // TODO: add some kind of warning callback or signal.
-                }
-            }
+        }
 
-            let (kid_send, mut noise) = result.ok_or(byzantine_fault!(FailedAuth, true))?;
+        let (kid_send, mut noise) = result.ok_or(byzantine_fault!(FailedAuth, true))?;
 
-            let mut x3 = ArrayVec::<u8, HEADERED_HANDSHAKE_COMPLETION_MAX_SIZE>::new();
-            x3.extend([0u8; HEADER_SIZE]);
-            // Process message pattern 3 s token.
-            let i = x3.len();
-            x3.extend(ctx.s_secret.public_key_bytes());
-            x3.extend(noise.encrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_HANDSHAKE_COMPLETION, 1), &mut x3[i..]));
-            // Process message pattern 3 se token.
-            noise.mix_dh(hmac, &ctx.s_secret, &e_remote).ok_or(byzantine_fault!(FailedAuth, true))?;
-            // Process message pattern 3 payload.
-            let i = x3.len();
-            x3.try_extend_from_slice(&a1.identity).unwrap();
-            x3.extend(noise.encrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_HANDSHAKE_COMPLETION, 0), &mut x3[i..]));
+        let mut x3 = ArrayVec::<u8, HEADERED_HANDSHAKE_COMPLETION_MAX_SIZE>::new();
+        x3.extend([0u8; HEADER_SIZE]);
+        // Process message pattern 3 s token.
+        let i = x3.len();
+        x3.extend(ctx.s_secret.public_key_bytes());
+        let tag = noise.encrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_HANDSHAKE_COMPLETION, 1), &mut x3[i..]);
+        x3.extend(tag);
+        // Process message pattern 3 se token.
+        noise.mix_dh(hmac, &ctx.s_secret, &e_remote).ok_or(byzantine_fault!(FailedAuth, true))?;
+        // Process message pattern 3 payload.
+        let i = x3.len();
+        x3.try_extend_from_slice(&a1.identity).unwrap();
+        let tag = noise.encrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_HANDSHAKE_COMPLETION, 0), &mut x3[i..]);
+        x3.extend(tag);
 
-            let new_ratchet_state = create_ratchet_state(hmac, &mut noise, chain_len);
+        let new_ratchet_state = create_ratchet_state(hmac, &mut noise, chain_len);
 
-            let (ratchet_to_preserve, ratchet_to_delete) = if ratchet_i == 1 {
-                (Some(&state.ratchet_state1), state.ratchet_state2.as_ref())
-            } else {
-                (state.ratchet_state2.as_ref(), Some(&state.ratchet_state1))
-            };
-            let result = app.save_ratchet_state(
-                &session.s_remote,
-                &session.session_data,
-                RatchetUpdate {
-                    state1: &new_ratchet_state,
-                    state2: ratchet_to_preserve,
-                    state1_was_just_added: true,
-                    state_deleted1: ratchet_to_delete,
-                    state_deleted2: None,
-                },
-            );
-            if let Err(e) = result {
-                return Err(ReceiveError::RatchetIoError(e));
-            }
+        let (ratchet_to_preserve, ratchet_to_delete) = if ratchet_i == 1 {
+            (Some(&state.ratchet_state1), state.ratchet_state2.as_ref())
+        } else {
+            (state.ratchet_state2.as_ref(), Some(&state.ratchet_state1))
+        };
+        let result = app.save_ratchet_state(
+            &session.s_remote,
+            &session.session_data,
+            RatchetUpdate {
+                state1: &new_ratchet_state,
+                state2: ratchet_to_preserve,
+                state1_was_just_added: true,
+                state_deleted1: ratchet_to_delete,
+                state_deleted2: None,
+            },
+        );
+        if let Err(e) = result {
+            return Err(ReceiveError::StorageError(e));
+        }
 
-            let mut kek_recv = Zeroizing::new([0u8; HASHLEN]);
-            let mut kek_send = Zeroizing::new([0u8; HASHLEN]);
-            let mut nk_recv = Zeroizing::new([0u8; HASHLEN]);
-            let mut nk_send = Zeroizing::new([0u8; HASHLEN]);
-            noise.get_ask(hmac, LABEL_KEX_KEY, &mut kek_recv, &mut kek_send);
-            noise.split(hmac, &mut nk_recv, &mut nk_send);
-            let nonce = to_nonce(PACKET_TYPE_HANDSHAKE_COMPLETION, 0);
+        let mut kek_recv = Zeroizing::new([0u8; HASHLEN]);
+        let mut kek_send = Zeroizing::new([0u8; HASHLEN]);
+        let mut nk_recv = Zeroizing::new([0u8; HASHLEN]);
+        let mut nk_send = Zeroizing::new([0u8; HASHLEN]);
+        noise.get_ask(hmac, LABEL_KEX_KEY, &mut kek_recv, &mut kek_send);
+        noise.split(hmac, &mut nk_recv, &mut nk_send);
+        let nonce = to_nonce(PACKET_TYPE_HANDSHAKE_COMPLETION, 0);
 
-            //let identity = identity.clone();
-            drop(state);
+        drop(state);
+        let resend_timer = {
             let mut state = session.state.write().unwrap();
 
             state.key_mut(true).send.kid = Some(kid_send);
@@ -660,18 +667,28 @@ pub(crate) fn received_x2_trans<App: ApplicationLayer>(
             state.ratchet_state1 = new_ratchet_state.clone();
             let current_time = app.time();
             state.key_creation_counter = session.send_counter.load(Ordering::Relaxed);
-            state.resend_timer = current_time + App::SETTINGS.resend_time as i64;
+            let resend_timer = current_time + App::SETTINGS.resend_time as i64;
+            state.resend_timer = AtomicI64::new(resend_timer);
             state.timeout_timer = current_time + App::SETTINGS.initial_offer_timeout as i64;
+            let a1 = if let ZetaAutomata::A1(a1) = &state.beta {
+                a1
+            } else {
+                // This return is unreachable.
+                return Err(byzantine_fault!(FailedAuth, true));
+            };
             state.beta = ZetaAutomata::A3 { identity: a1.identity.clone(), x3: x3.clone(), kid_send: kid_send.get(), nonce };
+            resend_timer
+        };
+        drop(kex_lock);
+        ctx.session_queue.lock().unwrap().change_priority(session.queue_idx, Reverse(resend_timer));
 
-            Ok(x3)
-        } else {
-            Err(byzantine_fault!(FailedAuth, true))
-        }
+        Ok(x3)
     })();
-    match &mut result {
-        Err(ReceiveError::ByzantineFault { .. }) => process_timers(app, ctx, session, app.time(), true, false, send),
-        Ok(mut packet) => send(&mut packet, Some(&session.hk_send)),
+    match result {
+        Err(ReceiveError::ByzantineFault { .. }) => {
+            process_timers(app, ctx, session, app.time(), true, false, send);
+        }
+        Ok(ref mut packet) => send(packet, Some(&session.hk_send)),
         _ => {}
     }
     result.map(|_| ())
@@ -680,9 +697,9 @@ pub(crate) fn received_x2_trans<App: ApplicationLayer>(
 pub(crate) fn received_x3_trans<App: ApplicationLayer>(
     app: &App,
     ctx: &Arc<ContextInner<App>>,
-    zeta: StateB2<App>,
+    zeta: Arc<StateB2<App>>,
     kid: NonZeroU32,
-    mut x3: Vec<u8>,
+    x3: &mut [u8],
     send: impl FnOnce(&mut [u8], Option<&App::PrpEnc>),
 ) -> Result<Arc<Session<App>>, ReceiveError<App::StorageError>> {
     use FaultType::*;
@@ -693,8 +710,8 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
     if kid != zeta.kid_recv {
         return Err(byzantine_fault!(UnknownLocalKeyId, true));
     }
-    let mut hash = &mut App::Hash::new();
-    let mut hmac = &mut App::HmacHash::new();
+    let hash = &mut App::Hash::new();
+    let hmac = &mut App::HmacHash::new();
 
     let mut noise = zeta.noise.clone();
     let mut i = 0;
@@ -758,11 +775,12 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
                 if !ctx.s_secret.agree(&s_remote, &mut noise_kk_ss) {
                     return Err(byzantine_fault!(FailedAuth, true));
                 }
+
+                let new_ratchet_state = create_ratchet_state(hmac, &mut noise, zeta.ratchet_state.chain_len);
                 let mut nk_recv = Zeroizing::new([0u8; HASHLEN]);
                 let mut nk_send = Zeroizing::new([0u8; HASHLEN]);
                 noise.split(hmac, &mut nk_send, &mut nk_recv);
 
-                let new_ratchet_state = create_ratchet_state(hmac, &mut noise, zeta.ratchet_state.chain_len);
                 // We must make sure the ratchet key is saved before we transition.
                 let result = app.save_ratchet_state(
                     &s_remote,
@@ -776,7 +794,7 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
                     },
                 );
                 if let Err(e) = result {
-                    return Err(ReceiveError::RatchetIoError(e));
+                    return Err(ReceiveError::StorageError(e));
                 }
 
                 let (session, current_time) = {
@@ -791,7 +809,9 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
                     let mut session_queue = ctx.session_queue.lock().unwrap();
                     let queue_idx = session_queue.reserve_index();
                     let current_time = app.time();
+                    let resend_timer = current_time + App::SETTINGS.resend_time as i64;
                     let session = Arc::new(Session {
+                        ctx: Arc::downgrade(ctx),
                         session_data,
                         was_bob: true,
                         s_remote,
@@ -804,7 +824,7 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
                             key_creation_counter: c + 1,
                             key_index: false,
                             keys: [DuplexKey::default(), DuplexKey::default()],
-                            resend_timer: current_time + App::SETTINGS.resend_time as i64,
+                            resend_timer: AtomicI64::new(resend_timer),
                             timeout_timer: current_time + App::SETTINGS.rekey_timeout as i64,
                             beta: ZetaAutomata::S1,
                         }),
@@ -815,23 +835,25 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
                         hk_send: App::PrpEnc::new(&zeta.hk_send),
                         hk_recv: App::PrpDec::new(&zeta.hk_recv),
                     });
+                    {
+                        let mut state = session.state.write().unwrap();
+                        state.key_mut(false).replace_nk(&nk_send, &nk_recv);
+                        state.key_mut(false).recv.kid = Some(zeta.kid_recv);
+                        state.key_mut(false).recv.replace_kek(&kek_recv);
+                        state.key_mut(false).send.kid = Some(zeta.kid_send);
+                        state.key_mut(false).send.replace_kek(&kek_send);
+                    }
 
-                    let mut state = session.state.write().unwrap();
-                    state.key_mut(false).replace_nk(&nk_send, &nk_recv);
-                    state.key_mut(false).recv.kid = Some(zeta.kid_recv);
-                    state.key_mut(false).recv.replace_kek(&kek_recv);
-                    state.key_mut(false).send.kid = Some(zeta.kid_send);
-                    state.key_mut(false).send.replace_kek(&kek_send);
-
-                    session_queue.push_reserved(queue_idx, Arc::downgrade(&session), Reverse(state.next_timer()));
+                    session_queue.push_reserved(queue_idx, Arc::downgrade(&session), Reverse(resend_timer));
                     entry.insert(Arc::downgrade(&session));
+
                     (session, current_time)
                 };
                 process_timers(app, ctx, &session, current_time, false, true, send);
 
                 Ok(session)
             }
-            Err(e) => Err(ReceiveError::RatchetIoError(e)),
+            Err(e) => Err(ReceiveError::StorageError(e)),
         }
     } else {
         if !responder_silently_rejects {
@@ -895,28 +917,31 @@ pub(crate) fn received_c1_trans<App: ApplicationLayer>(
                     },
                 );
                 if let Err(e) = result {
-                    return Err(ReceiveError::RatchetIoError(e));
+                    return Err(ReceiveError::StorageError(e));
                 }
             }
             drop(state);
-            let mut state_mut = session.state.write().unwrap();
-
-            state_mut.ratchet_state2 = None;
-            state_mut.key_index ^= true;
-            state_mut.timeout_timer = app.time()
-                + App::SETTINGS
-                    .rekey_after_time
-                    .saturating_sub(ctx.rng.lock().unwrap().next_u64() % App::SETTINGS.rekey_time_max_jitter) as i64;
-            state_mut.resend_timer = i64::MAX;
-            state_mut.beta = ZetaAutomata::S2;
-            drop(state);
+            let timeout_timer = {
+                let mut state = session.state.write().unwrap();
+                state.ratchet_state2 = None;
+                state.key_index ^= true;
+                state.timeout_timer = app.time()
+                    + App::SETTINGS
+                        .rekey_after_time
+                        .saturating_sub(ctx.rng.lock().unwrap().next_u64() % App::SETTINGS.rekey_time_max_jitter) as i64;
+                state.resend_timer = AtomicI64::new(i64::MAX);
+                state.beta = ZetaAutomata::S2;
+                state.timeout_timer
+            };
+            drop(kex_lock);
+            ctx.session_queue.lock().unwrap().change_priority(session.queue_idx, Reverse(timeout_timer));
             state = session.state.read().unwrap();
         }
     }
 
     let mut c2 = ArrayVec::<u8, HEADERED_KEY_CONFIRMATION_SIZE>::new();
     c2.extend([0u8; HEADER_SIZE]);
-    let (c, should_rekey) = get_counter(session, &state).ok_or(byzantine_fault!(ExpiredCounter, false))?;
+    let (c, _) = get_counter(session, &state).ok_or(byzantine_fault!(ExpiredCounter, false))?;
     let nonce = to_nonce(PACKET_TYPE_ACK, c);
     let latest_confirmed_key = state.key_ref(false).send.kek.as_ref().ok_or(byzantine_fault!(OutOfSequence, true))?;
     c2.extend(App::Aead::encrypt_in_place(latest_confirmed_key, &nonce, &[], &mut []));
@@ -963,14 +988,18 @@ pub(crate) fn received_c2_trans<App: ApplicationLayer>(
         return Err(byzantine_fault!(ExpiredCounter, true));
     }
     drop(state);
-    let mut state = session.state.write().unwrap();
-
-    state.timeout_timer = app.time()
-        + App::SETTINGS
-            .rekey_after_time
-            .saturating_sub(ctx.rng.lock().unwrap().next_u64() % App::SETTINGS.rekey_time_max_jitter) as i64;
-    state.resend_timer = i64::MAX;
-    state.beta = ZetaAutomata::S2;
+    let timeout_timer = {
+        let mut state = session.state.write().unwrap();
+        state.timeout_timer = app.time()
+            + App::SETTINGS
+                .rekey_after_time
+                .saturating_sub(ctx.rng.lock().unwrap().next_u64() % App::SETTINGS.rekey_time_max_jitter) as i64;
+        state.resend_timer = AtomicI64::new(i64::MAX);
+        state.beta = ZetaAutomata::S2;
+        state.timeout_timer
+    };
+    drop(kex_lock);
+    ctx.session_queue.lock().unwrap().change_priority(session.queue_idx, Reverse(timeout_timer));
     Ok(())
 }
 /// Corresponds to the trivial Transition Algorithm described for processing D packets found in
@@ -1004,8 +1033,8 @@ pub(crate) fn received_d_trans<App: ApplicationLayer>(
     if !session.window.update(c) {
         return Err(byzantine_fault!(ExpiredCounter, true));
     }
-    ///
-    //zeta.expire();
+    drop(state);
+    session.expire_inner(kex_lock, session.state.write().unwrap());
     Ok(())
 }
 /// Corresponds to the timer rules of the Zeta State Machine found in Section 4.1 - Definition 3.
@@ -1017,13 +1046,13 @@ pub(crate) fn process_timers<App: ApplicationLayer>(
     force_timeout: bool,
     force_resend: bool,
     send: impl FnOnce(&mut [u8], Option<&App::PrpEnc>),
-) {
+) -> Option<i64> {
     let kex_lock = session.state_machine_lock.lock().unwrap();
     let mut state = session.state.read().unwrap();
     if force_timeout || state.timeout_timer <= current_time {
         // Corresponds to the timeout timer Transition Algorithm described in Section 4.1 - Definition 3.
         match &state.beta {
-            ZetaAutomata::Null => {}
+            ZetaAutomata::Null => None,
             ZetaAutomata::A1(_) | ZetaAutomata::A3 { .. } => {
                 let identity = match &state.beta {
                     ZetaAutomata::A1(a1) => &a1.identity,
@@ -1037,8 +1066,8 @@ pub(crate) fn process_timers<App: ApplicationLayer>(
                 }
                 let new_kid_recv = remap(ctx, session, &state);
 
-                let mut hash = &mut App::Hash::new();
-                let mut hmac = &mut App::HmacHash::new();
+                let hash = &mut App::Hash::new();
+                let hmac = &mut App::HmacHash::new();
                 if let Some(a1) = create_a1_state(
                     hash,
                     hmac,
@@ -1055,20 +1084,24 @@ pub(crate) fn process_timers<App: ApplicationLayer>(
                     let mut x1 = a1.x1.clone();
 
                     drop(state);
-                    {
+                    let resend_timer = {
                         let mut state = session.state.write().unwrap();
                         session.hk_recv.reset((&hk_recv[..AES_256_KEY_SIZE]).try_into().unwrap());
                         session.hk_send.reset((&hk_send[..AES_256_KEY_SIZE]).try_into().unwrap());
                         *state.key_mut(true) = DuplexKey::default();
                         state.key_mut(true).recv.kid = Some(new_kid_recv);
-                        state.resend_timer = current_time + App::SETTINGS.resend_time as i64;
+                        let resend_timer = current_time + App::SETTINGS.resend_time as i64;
+                        state.resend_timer = AtomicI64::new(resend_timer);
                         state.timeout_timer = current_time + App::SETTINGS.initial_offer_timeout as i64;
                         state.beta = ZetaAutomata::A1(a1);
-                    }
+                        resend_timer
+                    };
+                    drop(kex_lock);
 
                     send(&mut x1, None);
+                    Some(resend_timer)
                 } else {
-                    //zeta.expire();
+                    None
                 }
             }
             ZetaAutomata::S2 => {
@@ -1093,84 +1126,97 @@ pub(crate) fn process_timers<App: ApplicationLayer>(
                 let e_secret = noise.write_e(hash, hmac, &ctx.rng, &mut k1);
                 // Process message pattern 1 es token.
                 if noise.mix_dh(hmac, &e_secret, &session.s_remote).is_none() {
-                    //zeta.expire();
-                    return;
+                    return None;
                 }
                 // Process message pattern 1 ss token.
                 noise.mix_key(hmac, session.noise_kk_ss.as_ref());
                 // Process message pattern 1 payload.
                 let i = k1.len();
                 k1.extend(new_kid_recv.get().to_be_bytes());
-                k1.extend(noise.encrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_REKEY_INIT, 0), &mut k1[i..]));
+                let tag = noise.encrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_REKEY_INIT, 0), &mut k1[i..]);
+                k1.extend(tag);
 
                 drop(state);
-                {
+                let resend_timer = {
                     let mut state = session.state.write().unwrap();
                     state.key_mut(true).recv.kid = Some(new_kid_recv);
                     state.timeout_timer = current_time + App::SETTINGS.rekey_timeout as i64;
-                    state.resend_timer = current_time + App::SETTINGS.resend_time as i64;
+                    let resend_timer = current_time + App::SETTINGS.resend_time as i64;
+                    state.resend_timer = AtomicI64::new(resend_timer);
                     state.beta = ZetaAutomata::R1 { noise, e_secret, k1: k1.clone() };
-                }
+                    resend_timer
+                };
+                drop(kex_lock);
                 let state = session.state.read().unwrap();
 
-                if let Some((c, should_rekey)) = get_counter(session, &state) {
+                if let Some((c, _)) = get_counter(session, &state) {
                     let nonce = to_nonce(PACKET_TYPE_REKEY_INIT, c);
-                    k1.extend(App::Aead::encrypt_in_place(state.key_ref(false).send.kek.as_ref().unwrap(), &nonce, &[], &mut k1));
+                    let tag = App::Aead::encrypt_in_place(state.key_ref(false).send.kek.as_ref().unwrap(), &nonce, &[], &mut k1);
+                    k1.extend(tag);
                     set_header(&mut k1, state.key_ref(false).send.kid.unwrap().get(), &nonce);
 
                     send(&mut k1, Some(&session.hk_send));
                 }
+                Some(resend_timer)
             }
             ZetaAutomata::S1 { .. } => {
                 log!(app, TimeoutKeyConfirm(session));
-                //zeta.expire();
+                None
             }
             ZetaAutomata::R1 { .. } => {
                 log!(app, TimeoutK1(session));
-                //zeta.expire();
+                None
             }
             ZetaAutomata::R2 { .. } => {
                 log!(app, TimeoutK2(session));
-                //zeta.expire();
+                None
             }
         }
-    } else if force_resend || state.resend_timer <= current_time {
-        // Corresponds to the resend timer rules found in Section 4.1 - Definition 3.
-        state.resend_timer = current_time + App::SETTINGS.resend_time as i64;
+    } else {
+        let ts = state.resend_timer.load(Ordering::Relaxed);
+        let resend_next = current_time + App::SETTINGS.resend_time as i64;
+        if force_resend || (ts <= current_time && state.resend_timer.fetch_max(resend_next, Ordering::Relaxed) == ts) {
+            // Corresponds to the resend timer rules found in Section 4.1 - Definition 3.
 
-        let (packet_type, mut control_payload) = match &state.beta {
-            ZetaAutomata::Null => return,
-            ZetaAutomata::A1(a1) => {
-                log!(app, ResentX1(session));
-                return send(&mut a1.x1.clone(), None);
-            }
-            ZetaAutomata::A3 { x3, .. } => {
-                log!(app, ResentX3(session));
-                return send(&mut x3.clone(), Some(&session.hk_send));
-            }
-            ZetaAutomata::S1 => {
-                log!(app, ResentKeyConfirm(session));
-                let mut c1 = ArrayVec::new();
-                c1.extend([0u8; HEADER_SIZE]);
-                (PACKET_TYPE_KEY_CONFIRM, c1)
-            }
-            ZetaAutomata::S2 => return,
-            ZetaAutomata::R1 { k1, .. } => {
-                log!(app, ResentK1(session));
-                (PACKET_TYPE_REKEY_INIT, k1.clone())
-            }
-            ZetaAutomata::R2 { k2, .. } => {
-                log!(app, ResentK2(session));
-                (PACKET_TYPE_REKEY_COMPLETE, k2.clone())
-            }
-        };
-        if let Some((c, should_rekey)) = get_counter(session, &state) {
-            let nonce = to_nonce(packet_type, c);
-            let tag = App::Aead::encrypt_in_place(state.key_ref(false).send.kek.as_ref().unwrap(), &nonce, &[], &mut control_payload);
-            control_payload.extend(tag);
-            set_header(&mut control_payload, state.key_ref(false).send.kid.unwrap().get(), &nonce);
+            let (packet_type, mut control_payload) = match &state.beta {
+                ZetaAutomata::Null => return None,
+                ZetaAutomata::A1(a1) => {
+                    log!(app, ResentX1(session));
+                    send(&mut a1.x1.clone(), None);
+                    return Some(resend_next);
+                }
+                ZetaAutomata::A3 { x3, .. } => {
+                    log!(app, ResentX3(session));
+                    send(&mut x3.clone(), Some(&session.hk_send));
+                    return Some(resend_next);
+                }
+                ZetaAutomata::S1 => {
+                    log!(app, ResentKeyConfirm(session));
+                    let mut c1 = ArrayVec::new();
+                    c1.extend([0u8; HEADER_SIZE]);
+                    (PACKET_TYPE_KEY_CONFIRM, c1)
+                }
+                ZetaAutomata::S2 => return Some(state.timeout_timer),
+                ZetaAutomata::R1 { k1, .. } => {
+                    log!(app, ResentK1(session));
+                    (PACKET_TYPE_REKEY_INIT, k1.clone())
+                }
+                ZetaAutomata::R2 { k2, .. } => {
+                    log!(app, ResentK2(session));
+                    (PACKET_TYPE_REKEY_COMPLETE, k2.clone())
+                }
+            };
+            if let Some((c, _)) = get_counter(session, &state) {
+                let nonce = to_nonce(packet_type, c);
+                let tag = App::Aead::encrypt_in_place(state.key_ref(false).send.kek.as_ref().unwrap(), &nonce, &[], &mut control_payload);
+                control_payload.extend(tag);
+                set_header(&mut control_payload, state.key_ref(false).send.kid.unwrap().get(), &nonce);
 
-            send(&mut control_payload, Some(&session.hk_send));
+                send(&mut control_payload, Some(&session.hk_send));
+            }
+            Some(resend_next)
+        } else {
+            Some(ts)
         }
     }
 }
@@ -1190,7 +1236,6 @@ pub(crate) fn received_k1_trans<App: ApplicationLayer>(
     app: &App,
     ctx: &Arc<ContextInner<App>>,
     session: &Arc<Session<App>>,
-    s_secret: &App::KeyPair,
     kid: NonZeroU32,
     n: &[u8; AES_GCM_IV_SIZE],
     k1: &mut [u8],
@@ -1225,7 +1270,7 @@ pub(crate) fn received_k1_trans<App: ApplicationLayer>(
 
     let i = k1.len() - AES_GCM_TAG_SIZE;
     let tag = k1[i..].try_into().unwrap();
-    if !App::Aead::decrypt_in_place(state.key_ref(false).recv.kek.as_ref().unwrap(), n, &[], &mut k1[..i], tag) {
+    if !App::Aead::decrypt_in_place(state.key_ref(false).recv.kek.as_ref().unwrap(), n, &[], &mut k1[..i], &tag) {
         return Err(byzantine_fault!(FailedAuth, true));
     }
     let (_, c) = from_nonce(n);
@@ -1236,17 +1281,17 @@ pub(crate) fn received_k1_trans<App: ApplicationLayer>(
     let result = (|| {
         let mut i = 0;
         let mut noise = SymmetricState::<App>::initialize(PROTOCOL_NAME_NOISE_KK);
-        let mut hash = &mut App::Hash::new();
-        let mut hmac = &mut App::HmacHash::new();
+        let hash = &mut App::Hash::new();
+        let hmac = &mut App::HmacHash::new();
         // Noise process prologue.
         noise.mix_hash(hash, &session.s_remote.to_bytes());
-        noise.mix_hash(hash, &s_secret.public_key_bytes());
+        noise.mix_hash(hash, &ctx.s_secret.public_key_bytes());
         // Process message pattern 1 psk0 token.
         noise.mix_key_and_hash(hash, hmac, state.ratchet_state1.key.as_ref());
         // Process message pattern 1 e token.
         let e_remote = noise.read_e(hash, hmac, &mut i, &k1).ok_or(byzantine_fault!(FailedAuth, true))?;
         // Process message pattern 1 es token.
-        noise.mix_dh(hmac, s_secret, &e_remote).ok_or(byzantine_fault!(FailedAuth, true))?;
+        noise.mix_dh(hmac, &ctx.s_secret, &e_remote).ok_or(byzantine_fault!(FailedAuth, true))?;
         // Process message pattern 1 ss token.
         noise.mix_key(hmac, session.noise_kk_ss.as_ref());
         // Process message pattern 1 payload.
@@ -1265,12 +1310,13 @@ pub(crate) fn received_k1_trans<App: ApplicationLayer>(
         // Process message pattern 2 ee token.
         noise.mix_dh(hmac, &e_secret, &e_remote).ok_or(byzantine_fault!(FailedAuth, true))?;
         // Process message pattern 2 se token.
-        noise.mix_dh(hmac, &s_secret, &e_remote).ok_or(byzantine_fault!(FailedAuth, true))?;
+        noise.mix_dh(hmac, &ctx.s_secret, &e_remote).ok_or(byzantine_fault!(FailedAuth, true))?;
         // Process message pattern 2 payload.
         let i = k2.len();
         let new_kid_recv = remap(ctx, session, &state);
         k2.extend(new_kid_recv.get().to_be_bytes());
-        k2.extend(noise.encrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_REKEY_COMPLETE, 0), &mut k2[i..]));
+        let tag = noise.encrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_REKEY_COMPLETE, 0), &mut k2[i..]);
+        k2.extend(tag);
 
         let new_ratchet_state = create_ratchet_state(hmac, &noise, state.ratchet_state1.chain_len);
         let result = app.save_ratchet_state(
@@ -1285,7 +1331,7 @@ pub(crate) fn received_k1_trans<App: ApplicationLayer>(
             },
         );
         if let Err(e) = result {
-            return Err(ReceiveError::RatchetIoError(e));
+            return Err(ReceiveError::StorageError(e));
         }
 
         let mut kek_recv = Zeroizing::new([0u8; HASHLEN]);
@@ -1296,7 +1342,7 @@ pub(crate) fn received_k1_trans<App: ApplicationLayer>(
         noise.split(hmac, &mut nk_send, &mut nk_recv);
 
         drop(state);
-        {
+        let resend_timer = {
             let mut state = session.state.write().unwrap();
             state.key_mut(true).replace_nk(&nk_send, &nk_recv);
             state.key_mut(true).send.kid = Some(kid_send);
@@ -1307,24 +1353,28 @@ pub(crate) fn received_k1_trans<App: ApplicationLayer>(
             state.ratchet_state1 = new_ratchet_state.clone();
             let current_time = app.time();
             state.key_creation_counter = session.send_counter.load(Ordering::Relaxed);
+            let resend_timer = current_time + App::SETTINGS.resend_time as i64;
             state.timeout_timer = current_time + App::SETTINGS.rekey_timeout as i64;
-            state.resend_timer = current_time + App::SETTINGS.resend_time as i64;
+            state.resend_timer = AtomicI64::new(resend_timer);
             state.beta = ZetaAutomata::R2 { k2: k2.clone() };
-        }
-        let mut state = session.state.read().unwrap();
+            resend_timer
+        };
+        drop(kex_lock);
+        ctx.session_queue.lock().unwrap().change_priority(session.queue_idx, Reverse(resend_timer));
+        let state = session.state.read().unwrap();
 
-        ///
-        let (c, should_rekey) = get_counter(session, &state).ok_or(byzantine_fault!(ExpiredCounter, false))?;
+        let (c, _) = get_counter(session, &state).ok_or(byzantine_fault!(ExpiredCounter, false))?;
         let nonce = to_nonce(PACKET_TYPE_REKEY_COMPLETE, c);
-        k2.extend(App::Aead::encrypt_in_place(state.key_ref(false).send.kek.as_ref().unwrap(), &nonce, &[], &mut k2));
+        let tag = App::Aead::encrypt_in_place(state.key_ref(false).send.kek.as_ref().unwrap(), &nonce, &[], &mut k2);
+        k2.extend(tag);
         set_header(&mut k2, state.key_ref(false).send.kid.unwrap().get(), &nonce);
 
         send(&mut k2, Some(&session.hk_send));
         Ok(())
     })();
-    ///
+
     if matches!(result, Err(ReceiveError::ByzantineFault { .. })) {
-        //zeta.expire();
+        session.expire();
     }
     result
 }
@@ -1335,7 +1385,7 @@ pub(crate) fn received_k2_trans<App: ApplicationLayer>(
     session: &Arc<Session<App>>,
     kid: NonZeroU32,
     n: &[u8; AES_GCM_IV_SIZE],
-    mut k2: &mut [u8],
+    k2: &mut [u8],
     send: impl FnOnce(&mut [u8], Option<&App::PrpEnc>),
 ) -> Result<(), ReceiveError<App::StorageError>> {
     use FaultType::*;
@@ -1358,7 +1408,7 @@ pub(crate) fn received_k2_trans<App: ApplicationLayer>(
 
     let i = k2.len() - AES_GCM_TAG_SIZE;
     let tag = k2[i..].try_into().unwrap();
-    if !App::Aead::decrypt_in_place(state.key_ref(false).recv.kek.as_ref().unwrap(), n, &[], &mut k2[..i], tag) {
+    if !App::Aead::decrypt_in_place(state.key_ref(false).recv.kek.as_ref().unwrap(), n, &[], &mut k2[..i], &tag) {
         return Err(byzantine_fault!(FailedAuth, true));
     }
     let (_, c) = from_nonce(n);
@@ -1369,8 +1419,8 @@ pub(crate) fn received_k2_trans<App: ApplicationLayer>(
         if let ZetaAutomata::R1 { noise, e_secret, .. } = &state.beta {
             let mut noise = noise.clone();
             let mut i = 0;
-            let mut hash = &mut App::Hash::new();
-            let mut hmac = &mut App::HmacHash::new();
+            let hash = &mut App::Hash::new();
+            let hmac = &mut App::HmacHash::new();
             // Process message pattern 2 e token.
             let e_remote = noise.read_e(hash, hmac, &mut i, &k2).ok_or(byzantine_fault!(FailedAuth, true))?;
             // Process message pattern 2 ee token.
@@ -1399,7 +1449,7 @@ pub(crate) fn received_k2_trans<App: ApplicationLayer>(
                 },
             );
             if let Err(e) = result {
-                return Err(ReceiveError::RatchetIoError(e));
+                return Err(ReceiveError::StorageError(e));
             }
             let mut kek_recv = Zeroizing::new([0u8; HASHLEN]);
             let mut kek_send = Zeroizing::new([0u8; HASHLEN]);
@@ -1409,7 +1459,7 @@ pub(crate) fn received_k2_trans<App: ApplicationLayer>(
             noise.split(hmac, &mut nk_recv, &mut nk_send);
 
             drop(state);
-            let current_time = {
+            let (current_time, resend_timer) = {
                 let mut state = session.state.write().unwrap();
                 state.key_mut(true).replace_nk(&nk_send, &nk_recv);
                 state.key_mut(true).send.kid = Some(kid_send);
@@ -1419,11 +1469,14 @@ pub(crate) fn received_k2_trans<App: ApplicationLayer>(
                 state.key_index ^= true;
                 let current_time = app.time();
                 state.key_creation_counter = session.send_counter.load(Ordering::Relaxed);
+                let resend_timer = current_time + App::SETTINGS.resend_time as i64;
                 state.timeout_timer = current_time + App::SETTINGS.rekey_timeout as i64;
-                state.resend_timer = current_time + App::SETTINGS.resend_time as i64;
+                state.resend_timer = AtomicI64::new(resend_timer);
                 state.beta = ZetaAutomata::S1;
-                current_time
+                (current_time, resend_timer)
             };
+            drop(kex_lock);
+            ctx.session_queue.lock().unwrap().change_priority(session.queue_idx, Reverse(resend_timer));
             process_timers(app, ctx, session, current_time, false, true, send);
 
             Ok(())
@@ -1431,23 +1484,156 @@ pub(crate) fn received_k2_trans<App: ApplicationLayer>(
             unreachable!()
         }
     })();
+
     if matches!(result, Err(ReceiveError::ByzantineFault { .. })) {
-        //zeta.expire();
+        session.expire();
     }
     result
 }
+/// Corresponds to Algorithm 10 found in Section 4.3.
+pub(crate) fn receive_payload_in_place<App: ApplicationLayer>(
+    app: &App,
+    ctx: &Arc<ContextInner<App>>,
+    session: &Arc<Session<App>>,
+    kid: NonZeroU32,
+    n: &[u8; AES_GCM_IV_SIZE],
+    fragments: &mut [App::IncomingPacketBuffer],
+    mut output_buffer: impl Write,
+) -> Result<(), ReceiveError<App::StorageError>> {
+    use FaultType::*;
 
-//impl<App: ApplicationLayer> Session<App> {
-//    /// Mark a session as expired. This will make it impossible for this session to successfully
-//    /// receive or send data or control packets. It is recommended to simply `drop` the session
-//    /// instead, but this can provide some reassurance in complex shared ownership situations.
-//    pub fn expire(&mut self) {
-//        self.0.lock().unwrap().expire();
-//    }
-//}
+    let kex_lock = session.state_machine_lock.lock().unwrap();
+    let state = session.state.read().unwrap();
+    let is_other = if Some(kid) == state.key_ref(true).recv.kid {
+        true
+    } else if Some(kid) == state.key_ref(false).recv.kid {
+        false
+    } else {
+        return Err(byzantine_fault!(OutOfSequence, true));
+    };
 
-//impl<App: ApplicationLayer> Drop for Session<App> {
-//    fn drop(&mut self) {
-//        self.expire();
-//    }
-//}
+    let mut cipher = state.key_ref(is_other).nk
+        .as_ref()
+        .ok_or(byzantine_fault!(OutOfSequence, true))?.start_dec(n);
+
+    // NOTE: This only works because we check the size of every received fragment in the receive
+    // function, otherwise this could panic.
+    let mut i = 0;
+    while i + 1 < fragments.len() {
+        let fragment = &mut fragments[i].as_mut()[HEADER_SIZE..];
+        cipher.decrypt_in_place(fragment);
+        i += 1;
+    }
+    let fragment = &mut fragments[i].as_mut()[HEADER_SIZE..];
+    let tag_idx = fragment.len() - AES_GCM_IV_SIZE;
+    cipher.decrypt_in_place(&mut fragment[..tag_idx]);
+    if cipher.finish((&fragment[tag_idx..]).try_into().unwrap()) {
+        return Err(byzantine_fault!(FailedAuth, true));
+    }
+
+    let (_, c) = from_nonce(n);
+    if !session.window.update(c) {
+        // This error is marked as not happening naturally, but it could occur if something about
+        // the transport protocol is duplicating packets.
+        return Err(byzantine_fault!(ExpiredCounter, true));
+    }
+
+    drop(cipher);
+    for fragment in fragments {
+        let result = output_buffer.write(&fragment.as_ref()[HEADER_SIZE..]);
+        if let Err(e) = result {
+            return Err(ReceiveError::IoError(e));
+        }
+    }
+
+    Ok(())
+}
+
+
+impl<App: ApplicationLayer> Drop for Session<App> {
+    fn drop(&mut self) {
+        self.expire();
+    }
+}
+impl<App: ApplicationLayer> Session<App> {
+    /// Mark a session as expired. This will make it impossible for this session to successfully
+    /// receive or send data or control packets. It is recommended to simply `drop` the session
+    /// instead, but this can provide some reassurance in complex shared ownership situations.
+    pub fn expire(&self) {
+        self.expire_inner(self.state_machine_lock.lock().unwrap(), self.state.write().unwrap());
+    }
+    pub(crate) fn expire_inner(&self, kex_lock: MutexGuard<'_, ()>, mut state: RwLockWriteGuard<'_, MutableState<App>>) {
+        let mut kids_to_remove = None;
+        if !matches!(&state.beta, ZetaAutomata::Null) {
+            self.session_has_expired.store(true, Ordering::Relaxed);
+            kids_to_remove = Some([state.keys[0].recv.kid, state.keys[1].recv.kid]);
+            state.keys = [DuplexKey::default(), DuplexKey::default()];
+            state.resend_timer = AtomicI64::new(i64::MAX);
+            state.timeout_timer = i64::MAX;
+            state.beta = ZetaAutomata::Null;
+        }
+        drop(state);
+        drop(kex_lock);
+        if let Some(kids_to_remove) = kids_to_remove {
+            if let Some(ctx) = self.ctx.upgrade() {
+                ctx.session_queue.lock().unwrap().remove(self.queue_idx);
+                let mut session_map = ctx.session_map.write().unwrap();
+                for kid_recv in kids_to_remove.iter().flatten() {
+                    session_map.remove(kid_recv);
+                }
+            }
+        }
+    }
+    ///
+    ///// The current ratchet state of this session.
+    ///// The returned values are sensitive and should be securely erased before being dropped.
+    //pub fn ratchet_states(&self) -> [RatchetState; 2] {
+    //    let state = self.state.read().unwrap();
+    //    state.ratchet_states.clone()
+    //}
+    /// The current ratchet count of this session.
+    //pub fn ratchet_count(&self) -> u64 {
+    //    self.state.read().unwrap().
+    //}
+    /// Mark a session as expired. This will make it impossible for this session to successfully
+    /// receive or send data or control packets. It is recommended to simply `drop` the session
+    /// instead, but this can provide some reassurance in complex shared ownership situations.
+    //pub fn expire(&self) {
+    //    if let Some(context) = self.context.upgrade() {
+    //        self.expire_inner(&context, &mut context.session_queue.lock().unwrap());
+    //    }
+    //}
+    //fn expire_inner(
+    //    &self,
+    //    context: &Arc<ContextInner<Application>>,
+    //    session_queue: &mut IndexedBinaryHeap<Weak<Session<Application>>, Reverse<i64>>,
+    //) {
+    //    // Prevent this session from being updated.
+    //    session_queue.remove(self.queue_idx);
+    //    self.session_has_expired.store(true, Ordering::Relaxed);
+    //    let _kex_lock = self.state_machine_lock.lock().unwrap();
+    //    let mut state = self.state.write().unwrap();
+    //    let mut session_map = context.session_map.write().unwrap();
+    //    for key in &state.cipher_states {
+    //        if let Some(pre_id) = key.as_ref().map(|k| k.local_key_id) {
+    //            session_map.remove(&pre_id);
+    //        }
+    //    }
+    //    use OfferStateMachine::*;
+    //    match &state.outgoing_offer {
+    //        NoiseXKPattern1or3(handshake_state) => session_map.remove(&handshake_state.local_key_id),
+    //        NoiseKKPattern1 { new_key_id, .. } => session_map.remove(new_key_id),
+    //        _ => None,
+    //    };
+    //    state.outgoing_offer = OfferStateMachine::Null;
+    //}
+    /// Check whether this session is established.
+    pub fn established(&self) -> bool {
+        let state = self.state.read().unwrap();
+        !matches!(&state.beta, ZetaAutomata::A1(_) | ZetaAutomata::A3 {..} | ZetaAutomata::Null)
+    }
+    /// The static public key of the remote peer.
+    pub fn remote_static_key(&self) -> &App::PublicKey {
+        &self.s_remote
+    }
+}

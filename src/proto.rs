@@ -23,6 +23,8 @@ pub(crate) const POW_START: usize = COUNTER_SIZE + MAC_SIZE;
 pub(crate) const CHALLENGE_SIZE: usize = COUNTER_SIZE + MAC_SIZE + POW_SIZE;
 pub(crate) const DIFFICULTY: u32 = 13;
 
+pub(crate) const HEADERED_CHALLENGE_SIZE: usize = CHALLENGE_SIZE + HEADER_SIZE + KID_SIZE;
+
 /* Fragmentation constants */
 /*
 Header:
