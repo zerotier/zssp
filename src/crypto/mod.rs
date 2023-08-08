@@ -1,9 +1,9 @@
 // (c) 2020-2022 ZeroTier, Inc. -- currently proprietary pending actual release and licensing. See LICENSE.md.
 
 pub mod aes;
+pub mod kyber1024;
 pub mod p384;
 pub mod sha512;
-pub mod kyber1024;
 
 // We re-export our dependencies so it is less of a headache for the implementor to use the same
 // exact version of them.

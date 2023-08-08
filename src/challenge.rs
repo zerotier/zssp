@@ -4,12 +4,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use rand_core::{CryptoRng, RngCore};
 
 use crate::antireplay::Window;
-use crate::crypto::{secure_eq, sha512::{HashSha512, SHA512_HASH_SIZE}};
+use crate::crypto::{
+    secure_eq,
+    sha512::{HashSha512, SHA512_HASH_SIZE},
+};
 use crate::proto::*;
 
 pub struct ChallengeContext {
     counter: AtomicU64,
-    antireplay_window: Window<COUNTER_WINDOW_MAX_OOO, {u64::MAX}>,
+    antireplay_window: Window<COUNTER_WINDOW_MAX_OOO, { u64::MAX }>,
     salt: [u8; SALT_SIZE],
 }
 
@@ -57,7 +60,10 @@ impl ChallengeContext {
     ) -> Result<(), [u8; CHALLENGE_SIZE]> {
         let c = u64::from_be_bytes(response[..COUNTER_SIZE].try_into().unwrap());
         let mut work_buf = [0u8; SHA512_HASH_SIZE];
-        if self.antireplay_window.check(c) && secure_eq(&response[COUNTER_SIZE..POW_START], &self.create_mac::<Hash>(c, addr)) && verify_pow::<Hash>(response, &mut work_buf) {
+        if self.antireplay_window.check(c)
+            && secure_eq(&response[COUNTER_SIZE..POW_START], &self.create_mac::<Hash>(c, addr))
+            && verify_pow::<Hash>(response, &mut work_buf)
+        {
             self.antireplay_window.update(c);
             Ok(())
         } else {

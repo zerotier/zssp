@@ -67,7 +67,10 @@ impl<Fragment> UnassociatedFragCache<Fragment> {
         ret_assembled: &mut Assembled<Fragment>,
     ) {
         debug_assert!(MAX_FRAGMENTS < MAX_UNASSOCIATED_FRAGMENTS);
-        if fragment_no >= fragment_count || fragment_count > MAX_FRAGMENTS || fragment_size > MAX_UNASSOCIATED_PACKET_SIZE {
+        if fragment_no >= fragment_count
+            || fragment_count > MAX_FRAGMENTS
+            || fragment_size > MAX_UNASSOCIATED_PACKET_SIZE
+        {
             return;
         }
 
@@ -144,7 +147,10 @@ impl<Fragment> UnassociatedFragCache<Fragment> {
 
         let new_size = entry.packet_size + fragment_size as u32;
         let got = 1u64.wrapping_shl(fragment_no as u32);
-        if got & entry.fragment_have == 0 && fragment_count == entry.fragment_count as usize && new_size <= MAX_UNASSOCIATED_PACKET_SIZE as u32 {
+        if got & entry.fragment_have == 0
+            && fragment_count == entry.fragment_count as usize
+            && new_size <= MAX_UNASSOCIATED_PACKET_SIZE as u32
+        {
             entry.packet_size = new_size;
             entry.fragment_have |= got;
 
@@ -156,7 +162,6 @@ impl<Fragment> UnassociatedFragCache<Fragment> {
                 let start_idx = entry.frags_idx as usize;
                 unsafe {
                     for i in start_idx..start_idx + fragment_count {
-
                         ret_assembled.push(self.frags[i % self.frags.len()].assume_init_read())
                     }
                 }
@@ -263,13 +268,30 @@ fn test_cache() {
                     // If the timeout is 1 we should be guaranteed to get our packet cached.
                     let mut nonce = [0; 12];
                     nonce[..4].copy_from_slice(&i.to_be_bytes());
-                    cache.assemble(&nonce, 0, fragment.len(), fragment, j, fragment_count, 1, time, &mut assembled);
+                    cache.assemble(
+                        &nonce,
+                        0,
+                        fragment.len(),
+                        fragment,
+                        j,
+                        fragment_count,
+                        1,
+                        time,
+                        &mut assembled,
+                    );
                     time += 1;
                 }
             }
             if drop >= fragment_count {
-                assert!(!assembled.is_empty(), "Packet was dropped from the cache when it shouldn't have");
-                assert_eq!(assembled.as_ref().len(), fragment_count, "Cache returned the wrong packet");
+                assert!(
+                    !assembled.is_empty(),
+                    "Packet was dropped from the cache when it shouldn't have"
+                );
+                assert_eq!(
+                    assembled.as_ref().len(),
+                    fragment_count,
+                    "Cache returned the wrong packet"
+                );
                 for j in 0..fragment_count {
                     assert_eq!(assembled.as_ref()[j][7], r, "Cache returned a corrupted packet");
                 }
@@ -281,14 +303,25 @@ fn test_cache() {
             if in_progress.len() > 0 {
                 let to_remain = (xorshift64_random() as usize % in_progress_fragments) + 16;
                 while in_progress_fragments > to_remain {
-                    let (id, fragment_count, mut packet) = in_progress.swap_remove(xorshift64_random() as usize % in_progress.len());
+                    let (id, fragment_count, mut packet) =
+                        in_progress.swap_remove(xorshift64_random() as usize % in_progress.len());
                     for _ in 0..((xorshift64_random() as usize % packet.len()) + 1) {
                         let (no, fragment) = packet.swap_remove(xorshift64_random() as usize % packet.len());
 
                         assembled.clear();
                         let mut nonce = [0; 12];
                         nonce[..4].copy_from_slice(&id.to_be_bytes());
-                        cache.assemble(&nonce, 0, fragment.len(), fragment, no as usize, fragment_count as usize, 1000, time, &mut assembled);
+                        cache.assemble(
+                            &nonce,
+                            0,
+                            fragment.len(),
+                            fragment,
+                            no as usize,
+                            fragment_count as usize,
+                            1000,
+                            time,
+                            &mut assembled,
+                        );
                         time += 1;
                         in_progress_fragments -= 1;
 

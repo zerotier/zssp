@@ -11,10 +11,10 @@ use crate::crypto::aes::{AesDec, AesEnc, HighThroughputAesGcmPool, LowThroughput
 use crate::crypto::kyber1024::Kyber1024PrivateKey;
 use crate::crypto::p384::{P384KeyPair, P384PublicKey};
 use crate::crypto::rand_core::{CryptoRng, RngCore};
-use crate::crypto::sha512::{HmacSha512, HashSha512};
-use crate::RatchetState;
+use crate::crypto::sha512::{HashSha512, HmacSha512};
 use crate::proto::RATCHET_SIZE;
 use crate::zeta::Session;
+use crate::RatchetState;
 //use crate::{log_event::LogEvent, Session};
 
 /// A container for a vast majority of the dynamic settings within ZSSP, including all time-based settings.
@@ -210,7 +210,10 @@ pub trait ApplicationLayer: Sized {
     /// If `RatchetAction::DowngradeRatchet` is returned we will attempt to convince Alice to downgrade
     /// to the empty ratchet key, restarting the ratchet chain.
     /// If `RatchetAction::FailAuthentication` is returned Alice's connection will be silently dropped.
-    fn restore_by_fingerprint(&self, ratchet_fingerprint: &[u8; RATCHET_SIZE]) -> Result<Option<RatchetState>, Self::StorageError>;
+    fn restore_by_fingerprint(
+        &self,
+        ratchet_fingerprint: &[u8; RATCHET_SIZE],
+    ) -> Result<Option<RatchetState>, Self::StorageError>;
     /// Lookup the specific ratchet states based on the identity of the peer being communicated with.
     /// This function will be called whenever Alice attempts to open a session, or Bob attempts
     /// to verify Alice's identity.

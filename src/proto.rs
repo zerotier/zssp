@@ -1,4 +1,9 @@
-use crate::crypto::{aes::{AES_GCM_TAG_SIZE, AES_GCM_IV_SIZE}, kyber1024::{KYBER_CIPHERTEXT_SIZE, KYBER_PUBLIC_KEY_SIZE}, p384::P384_PUBLIC_KEY_SIZE, sha512::SHA512_HASH_SIZE};
+use crate::crypto::{
+    aes::{AES_GCM_IV_SIZE, AES_GCM_TAG_SIZE},
+    kyber1024::{KYBER_CIPHERTEXT_SIZE, KYBER_PUBLIC_KEY_SIZE},
+    p384::P384_PUBLIC_KEY_SIZE,
+    sha512::SHA512_HASH_SIZE,
+};
 
 /* Common constants */
 
@@ -75,7 +80,8 @@ pub(crate) const HASHLEN: usize = SHA512_HASH_SIZE;
 pub const RATCHET_SIZE: usize = 32;
 
 /// Initial value of 'h'.
-pub(crate) const PROTOCOL_NAME_NOISE_XK: &[u8; HASHLEN] = b"Noise_XKhfs+psk2_P384+Kyber1024_AESGCM_SHA512\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
+pub(crate) const PROTOCOL_NAME_NOISE_XK: &[u8; HASHLEN] =
+    b"Noise_XKhfs+psk2_P384+Kyber1024_AESGCM_SHA512\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
 /// Initial value of 'ck' for rekeying.
 pub(crate) const PROTOCOL_NAME_NOISE_KK: &[u8; HASHLEN] =
     b"Noise_KKpsk0_P384_AESGCM_SHA512\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
@@ -101,7 +107,7 @@ pub(crate) const COUNTER_WINDOW_MAX_SKIP_AHEAD: u64 = 1 << 24;
 /// When Bob issues a challenge to Alice to mitigate DDOS, Bob will only accept Alice's
 /// response once, and then its attached counter is added to the window.
 pub(crate) const CHALLENGE_COUNTER_WINDOW_MAX_OOO: usize = 32;
-pub(crate) const THREAD_SAFE_COUNTER_HARD_EXPIRE: u64 = u64::MAX - 1<<16;
+pub(crate) const THREAD_SAFE_COUNTER_HARD_EXPIRE: u64 = u64::MAX - 1 << 16;
 
 /* Packet constants */
 
@@ -117,7 +123,8 @@ pub(crate) const PACKET_TYPE_DATA: u8 = 8;
 pub(crate) const PACKET_TYPE_CHALLENGE: u8 = 9;
 pub(crate) const PACKET_TYPE_USES_COUNTER_RANGE: std::ops::Range<u8> = 3..9;
 
-pub(crate) const HANDSHAKE_HELLO_MIN_SIZE: usize = KID_SIZE + P384_PUBLIC_KEY_SIZE + KYBER_PUBLIC_KEY_SIZE + AES_GCM_TAG_SIZE + AES_GCM_TAG_SIZE;
+pub(crate) const HANDSHAKE_HELLO_MIN_SIZE: usize =
+    KID_SIZE + P384_PUBLIC_KEY_SIZE + KYBER_PUBLIC_KEY_SIZE + AES_GCM_TAG_SIZE + AES_GCM_TAG_SIZE;
 pub(crate) const HANDSHAKE_HELLO_MAX_SIZE: usize = HANDSHAKE_HELLO_MIN_SIZE + RATCHET_SIZE;
 
 pub(crate) const HANDSHAKE_HELLO_CHALLENGE_MIN_SIZE: usize = HANDSHAKE_HELLO_MIN_SIZE + CHALLENGE_SIZE;
@@ -125,7 +132,8 @@ pub(crate) const HANDSHAKE_HELLO_CHALLENGE_MAX_SIZE: usize = HANDSHAKE_HELLO_MAX
 
 pub(crate) const HEADERED_HANDSHAKE_HELLO_CHALLENGE_MAX_SIZE: usize = HANDSHAKE_HELLO_CHALLENGE_MAX_SIZE + HEADER_SIZE;
 
-pub(crate) const HANDSHAKE_RESPONSE_SIZE: usize = P384_PUBLIC_KEY_SIZE + KYBER_CIPHERTEXT_SIZE + AES_GCM_TAG_SIZE + KID_SIZE + AES_GCM_TAG_SIZE;
+pub(crate) const HANDSHAKE_RESPONSE_SIZE: usize =
+    P384_PUBLIC_KEY_SIZE + KYBER_CIPHERTEXT_SIZE + AES_GCM_TAG_SIZE + KID_SIZE + AES_GCM_TAG_SIZE;
 pub(crate) const HEADERED_HANDSHAKE_RESPONSE_SIZE: usize = HANDSHAKE_RESPONSE_SIZE + HEADER_SIZE;
 
 pub(crate) const HANDSHAKE_COMPLETION_MIN_SIZE: usize = P384_PUBLIC_KEY_SIZE + AES_GCM_TAG_SIZE + 0 + AES_GCM_TAG_SIZE;

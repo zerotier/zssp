@@ -3,10 +3,10 @@ use std::marker::PhantomData;
 use arrayvec::ArrayVec;
 use zeroize::Zeroizing;
 
-use crate::crypto::aes::{LowThroughputAesGcm, HighThroughputAesGcmPool, AES_GCM_IV_SIZE, AES_GCM_TAG_SIZE};
+use crate::crypto::aes::{HighThroughputAesGcmPool, LowThroughputAesGcm, AES_GCM_IV_SIZE, AES_GCM_TAG_SIZE};
 use crate::crypto::sha512::{HashSha512, HmacSha512};
-use crate::{applicationlayer::ApplicationLayer, crypto::aes::AES_256_KEY_SIZE};
 use crate::proto::*;
+use crate::{applicationlayer::ApplicationLayer, crypto::aes::AES_256_KEY_SIZE};
 
 pub struct SymmetricState<App: ApplicationLayer> {
     k: Zeroizing<[u8; AES_256_KEY_SIZE]>,
@@ -26,7 +26,6 @@ impl<App: ApplicationLayer> Clone for SymmetricState<App> {
         }
     }
 }
-
 
 impl<App: ApplicationLayer> SymmetricState<App> {
     /// HMAC-SHA512 key derivation based on KBKDF Counter Mode:
@@ -93,7 +92,15 @@ impl<App: ApplicationLayer> SymmetricState<App> {
         let mut next_ck = Zeroizing::new([0u8; HASHLEN]);
         let mut temp_k = Zeroizing::new([0u8; HASHLEN]);
 
-        self.kbkdf(hmac, input_key_material, LABEL_KBKDF_CHAIN, 2, &mut next_ck, Some(&mut temp_k), None);
+        self.kbkdf(
+            hmac,
+            input_key_material,
+            LABEL_KBKDF_CHAIN,
+            2,
+            &mut next_ck,
+            Some(&mut temp_k),
+            None,
+        );
 
         *self.ck = *next_ck;
         self.k.clone_from_slice(&temp_k[..AES_256_KEY_SIZE]);
@@ -133,7 +140,12 @@ impl<App: ApplicationLayer> SymmetricState<App> {
         self.k.clone_from_slice(&temp_k[..AES_256_KEY_SIZE]);
     }
     /// Corresponds to Noise `MixKeyAndHash`.
-    pub fn mix_key_and_hash_no_init(&mut self, hash: &mut App::Hash, hmac: &mut App::HmacHash, input_key_material: &[u8]) {
+    pub fn mix_key_and_hash_no_init(
+        &mut self,
+        hash: &mut App::Hash,
+        hmac: &mut App::HmacHash,
+        input_key_material: &[u8],
+    ) {
         let mut next_ck = Zeroizing::new([0u8; HASHLEN]);
         let mut temp_h = [0u8; HASHLEN];
 
@@ -152,7 +164,12 @@ impl<App: ApplicationLayer> SymmetricState<App> {
     }
     /// Corresponds to Noise `EncryptAndHash`.
     #[must_use]
-    pub fn encrypt_and_hash_in_place(&mut self, hash: &mut App::Hash, iv: [u8; AES_GCM_IV_SIZE], data: &mut [u8]) -> [u8; AES_GCM_TAG_SIZE] {
+    pub fn encrypt_and_hash_in_place(
+        &mut self,
+        hash: &mut App::Hash,
+        iv: [u8; AES_GCM_IV_SIZE],
+        data: &mut [u8],
+    ) -> [u8; AES_GCM_TAG_SIZE] {
         let tag = App::Aead::encrypt_in_place(&self.k, &iv, &self.h, data);
         hash.update(&self.h);
         hash.update(data);
@@ -162,7 +179,13 @@ impl<App: ApplicationLayer> SymmetricState<App> {
     }
     /// Corresponds to Noise `DecryptAndHash`.
     #[must_use]
-    pub fn decrypt_and_hash_in_place(&mut self, hash: &mut App::Hash, iv: [u8; AES_GCM_IV_SIZE], data: &mut [u8], tag: [u8; AES_GCM_TAG_SIZE]) -> bool {
+    pub fn decrypt_and_hash_in_place(
+        &mut self,
+        hash: &mut App::Hash,
+        iv: [u8; AES_GCM_IV_SIZE],
+        data: &mut [u8],
+        tag: [u8; AES_GCM_TAG_SIZE],
+    ) -> bool {
         hash.update(&self.h);
         hash.update(data);
         hash.update(&tag);
@@ -178,7 +201,13 @@ impl<App: ApplicationLayer> SymmetricState<App> {
     /// is forward secrect and is cryptographically independent from all other produced keys.
     /// Based on Noise's unstable ASK mechanism, using KBKDF instead of HKDF.
     /// https://github.com/noiseprotocol/noise_wiki/wiki/Additional-Symmetric-Keys.
-    pub fn get_ask(&self, hmac: &mut App::HmacHash, label: &[u8; 4], key1: &mut [u8; HASHLEN], key2: &mut [u8; HASHLEN]) {
+    pub fn get_ask(
+        &self,
+        hmac: &mut App::HmacHash,
+        label: &[u8; 4],
+        key1: &mut [u8; HASHLEN],
+        key2: &mut [u8; HASHLEN],
+    ) {
         self.kbkdf(hmac, &self.h, label, 2, key1, Some(key2), None);
     }
     /// Used for internally debugging a key exchange.

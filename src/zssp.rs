@@ -10,8 +10,8 @@
 
 use std::cmp::Reverse;
 use std::collections::HashMap;
-use std::io::Write;
 use std::hash::Hash;
+use std::io::Write;
 use std::num::{NonZeroU32, NonZeroU64};
 use std::ops::DerefMut;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
@@ -20,21 +20,21 @@ use std::sync::{Arc, Mutex, MutexGuard, RwLock, Weak};
 use arrayvec::ArrayVec;
 use zeroize::Zeroizing;
 
-use crate::zeta::*;
 use crate::challenge::ChallengeContext;
-use crate::crypto::aes::{AesDec, AesEnc, AES_256_KEY_SIZE, AES_GCM_TAG_SIZE, AES_GCM_IV_SIZE};
+use crate::crypto::aes::{AesDec, AesEnc, AES_256_KEY_SIZE, AES_GCM_IV_SIZE, AES_GCM_TAG_SIZE};
 use crate::crypto::p384::{P384KeyPair, P384PublicKey, P384_ECDH_SHARED_SECRET_SIZE, P384_PUBLIC_KEY_SIZE};
 use crate::crypto::pqc_kyber::KYBER_SECRETKEYBYTES;
 use crate::crypto::rand_core::RngCore;
-use crate::crypto::sha512::{HmacSha512, HashSha512};
+use crate::crypto::sha512::{HashSha512, HmacSha512};
+use crate::zeta::*;
 
-use crate::result::{FaultType, OpenError, ReceiveError, SendError, ReceiveOk, byzantine_fault, SessionEvent};
 use crate::frag_cache::UnassociatedFragCache;
 use crate::fragged::{Assembled, Fragged};
 use crate::handshake_cache::UnassociatedHandshakeCache;
 use crate::indexed_heap::{BinaryHeapIndex, IndexedBinaryHeap};
 use crate::log_event::LogEvent;
 use crate::proto::*;
+use crate::result::{byzantine_fault, FaultType, OpenError, ReceiveError, ReceiveOk, SendError, SessionEvent};
 use crate::symmetric_state::SymmetricState;
 use crate::{applicationlayer::*, RatchetState};
 
@@ -82,7 +82,9 @@ pub enum IncomingSessionAction {
     Drop,
 }
 
-fn parse_fragment_header<StorageError>(incoming_fragment: &[u8]) -> Result<(usize, usize, [u8; AES_GCM_IV_SIZE]), ReceiveError<StorageError>> {
+fn parse_fragment_header<StorageError>(
+    incoming_fragment: &[u8],
+) -> Result<(usize, usize, [u8; AES_GCM_IV_SIZE]), ReceiveError<StorageError>> {
     let fragment_no = incoming_fragment[FRAGMENT_NO_IDX] as usize;
     let fragment_count = incoming_fragment[FRAGMENT_COUNT_IDX] as usize;
     if fragment_no >= fragment_count || fragment_count > MAX_FRAGMENTS {
@@ -92,7 +94,6 @@ fn parse_fragment_header<StorageError>(incoming_fragment: &[u8]) -> Result<(usiz
     nonce[2..].copy_from_slice(&incoming_fragment[PACKET_NONCE_START..HEADER_SIZE]);
     Ok((fragment_no, fragment_count, nonce))
 }
-
 
 /// Fragments and sends the packet, destroying it in the process.
 ///
@@ -119,9 +120,7 @@ fn send_with_fragmentation<PrpEnc: AesEnc>(
         fragment[FRAGMENT_COUNT_IDX] = fragment_count as u8;
 
         if let Some(hk_send) = hk_send {
-            hk_send.encrypt_in_place(
-                (&mut fragment[HEADER_AUTH_START..HEADER_AUTH_END]).try_into().unwrap(),
-            );
+            hk_send.encrypt_in_place((&mut fragment[HEADER_AUTH_START..HEADER_AUTH_END]).try_into().unwrap());
         }
         if !send(fragment) {
             return false;
@@ -184,7 +183,7 @@ impl<App: ApplicationLayer> Context<App> {
             identity,
             |packet, hk_send| {
                 send_with_fragmentation(send, mtu, packet, hk_send);
-            }
+            },
         )
     }
 
@@ -256,7 +255,8 @@ impl<App: ApplicationLayer> Context<App> {
                 let (fragment_no, fragment_count, nonce) = parse_fragment_header(incoming_fragment)?;
                 let (packet_type, incoming_counter) = from_nonce(&nonce);
 
-                {//vrfy
+                {
+                    //vrfy
                     if packet_type != PACKET_TYPE_DATA {
                         log!(app, ReceivedRawFragment(p, c, fragment_no, fragment_count));
                     }
@@ -332,7 +332,9 @@ impl<App: ApplicationLayer> Context<App> {
                             return Ok(ReceiveOk::Unassociated);
                         } else {
                             for fragment in fragment_buffer.as_ref() {
-                                buffer.try_extend_from_slice(&fragment.as_ref()[HEADER_SIZE..]).map_err(|_| byzantine_fault!(InvalidPacket, true))?;
+                                buffer
+                                    .try_extend_from_slice(&fragment.as_ref()[HEADER_SIZE..])
+                                    .map_err(|_| byzantine_fault!(InvalidPacket, true))?;
                             }
                             // We have not yet authenticated the sender so we do not report
                             // receiving a packet from them.
@@ -351,7 +353,13 @@ impl<App: ApplicationLayer> Context<App> {
                     match packet_type {
                         PACKET_TYPE_HANDSHAKE_RESPONSE => {
                             log!(app, ReceivedRawX2);
-                            received_x2_trans(
+                            received_x2_trans(app, ctx, &session, kid_recv, &nonce, assembled_packet, send_associated)?;
+                            log!(app, X2IsAuthSentX3(&session));
+                            SessionEvent::Control
+                        }
+                        PACKET_TYPE_KEY_CONFIRM => {
+                            log!(app, ReceivedRawKeyConfirm);
+                            let result = received_c1_trans(
                                 app,
                                 ctx,
                                 &session,
@@ -360,13 +368,6 @@ impl<App: ApplicationLayer> Context<App> {
                                 assembled_packet,
                                 send_associated,
                             )?;
-                            log!(app, X2IsAuthSentX3(&session));
-                            SessionEvent::Control
-                        }
-                        PACKET_TYPE_KEY_CONFIRM => {
-                            log!(app, ReceivedRawKeyConfirm);
-                            let result =
-                                received_c1_trans(app, ctx, &session, kid_recv, &nonce, assembled_packet,send_associated)?;
                             log!(app, KeyConfirmIsAuthSentAck(&session));
                             if result {
                                 SessionEvent::Established
@@ -416,10 +417,14 @@ impl<App: ApplicationLayer> Context<App> {
                     let (fragment_no, fragment_count, nonce) = parse_fragment_header(incoming_fragment)?;
                     let (packet_type, incoming_counter) = from_nonce(&nonce);
 
-                    {//vrfy
-                        log!(app, ReceivedRawFragment(packet_type, incoming_counter, frag_no, frag_count));
+                    {
+                        //vrfy
+                        log!(
+                            app,
+                            ReceivedRawFragment(packet_type, incoming_counter, frag_no, frag_count)
+                        );
                         if packet_type != PACKET_TYPE_HANDSHAKE_COMPLETION || incoming_counter != 0 {
-                            return Err(byzantine_fault!(InvalidPacket, true))
+                            return Err(byzantine_fault!(InvalidPacket, true));
                         }
                     }
 
@@ -430,13 +435,15 @@ impl<App: ApplicationLayer> Context<App> {
                             incoming_fragment_buf,
                             fragment_no,
                             fragment_count,
-                            &mut fragment_buffer
+                            &mut fragment_buffer,
                         );
                         if fragment_buffer.is_empty() {
                             return Ok(ReceiveOk::Unassociated);
                         } else {
                             for fragment in fragment_buffer.as_ref() {
-                                buffer.try_extend_from_slice(&fragment.as_ref()[HEADER_SIZE..]).map_err(|_| byzantine_fault!(InvalidPacket, true))?;
+                                buffer
+                                    .try_extend_from_slice(&fragment.as_ref()[HEADER_SIZE..])
+                                    .map_err(|_| byzantine_fault!(InvalidPacket, true))?;
                             }
                             buffer.as_mut()
                         }
@@ -451,12 +458,7 @@ impl<App: ApplicationLayer> Context<App> {
 
                     log!(app, ReceivedRawX3);
                     let session = received_x3_trans(app, ctx, zeta, kid_recv, assembled_packet, |packet, hk_send| {
-                        send_with_fragmentation(
-                            send_unassociated_reply,
-                            send_unassociated_mtu,
-                            packet,
-                            hk_send,
-                        );
+                        send_with_fragmentation(send_unassociated_reply, send_unassociated_mtu, packet, hk_send);
                     })?;
                     log!(app, X3IsAuthSentKeyConfirm(&session));
                     Ok(ReceiveOk::Session(session, SessionEvent::NewSession))
@@ -471,10 +473,11 @@ impl<App: ApplicationLayer> Context<App> {
             let (fragment_no, fragment_count, nonce) = parse_fragment_header(incoming_fragment)?;
             let (packet_type, _c) = from_nonce(&nonce);
 
-            {//vrfy
+            {
+                //vrfy
                 log!(app, ReceivedRawFragment(packet_type, _c, frag_no, frag_count));
                 if packet_type != PACKET_TYPE_HANDSHAKE_HELLO && packet_type != PACKET_TYPE_CHALLENGE {
-                    return Err(byzantine_fault!(InvalidPacket, true))
+                    return Err(byzantine_fault!(InvalidPacket, true));
                 }
             }
 
@@ -489,13 +492,15 @@ impl<App: ApplicationLayer> Context<App> {
                     fragment_count,
                     App::SETTINGS.resend_time as i64,
                     app.time(),
-                    &mut fragment_buffer
+                    &mut fragment_buffer,
                 );
                 if fragment_buffer.is_empty() {
                     return Ok(ReceiveOk::Unassociated);
                 } else {
                     for fragment in fragment_buffer.as_ref() {
-                        buffer.try_extend_from_slice(&fragment.as_ref()[HEADER_SIZE..]).map_err(|_| byzantine_fault!(InvalidPacket, true))?;
+                        buffer
+                            .try_extend_from_slice(&fragment.as_ref()[HEADER_SIZE..])
+                            .map_err(|_| byzantine_fault!(InvalidPacket, true))?;
                     }
                     buffer.as_mut()
                 }
@@ -506,17 +511,24 @@ impl<App: ApplicationLayer> Context<App> {
             if packet_type == PACKET_TYPE_HANDSHAKE_HELLO {
                 log!(app, ReceivedRawX1);
 
-                if !(HANDSHAKE_HELLO_CHALLENGE_MIN_SIZE..=HANDSHAKE_HELLO_CHALLENGE_MAX_SIZE).contains(&assembled_packet.len()) {
+                if !(HANDSHAKE_HELLO_CHALLENGE_MIN_SIZE..=HANDSHAKE_HELLO_CHALLENGE_MAX_SIZE)
+                    .contains(&assembled_packet.len())
+                {
                     return Err(byzantine_fault!(InvalidPacket, true));
                 }
                 // Process recv challenge layer.
                 let challenge_start = assembled_packet.len() - CHALLENGE_SIZE;
-                let result = ctx.challenge.process_hello::<App::Hash>(remote_address, (&assembled_packet[challenge_start..]).try_into().unwrap());
+                let result = ctx.challenge.process_hello::<App::Hash>(
+                    remote_address,
+                    (&assembled_packet[challenge_start..]).try_into().unwrap(),
+                );
                 if let Err(challenge) = result {
                     log!(app, X1FailedChallengeSentNewChallenge);
                     let mut challenge_packet = ArrayVec::<u8, HEADERED_CHALLENGE_SIZE>::new();
                     challenge_packet.extend([0u8; HEADER_SIZE]);
-                    challenge_packet.try_extend_from_slice(&assembled_packet[..KID_SIZE]).unwrap();
+                    challenge_packet
+                        .try_extend_from_slice(&assembled_packet[..KID_SIZE])
+                        .unwrap();
                     challenge_packet.extend(challenge);
                     let nonce = to_nonce(PACKET_TYPE_CHALLENGE, ctx.rng.lock().unwrap().next_u64());
                     challenge_packet[FRAGMENT_COUNT_IDX] = 1;
@@ -531,12 +543,7 @@ impl<App: ApplicationLayer> Context<App> {
 
                 // Process recv zeta layer.
                 received_x1_trans(app, ctx, &nonce, assembled_packet, |packet, hk_send| {
-                    send_with_fragmentation(
-                        send_unassociated_reply,
-                        send_unassociated_mtu,
-                        packet,
-                        hk_send,
-                    );
+                    send_with_fragmentation(send_unassociated_reply, send_unassociated_mtu, packet, hk_send);
                 })?;
                 log!(app, X1IsAuthSentX2);
 
@@ -547,7 +554,9 @@ impl<App: ApplicationLayer> Context<App> {
                 if assembled_packet.len() != KID_SIZE + CHALLENGE_SIZE {
                     return Err(byzantine_fault!(InvalidPacket, true));
                 }
-                if let Some(kid_recv) = NonZeroU32::new(u32::from_be_bytes(assembled_packet[..KID_SIZE].try_into().unwrap())) {
+                if let Some(kid_recv) =
+                    NonZeroU32::new(u32::from_be_bytes(assembled_packet[..KID_SIZE].try_into().unwrap()))
+                {
                     if let Some(Some(session)) = ctx.session_map.read().unwrap().get(&kid_recv).map(|r| r.upgrade()) {
                         respond_to_challenge(ctx, &session, &assembled_packet[KID_SIZE..].try_into().unwrap());
                         log!(app, ChallengeIsAuth(&session));

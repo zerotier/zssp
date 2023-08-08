@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub struct Window<const L: usize, const MAX: u64> ([AtomicU64; L]);
+pub struct Window<const L: usize, const MAX: u64>([AtomicU64; L]);
 
 impl<const L: usize, const MAX: u64> Window<L, MAX> {
     pub fn new() -> Self {

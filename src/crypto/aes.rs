@@ -39,7 +39,6 @@ pub trait AesDec: Send + Sync {
     fn decrypt_in_place(&self, block: &mut [u8; AES_256_BLOCK_SIZE]);
 }
 
-
 pub trait AesGcmEncContext {
     fn encrypt(&mut self, input: &[u8], output: &mut [u8]);
 
@@ -54,8 +53,12 @@ pub trait AesGcmDecContext {
 }
 
 pub trait HighThroughputAesGcmPool: Send + Sync {
-    type EncContext<'a>: AesGcmEncContext where Self: 'a;
-    type DecContext<'a>: AesGcmDecContext where Self: 'a;
+    type EncContext<'a>: AesGcmEncContext
+    where
+        Self: 'a;
+    type DecContext<'a>: AesGcmDecContext
+    where
+        Self: 'a;
 
     fn new(encrypt_key: &[u8; AES_256_KEY_SIZE], decrypt_key: &[u8; AES_256_KEY_SIZE]) -> Self;
 
@@ -64,7 +67,18 @@ pub trait HighThroughputAesGcmPool: Send + Sync {
 }
 
 pub trait LowThroughputAesGcm {
-    fn encrypt_in_place(key: &[u8; AES_256_KEY_SIZE], iv: &[u8; AES_GCM_IV_SIZE], aad: &[u8], data: &mut [u8]) -> [u8; AES_GCM_TAG_SIZE];
+    fn encrypt_in_place(
+        key: &[u8; AES_256_KEY_SIZE],
+        iv: &[u8; AES_GCM_IV_SIZE],
+        aad: &[u8],
+        data: &mut [u8],
+    ) -> [u8; AES_GCM_TAG_SIZE];
     #[must_use]
-    fn decrypt_in_place(key: &[u8; AES_256_KEY_SIZE], iv: &[u8; AES_GCM_IV_SIZE], aad: &[u8], data: &mut [u8], tag: &[u8; AES_GCM_TAG_SIZE]) -> bool;
+    fn decrypt_in_place(
+        key: &[u8; AES_256_KEY_SIZE],
+        iv: &[u8; AES_GCM_IV_SIZE],
+        aad: &[u8],
+        data: &mut [u8],
+        tag: &[u8; AES_GCM_TAG_SIZE],
+    ) -> bool;
 }

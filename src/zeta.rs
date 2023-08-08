@@ -5,26 +5,28 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::num::NonZeroU32;
 use std::ops::{Deref, DerefMut};
-use std::sync::atomic::{AtomicU64, Ordering, AtomicBool, AtomicI64};
-use std::sync::{Arc, Mutex, Weak, RwLock, MutexGuard, RwLockWriteGuard};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockWriteGuard, Weak};
 use zeroize::Zeroizing;
 
 use crate::antireplay::Window;
 use crate::applicationlayer::ApplicationLayer;
 use crate::applicationlayer::RatchetUpdate;
 use crate::challenge::{gen_null_response, respond_to_challenge_in_place};
-use crate::zssp::{ContextInner, log};
+use crate::zssp::{log, ContextInner};
 //use crate::context::{log, ContextInner, SessionMap};
 use crate::crypto::aes::*;
+use crate::crypto::kyber1024::{
+    Kyber1024PrivateKey, KYBER_CIPHERTEXT_SIZE, KYBER_PLAINTEXT_SIZE, KYBER_PUBLIC_KEY_SIZE,
+};
 use crate::crypto::p384::{P384KeyPair, P384PublicKey, P384_ECDH_SHARED_SECRET_SIZE, P384_PUBLIC_KEY_SIZE};
 use crate::crypto::sha512::{HashSha512, HmacSha512};
-use crate::crypto::kyber1024::{Kyber1024PrivateKey, KYBER_PUBLIC_KEY_SIZE, KYBER_CIPHERTEXT_SIZE, KYBER_PLAINTEXT_SIZE};
+use crate::fragged::Fragged;
 use crate::indexed_heap::BinaryHeapIndex;
 use crate::proto::*;
 use crate::ratchet_state::RatchetState;
-use crate::result::{byzantine_fault, FaultType, OpenError, ReceiveError, SendError, ReceiveOk};
+use crate::result::{byzantine_fault, FaultType, OpenError, ReceiveError, ReceiveOk, SendError};
 use crate::symmetric_state::SymmetricState;
-use crate::fragged::Fragged;
 #[cfg(feature = "logging")]
 use crate::LogEvent::*;
 
@@ -50,11 +52,19 @@ pub(crate) fn from_nonce(n: &[u8]) -> (u8, u64) {
     let c_start = n.len() - 8;
     (n[c_start - 1], u64::from_be_bytes(n[c_start..].try_into().unwrap()))
 }
-fn create_ratchet_state<App: ApplicationLayer>(hmac: &mut App::HmacHash, noise: &SymmetricState<App>, pre_chain_len: u64) -> RatchetState {
+fn create_ratchet_state<App: ApplicationLayer>(
+    hmac: &mut App::HmacHash,
+    noise: &SymmetricState<App>,
+    pre_chain_len: u64,
+) -> RatchetState {
     let mut rk = Zeroizing::new([0u8; HASHLEN]);
     let mut rf = Zeroizing::new([0u8; HASHLEN]);
     noise.get_ask(hmac, LABEL_RATCHET_STATE, &mut rk, &mut rf);
-    RatchetState::new(Zeroizing::new(rk[..RATCHET_SIZE].try_into().unwrap()), Zeroizing::new(rf[..RATCHET_SIZE].try_into().unwrap()), pre_chain_len + 1)
+    RatchetState::new(
+        Zeroizing::new(rk[..RATCHET_SIZE].try_into().unwrap()),
+        Zeroizing::new(rf[..RATCHET_SIZE].try_into().unwrap()),
+        pre_chain_len + 1,
+    )
 }
 fn get_counter<App: ApplicationLayer>(session: &Session<App>, state: &MutableState<App>) -> Option<(u64, bool)> {
     if session.session_has_expired.load(Ordering::Relaxed) {
@@ -131,7 +141,10 @@ impl<App: ApplicationLayer> Default for DuplexKey<App> {
 }
 impl<App: ApplicationLayer> DuplexKey<App> {
     fn replace_nk(&mut self, nk_send: &[u8; HASHLEN], nk_recv: &[u8; HASHLEN]) {
-        self.nk = Some(App::AeadPool::new((&nk_send[..AES_256_KEY_SIZE]).try_into().unwrap(), (&nk_recv[..AES_256_KEY_SIZE]).try_into().unwrap()))
+        self.nk = Some(App::AeadPool::new(
+            (&nk_send[..AES_256_KEY_SIZE]).try_into().unwrap(),
+            (&nk_recv[..AES_256_KEY_SIZE]).try_into().unwrap(),
+        ))
     }
 }
 
@@ -144,7 +157,9 @@ impl Keys {
     fn replace_kek(&mut self, kek: &[u8; HASHLEN]) {
         // We want to give rust the best chance of implementing this in a way that does
         // not leak the key on the stack.
-        self.kek.get_or_insert(Zeroizing::new([0u8; AES_256_KEY_SIZE])).copy_from_slice(&kek[..AES_256_KEY_SIZE]);
+        self.kek
+            .get_or_insert(Zeroizing::new([0u8; AES_256_KEY_SIZE]))
+            .copy_from_slice(&kek[..AES_256_KEY_SIZE]);
     }
 }
 
@@ -185,7 +200,13 @@ pub(crate) enum ZetaAutomata<App: ApplicationLayer> {
 }
 
 impl<App: ApplicationLayer> SymmetricState<App> {
-    fn write_e<const CAP: usize>(&mut self, hash: &mut App::Hash, hmac: &mut App::HmacHash, rng: &Mutex<App::Rng>, packet: &mut ArrayVec<u8, CAP>) -> App::KeyPair {
+    fn write_e<const CAP: usize>(
+        &mut self,
+        hash: &mut App::Hash,
+        hmac: &mut App::HmacHash,
+        rng: &Mutex<App::Rng>,
+        packet: &mut ArrayVec<u8, CAP>,
+    ) -> App::KeyPair {
         let e_secret = App::KeyPair::generate(rng.lock().unwrap().deref_mut());
         let pub_key = e_secret.public_key_bytes();
         packet.extend(pub_key);
@@ -193,7 +214,13 @@ impl<App: ApplicationLayer> SymmetricState<App> {
         self.mix_key(hmac, &pub_key);
         e_secret
     }
-    fn read_e(&mut self, hash: &mut App::Hash, hmac: &mut App::HmacHash, i: &mut usize, packet: &[u8]) -> Option<App::PublicKey> {
+    fn read_e(
+        &mut self,
+        hash: &mut App::Hash,
+        hmac: &mut App::HmacHash,
+        i: &mut usize,
+        packet: &[u8],
+    ) -> Option<App::PublicKey> {
         let j = *i + P384_PUBLIC_KEY_SIZE;
         let pub_key = &packet[*i..j];
         self.mix_hash(hash, pub_key);
@@ -238,7 +265,9 @@ fn set_header(packet: &mut [u8], kid_send: u32, nonce: &[u8; AES_GCM_IV_SIZE]) {
 }
 
 fn create_a1_state<App: ApplicationLayer>(
-    hash: &mut App::Hash, hmac: &mut App::HmacHash, rng: &Mutex<App::Rng>,
+    hash: &mut App::Hash,
+    hmac: &mut App::HmacHash,
+    rng: &Mutex<App::Rng>,
     s_remote: &App::PublicKey,
     kid_recv: NonZeroU32,
     ratchet_state1: &RatchetState,
@@ -312,11 +341,21 @@ pub(crate) fn trans_to_a1<App: ApplicationLayer>(
 
     let hash = &mut App::Hash::new();
     let hmac = &mut App::HmacHash::new();
-    let a1 = create_a1_state(hash, hmac, &ctx.rng, &s_remote, kid_recv, &ratchet_state1, ratchet_state2.as_ref(), identity).ok_or(OpenError::InvalidPublicKey)?;
+    let a1 = create_a1_state(
+        hash,
+        hmac,
+        &ctx.rng,
+        &s_remote,
+        kid_recv,
+        &ratchet_state1,
+        ratchet_state2.as_ref(),
+        identity,
+    )
+    .ok_or(OpenError::InvalidPublicKey)?;
 
     let mut noise_kk_ss = Zeroizing::new([0u8; P384_ECDH_SHARED_SECRET_SIZE]);
     if !ctx.s_secret.agree(&s_remote, &mut noise_kk_ss) {
-        return Err(OpenError::InvalidPublicKey)
+        return Err(OpenError::InvalidPublicKey);
     }
 
     let mut hk_recv = Zeroizing::new([0u8; HASHLEN]);
@@ -359,18 +398,18 @@ pub(crate) fn trans_to_a1<App: ApplicationLayer>(
     }
 
     session_map.insert(kid_recv, Arc::downgrade(&session));
-    session_queue.push_reserved(
-        queue_idx,
-        Arc::downgrade(&session),
-        Reverse(resend_timer),
-    );
+    session_queue.push_reserved(queue_idx, Arc::downgrade(&session), Reverse(resend_timer));
 
     send(&mut x1, None);
 
     Ok(session)
 }
 /// Corresponds to Algorithm 13 found in Section 5.
-pub(crate) fn respond_to_challenge<App: ApplicationLayer>(ctx: &Arc<ContextInner<App>>, session: &Session<App>,  challenge: &[u8; CHALLENGE_SIZE]) {
+pub(crate) fn respond_to_challenge<App: ApplicationLayer>(
+    ctx: &Arc<ContextInner<App>>,
+    session: &Session<App>,
+    challenge: &[u8; CHALLENGE_SIZE],
+) {
     let mut state = session.state.write().unwrap();
     if let ZetaAutomata::A1(a1) = &mut state.beta {
         let response_start = a1.x1.len() - CHALLENGE_SIZE;
@@ -408,13 +447,18 @@ pub(crate) fn received_x1_trans<App: ApplicationLayer>(
     // Noise process prologue.
     let j = i + KID_SIZE;
     noise.mix_hash(hash, &x1[i..j]);
-    let kid_send = NonZeroU32::new(u32::from_be_bytes(x1[i..j].try_into().unwrap())).ok_or(byzantine_fault!(InvalidPacket, true))?;
+    let kid_send = NonZeroU32::new(u32::from_be_bytes(x1[i..j].try_into().unwrap()))
+        .ok_or(byzantine_fault!(InvalidPacket, true))?;
     noise.mix_hash(hash, &ctx.s_secret.public_key_bytes());
     i = j;
     // Process message pattern 1 e token.
-    let e_remote = noise.read_e(hash, hmac, &mut i, &x1).ok_or(byzantine_fault!(FailedAuth, true))?;
+    let e_remote = noise
+        .read_e(hash, hmac, &mut i, &x1)
+        .ok_or(byzantine_fault!(FailedAuth, true))?;
     // Process message pattern 1 es token.
-    noise.mix_dh(hmac, &ctx.s_secret, &e_remote).ok_or(byzantine_fault!(FailedAuth, true))?;
+    noise
+        .mix_dh(hmac, &ctx.s_secret, &e_remote)
+        .ok_or(byzantine_fault!(FailedAuth, true))?;
     // Process message pattern 1 e1 token.
     let j = i + KYBER_PUBLIC_KEY_SIZE;
     let k = i + AES_GCM_TAG_SIZE;
@@ -462,12 +506,19 @@ pub(crate) fn received_x1_trans<App: ApplicationLayer>(
     // Process message pattern 2 e token.
     let e_secret = noise.write_e(hash, hmac, &ctx.rng, &mut x2);
     // Process message pattern 2 ee token.
-    noise.mix_dh(hmac, &e_secret, &e_remote).ok_or(byzantine_fault!(FailedAuth, true))?;
+    noise
+        .mix_dh(hmac, &e_secret, &e_remote)
+        .ok_or(byzantine_fault!(FailedAuth, true))?;
     // Process message pattern 2 ekem1 token.
     {
         let i = x2.len();
         let mut ekem1_secret = Zeroizing::new([0u8; KYBER_PLAINTEXT_SIZE]);
-        let ekem1 = App::Kem::encapsulate(ctx.rng.lock().unwrap().deref_mut(), (&x1[e1_start..e1_end]).try_into().unwrap(), &mut ekem1_secret).ok_or(byzantine_fault!(FailedAuth, true))?;
+        let ekem1 = App::Kem::encapsulate(
+            ctx.rng.lock().unwrap().deref_mut(),
+            (&x1[e1_start..e1_end]).try_into().unwrap(),
+            &mut ekem1_secret,
+        )
+        .ok_or(byzantine_fault!(FailedAuth, true))?;
         x2.extend(ekem1);
         let tag = noise.encrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_HANDSHAKE_RESPONSE, 0), &mut x2[i..]);
         x2.extend(tag);
@@ -476,7 +527,10 @@ pub(crate) fn received_x1_trans<App: ApplicationLayer>(
     // Process message pattern 2 psk2 token.
     noise.mix_key_and_hash(hash, hmac, ratchet_state.key.as_ref());
     // Process message pattern 2 payload.
-    let kid_recv = gen_kid(ctx.session_map.read().unwrap().deref(), ctx.rng.lock().unwrap().deref_mut());
+    let kid_recv = gen_kid(
+        ctx.session_map.read().unwrap().deref(),
+        ctx.rng.lock().unwrap().deref_mut(),
+    );
 
     let i = x2.len();
     x2.extend(kid_recv.get().to_be_bytes());
@@ -504,10 +558,13 @@ pub(crate) fn received_x1_trans<App: ApplicationLayer>(
             noise,
             defrag: Mutex::new(Fragged::new()),
         }),
-        app.time()
+        app.time(),
     );
 
-    send(&mut x2, Some(&App::PrpEnc::new(&hk_send[..AES_256_KEY_SIZE].try_into().unwrap())));
+    send(
+        &mut x2,
+        Some(&App::PrpEnc::new(&hk_send[..AES_256_KEY_SIZE].try_into().unwrap())),
+    );
     Ok(())
 }
 /// Corresponds to Transition Algorithm 3 found in Section 4.3.
@@ -548,9 +605,13 @@ pub(crate) fn received_x2_trans<App: ApplicationLayer>(
         let mut noise = a1.noise.clone();
         let mut i = 0;
         // Process message pattern 2 e token.
-        let e_remote = noise.read_e(hash, hmac, &mut i, &x2).ok_or(byzantine_fault!(FailedAuth, true))?;
+        let e_remote = noise
+            .read_e(hash, hmac, &mut i, &x2)
+            .ok_or(byzantine_fault!(FailedAuth, true))?;
         // Process message pattern 2 ee token.
-        noise.mix_dh(hmac, &a1.e_secret, &e_remote).ok_or(byzantine_fault!(FailedAuth, true))?;
+        noise
+            .mix_dh(hmac, &a1.e_secret, &e_remote)
+            .ok_or(byzantine_fault!(FailedAuth, true))?;
         // Process message pattern 2 ekem1 token.
         let j = i + KYBER_CIPHERTEXT_SIZE;
         let k = j + AES_GCM_TAG_SIZE;
@@ -559,7 +620,10 @@ pub(crate) fn received_x2_trans<App: ApplicationLayer>(
             return Err(byzantine_fault!(FailedAuth, true));
         }
         let mut ekem1_secret = Zeroizing::new([0u8; KYBER_PLAINTEXT_SIZE]);
-        if !a1.e1_secret.decapsulate((&x2[i..j]).try_into().unwrap(), &mut ekem1_secret) {
+        if !a1
+            .e1_secret
+            .decapsulate((&x2[i..j]).try_into().unwrap(), &mut ekem1_secret)
+        {
             return Err(byzantine_fault!(FailedAuth, true));
         }
         noise.mix_key(hmac, ekem1_secret.as_ref());
@@ -618,7 +682,9 @@ pub(crate) fn received_x2_trans<App: ApplicationLayer>(
         let tag = noise.encrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_HANDSHAKE_COMPLETION, 1), &mut x3[i..]);
         x3.extend(tag);
         // Process message pattern 3 se token.
-        noise.mix_dh(hmac, &ctx.s_secret, &e_remote).ok_or(byzantine_fault!(FailedAuth, true))?;
+        noise
+            .mix_dh(hmac, &ctx.s_secret, &e_remote)
+            .ok_or(byzantine_fault!(FailedAuth, true))?;
         // Process message pattern 3 payload.
         let i = x3.len();
         x3.try_extend_from_slice(&a1.identity).unwrap();
@@ -676,11 +742,19 @@ pub(crate) fn received_x2_trans<App: ApplicationLayer>(
                 // This return is unreachable.
                 return Err(byzantine_fault!(FailedAuth, true));
             };
-            state.beta = ZetaAutomata::A3 { identity: a1.identity.clone(), x3: x3.clone(), kid_send: kid_send.get(), nonce };
+            state.beta = ZetaAutomata::A3 {
+                identity: a1.identity.clone(),
+                x3: x3.clone(),
+                kid_send: kid_send.get(),
+                nonce,
+            };
             resend_timer
         };
         drop(kex_lock);
-        ctx.session_queue.lock().unwrap().change_priority(session.queue_idx, Reverse(resend_timer));
+        ctx.session_queue
+            .lock()
+            .unwrap()
+            .change_priority(session.queue_idx, Reverse(resend_timer));
 
         Ok(x3)
     })();
@@ -722,10 +796,13 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
     if !noise.decrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_HANDSHAKE_COMPLETION, 1), &mut x3[i..j], tag) {
         return Err(byzantine_fault!(FailedAuth, true));
     }
-    let s_remote = App::PublicKey::from_bytes((&x3[i..j]).try_into().unwrap()).ok_or(byzantine_fault!(FailedAuth, true))?;
+    let s_remote =
+        App::PublicKey::from_bytes((&x3[i..j]).try_into().unwrap()).ok_or(byzantine_fault!(FailedAuth, true))?;
     i = k;
     // Process message pattern 3 se token.
-    noise.mix_dh(hmac, &zeta.e_secret, &s_remote).ok_or(byzantine_fault!(FailedAuth, true))?;
+    noise
+        .mix_dh(hmac, &zeta.e_secret, &s_remote)
+        .ok_or(byzantine_fault!(FailedAuth, true))?;
     // Process message pattern 3 payload.
     let k = x3.len();
     let j = k - AES_GCM_TAG_SIZE;
@@ -752,7 +829,12 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
         let mut d = ArrayVec::<u8, HEADERED_SESSION_REJECTED_SIZE>::new();
         d.extend([0u8; HEADER_SIZE]);
         let nonce = to_nonce(PACKET_TYPE_SESSION_REJECTED, c);
-        d.extend(App::Aead::encrypt_in_place((&kek_send[..AES_256_KEY_SIZE]).try_into().unwrap(), &nonce, &[], &mut []));
+        d.extend(App::Aead::encrypt_in_place(
+            (&kek_send[..AES_256_KEY_SIZE]).try_into().unwrap(),
+            &nonce,
+            &[],
+            &mut [],
+        ));
         set_header(&mut d, zeta.kid_send.get(), &nonce);
         d
     };
@@ -891,7 +973,12 @@ pub(crate) fn received_c1_trans<App: ApplicationLayer>(
         return Err(byzantine_fault!(OutOfSequence, false));
     };
 
-    let specified_key = state.key_ref(is_other).recv.kek.as_ref().ok_or(byzantine_fault!(OutOfSequence, true))?;
+    let specified_key = state
+        .key_ref(is_other)
+        .recv
+        .kek
+        .as_ref()
+        .ok_or(byzantine_fault!(OutOfSequence, true))?;
     let tag = c1[..].try_into().unwrap();
     if !App::Aead::decrypt_in_place(specified_key, n, &[], &mut [], tag) {
         return Err(byzantine_fault!(FailedAuth, true));
@@ -928,13 +1015,17 @@ pub(crate) fn received_c1_trans<App: ApplicationLayer>(
                 state.timeout_timer = app.time()
                     + App::SETTINGS
                         .rekey_after_time
-                        .saturating_sub(ctx.rng.lock().unwrap().next_u64() % App::SETTINGS.rekey_time_max_jitter) as i64;
+                        .saturating_sub(ctx.rng.lock().unwrap().next_u64() % App::SETTINGS.rekey_time_max_jitter)
+                        as i64;
                 state.resend_timer = AtomicI64::new(i64::MAX);
                 state.beta = ZetaAutomata::S2;
                 state.timeout_timer
             };
             drop(kex_lock);
-            ctx.session_queue.lock().unwrap().change_priority(session.queue_idx, Reverse(timeout_timer));
+            ctx.session_queue
+                .lock()
+                .unwrap()
+                .change_priority(session.queue_idx, Reverse(timeout_timer));
             state = session.state.read().unwrap();
         }
     }
@@ -943,9 +1034,18 @@ pub(crate) fn received_c1_trans<App: ApplicationLayer>(
     c2.extend([0u8; HEADER_SIZE]);
     let (c, _) = get_counter(session, &state).ok_or(byzantine_fault!(ExpiredCounter, false))?;
     let nonce = to_nonce(PACKET_TYPE_ACK, c);
-    let latest_confirmed_key = state.key_ref(false).send.kek.as_ref().ok_or(byzantine_fault!(OutOfSequence, true))?;
+    let latest_confirmed_key = state
+        .key_ref(false)
+        .send
+        .kek
+        .as_ref()
+        .ok_or(byzantine_fault!(OutOfSequence, true))?;
     c2.extend(App::Aead::encrypt_in_place(latest_confirmed_key, &nonce, &[], &mut []));
-    let kid_send = state.key_ref(false).send.kid.ok_or(byzantine_fault!(OutOfSequence, false))?;
+    let kid_send = state
+        .key_ref(false)
+        .send
+        .kid
+        .ok_or(byzantine_fault!(OutOfSequence, false))?;
     set_header(&mut c2, kid_send.get(), &nonce);
 
     send(&mut c2, Some(&session.hk_send));
@@ -993,13 +1093,17 @@ pub(crate) fn received_c2_trans<App: ApplicationLayer>(
         state.timeout_timer = app.time()
             + App::SETTINGS
                 .rekey_after_time
-                .saturating_sub(ctx.rng.lock().unwrap().next_u64() % App::SETTINGS.rekey_time_max_jitter) as i64;
+                .saturating_sub(ctx.rng.lock().unwrap().next_u64() % App::SETTINGS.rekey_time_max_jitter)
+                as i64;
         state.resend_timer = AtomicI64::new(i64::MAX);
         state.beta = ZetaAutomata::S2;
         state.timeout_timer
     };
     drop(kex_lock);
-    ctx.session_queue.lock().unwrap().change_priority(session.queue_idx, Reverse(timeout_timer));
+    ctx.session_queue
+        .lock()
+        .unwrap()
+        .change_priority(session.queue_idx, Reverse(timeout_timer));
     Ok(())
 }
 /// Corresponds to the trivial Transition Algorithm described for processing D packets found in
@@ -1086,8 +1190,12 @@ pub(crate) fn process_timers<App: ApplicationLayer>(
                     drop(state);
                     let resend_timer = {
                         let mut state = session.state.write().unwrap();
-                        session.hk_recv.reset((&hk_recv[..AES_256_KEY_SIZE]).try_into().unwrap());
-                        session.hk_send.reset((&hk_send[..AES_256_KEY_SIZE]).try_into().unwrap());
+                        session
+                            .hk_recv
+                            .reset((&hk_recv[..AES_256_KEY_SIZE]).try_into().unwrap());
+                        session
+                            .hk_send
+                            .reset((&hk_send[..AES_256_KEY_SIZE]).try_into().unwrap());
                         *state.key_mut(true) = DuplexKey::default();
                         state.key_mut(true).recv.kid = Some(new_kid_recv);
                         let resend_timer = current_time + App::SETTINGS.resend_time as i64;
@@ -1151,7 +1259,12 @@ pub(crate) fn process_timers<App: ApplicationLayer>(
 
                 if let Some((c, _)) = get_counter(session, &state) {
                     let nonce = to_nonce(PACKET_TYPE_REKEY_INIT, c);
-                    let tag = App::Aead::encrypt_in_place(state.key_ref(false).send.kek.as_ref().unwrap(), &nonce, &[], &mut k1);
+                    let tag = App::Aead::encrypt_in_place(
+                        state.key_ref(false).send.kek.as_ref().unwrap(),
+                        &nonce,
+                        &[],
+                        &mut k1,
+                    );
                     k1.extend(tag);
                     set_header(&mut k1, state.key_ref(false).send.kid.unwrap().get(), &nonce);
 
@@ -1208,9 +1321,18 @@ pub(crate) fn process_timers<App: ApplicationLayer>(
             };
             if let Some((c, _)) = get_counter(session, &state) {
                 let nonce = to_nonce(packet_type, c);
-                let tag = App::Aead::encrypt_in_place(state.key_ref(false).send.kek.as_ref().unwrap(), &nonce, &[], &mut control_payload);
+                let tag = App::Aead::encrypt_in_place(
+                    state.key_ref(false).send.kek.as_ref().unwrap(),
+                    &nonce,
+                    &[],
+                    &mut control_payload,
+                );
                 control_payload.extend(tag);
-                set_header(&mut control_payload, state.key_ref(false).send.kid.unwrap().get(), &nonce);
+                set_header(
+                    &mut control_payload,
+                    state.key_ref(false).send.kid.unwrap().get(),
+                    &nonce,
+                );
 
                 send(&mut control_payload, Some(&session.hk_send));
             }
@@ -1220,7 +1342,11 @@ pub(crate) fn process_timers<App: ApplicationLayer>(
         }
     }
 }
-fn remap<App: ApplicationLayer>(ctx: &Arc<ContextInner<App>>, session: &Arc<Session<App>>, state: &MutableState<App>) -> NonZeroU32 {
+fn remap<App: ApplicationLayer>(
+    ctx: &Arc<ContextInner<App>>,
+    session: &Arc<Session<App>>,
+    state: &MutableState<App>,
+) -> NonZeroU32 {
     let mut session_map = ctx.session_map.write().unwrap();
     let weak = if let Some(Some(weak)) = state.key_ref(true).recv.kid.as_ref().map(|kid| session_map.remove(kid)) {
         weak
@@ -1270,7 +1396,13 @@ pub(crate) fn received_k1_trans<App: ApplicationLayer>(
 
     let i = k1.len() - AES_GCM_TAG_SIZE;
     let tag = k1[i..].try_into().unwrap();
-    if !App::Aead::decrypt_in_place(state.key_ref(false).recv.kek.as_ref().unwrap(), n, &[], &mut k1[..i], &tag) {
+    if !App::Aead::decrypt_in_place(
+        state.key_ref(false).recv.kek.as_ref().unwrap(),
+        n,
+        &[],
+        &mut k1[..i],
+        &tag,
+    ) {
         return Err(byzantine_fault!(FailedAuth, true));
     }
     let (_, c) = from_nonce(n);
@@ -1289,9 +1421,13 @@ pub(crate) fn received_k1_trans<App: ApplicationLayer>(
         // Process message pattern 1 psk0 token.
         noise.mix_key_and_hash(hash, hmac, state.ratchet_state1.key.as_ref());
         // Process message pattern 1 e token.
-        let e_remote = noise.read_e(hash, hmac, &mut i, &k1).ok_or(byzantine_fault!(FailedAuth, true))?;
+        let e_remote = noise
+            .read_e(hash, hmac, &mut i, &k1)
+            .ok_or(byzantine_fault!(FailedAuth, true))?;
         // Process message pattern 1 es token.
-        noise.mix_dh(hmac, &ctx.s_secret, &e_remote).ok_or(byzantine_fault!(FailedAuth, true))?;
+        noise
+            .mix_dh(hmac, &ctx.s_secret, &e_remote)
+            .ok_or(byzantine_fault!(FailedAuth, true))?;
         // Process message pattern 1 ss token.
         noise.mix_key(hmac, session.noise_kk_ss.as_ref());
         // Process message pattern 1 payload.
@@ -1301,16 +1437,21 @@ pub(crate) fn received_k1_trans<App: ApplicationLayer>(
         if !noise.decrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_REKEY_INIT, 0), &mut k1[i..j], tag) {
             return Err(byzantine_fault!(FailedAuth, true));
         }
-        let kid_send = NonZeroU32::new(u32::from_be_bytes(k1[i..j].try_into().unwrap())).ok_or(byzantine_fault!(FailedAuth, true))?;
+        let kid_send = NonZeroU32::new(u32::from_be_bytes(k1[i..j].try_into().unwrap()))
+            .ok_or(byzantine_fault!(FailedAuth, true))?;
 
         let mut k2 = ArrayVec::<u8, HEADERED_REKEY_SIZE>::new();
         k2.extend([0u8; HEADER_SIZE]);
         // Process message pattern 2 e token.
         let e_secret = noise.write_e(hash, hmac, &ctx.rng, &mut k2);
         // Process message pattern 2 ee token.
-        noise.mix_dh(hmac, &e_secret, &e_remote).ok_or(byzantine_fault!(FailedAuth, true))?;
+        noise
+            .mix_dh(hmac, &e_secret, &e_remote)
+            .ok_or(byzantine_fault!(FailedAuth, true))?;
         // Process message pattern 2 se token.
-        noise.mix_dh(hmac, &ctx.s_secret, &e_remote).ok_or(byzantine_fault!(FailedAuth, true))?;
+        noise
+            .mix_dh(hmac, &ctx.s_secret, &e_remote)
+            .ok_or(byzantine_fault!(FailedAuth, true))?;
         // Process message pattern 2 payload.
         let i = k2.len();
         let new_kid_recv = remap(ctx, session, &state);
@@ -1360,7 +1501,10 @@ pub(crate) fn received_k1_trans<App: ApplicationLayer>(
             resend_timer
         };
         drop(kex_lock);
-        ctx.session_queue.lock().unwrap().change_priority(session.queue_idx, Reverse(resend_timer));
+        ctx.session_queue
+            .lock()
+            .unwrap()
+            .change_priority(session.queue_idx, Reverse(resend_timer));
         let state = session.state.read().unwrap();
 
         let (c, _) = get_counter(session, &state).ok_or(byzantine_fault!(ExpiredCounter, false))?;
@@ -1408,7 +1552,13 @@ pub(crate) fn received_k2_trans<App: ApplicationLayer>(
 
     let i = k2.len() - AES_GCM_TAG_SIZE;
     let tag = k2[i..].try_into().unwrap();
-    if !App::Aead::decrypt_in_place(state.key_ref(false).recv.kek.as_ref().unwrap(), n, &[], &mut k2[..i], &tag) {
+    if !App::Aead::decrypt_in_place(
+        state.key_ref(false).recv.kek.as_ref().unwrap(),
+        n,
+        &[],
+        &mut k2[..i],
+        &tag,
+    ) {
         return Err(byzantine_fault!(FailedAuth, true));
     }
     let (_, c) = from_nonce(n);
@@ -1422,11 +1572,17 @@ pub(crate) fn received_k2_trans<App: ApplicationLayer>(
             let hash = &mut App::Hash::new();
             let hmac = &mut App::HmacHash::new();
             // Process message pattern 2 e token.
-            let e_remote = noise.read_e(hash, hmac, &mut i, &k2).ok_or(byzantine_fault!(FailedAuth, true))?;
+            let e_remote = noise
+                .read_e(hash, hmac, &mut i, &k2)
+                .ok_or(byzantine_fault!(FailedAuth, true))?;
             // Process message pattern 2 ee token.
-            noise.mix_dh(hmac, e_secret, &e_remote).ok_or(byzantine_fault!(FailedAuth, true))?;
+            noise
+                .mix_dh(hmac, e_secret, &e_remote)
+                .ok_or(byzantine_fault!(FailedAuth, true))?;
             // Process message pattern 2 se token.
-            noise.mix_dh(hmac, e_secret, &session.s_remote).ok_or(byzantine_fault!(FailedAuth, true))?;
+            noise
+                .mix_dh(hmac, e_secret, &session.s_remote)
+                .ok_or(byzantine_fault!(FailedAuth, true))?;
             // Process message pattern 2 payload.
             let j = i + KID_SIZE;
             let k = j + AES_GCM_TAG_SIZE;
@@ -1434,7 +1590,8 @@ pub(crate) fn received_k2_trans<App: ApplicationLayer>(
             if !noise.decrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_REKEY_COMPLETE, 0), &mut k2[i..j], tag) {
                 return Err(byzantine_fault!(FailedAuth, true));
             }
-            let kid_send = NonZeroU32::new(u32::from_be_bytes(k2[i..j].try_into().unwrap())).ok_or(byzantine_fault!(InvalidPacket, true))?;
+            let kid_send = NonZeroU32::new(u32::from_be_bytes(k2[i..j].try_into().unwrap()))
+                .ok_or(byzantine_fault!(InvalidPacket, true))?;
 
             let new_ratchet_state = create_ratchet_state(hmac, &noise, state.ratchet_state1.chain_len);
             let result = app.save_ratchet_state(
@@ -1476,7 +1633,10 @@ pub(crate) fn received_k2_trans<App: ApplicationLayer>(
                 (current_time, resend_timer)
             };
             drop(kex_lock);
-            ctx.session_queue.lock().unwrap().change_priority(session.queue_idx, Reverse(resend_timer));
+            ctx.session_queue
+                .lock()
+                .unwrap()
+                .change_priority(session.queue_idx, Reverse(resend_timer));
             process_timers(app, ctx, session, current_time, false, true, send);
 
             Ok(())
@@ -1512,9 +1672,12 @@ pub(crate) fn receive_payload_in_place<App: ApplicationLayer>(
         return Err(byzantine_fault!(OutOfSequence, true));
     };
 
-    let mut cipher = state.key_ref(is_other).nk
+    let mut cipher = state
+        .key_ref(is_other)
+        .nk
         .as_ref()
-        .ok_or(byzantine_fault!(OutOfSequence, true))?.start_dec(n);
+        .ok_or(byzantine_fault!(OutOfSequence, true))?
+        .start_dec(n);
 
     // NOTE: This only works because we check the size of every received fragment in the receive
     // function, otherwise this could panic.
@@ -1549,7 +1712,6 @@ pub(crate) fn receive_payload_in_place<App: ApplicationLayer>(
     Ok(())
 }
 
-
 impl<App: ApplicationLayer> Drop for Session<App> {
     fn drop(&mut self) {
         self.expire();
@@ -1562,7 +1724,11 @@ impl<App: ApplicationLayer> Session<App> {
     pub fn expire(&self) {
         self.expire_inner(self.state_machine_lock.lock().unwrap(), self.state.write().unwrap());
     }
-    pub(crate) fn expire_inner(&self, kex_lock: MutexGuard<'_, ()>, mut state: RwLockWriteGuard<'_, MutableState<App>>) {
+    pub(crate) fn expire_inner(
+        &self,
+        kex_lock: MutexGuard<'_, ()>,
+        mut state: RwLockWriteGuard<'_, MutableState<App>>,
+    ) {
         let mut kids_to_remove = None;
         if !matches!(&state.beta, ZetaAutomata::Null) {
             self.session_has_expired.store(true, Ordering::Relaxed);
@@ -1630,7 +1796,10 @@ impl<App: ApplicationLayer> Session<App> {
     /// Check whether this session is established.
     pub fn established(&self) -> bool {
         let state = self.state.read().unwrap();
-        !matches!(&state.beta, ZetaAutomata::A1(_) | ZetaAutomata::A3 {..} | ZetaAutomata::Null)
+        !matches!(
+            &state.beta,
+            ZetaAutomata::A1(_) | ZetaAutomata::A3 { .. } | ZetaAutomata::Null
+        )
     }
     /// The static public key of the remote peer.
     pub fn remote_static_key(&self) -> &App::PublicKey {

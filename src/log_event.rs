@@ -7,7 +7,7 @@
  */
 use std::sync::Arc;
 
-use crate::{ApplicationLayer, zeta::Session};
+use crate::{zeta::Session, ApplicationLayer};
 
 /// ZSSP events that might be interesting to log or aggregate into metrics.
 pub enum LogEvent<'a, Application: ApplicationLayer> {
@@ -51,9 +51,12 @@ impl<'a, Application: ApplicationLayer> std::fmt::Debug for LogEvent<'a, Applica
             ServiceKKTimeout(_) => write!(f, "ServiceKKTimeout"),
             ServiceKeyConfirmResend(_) => write!(f, "ServiceKeyConfirmResend"),
             ServiceKeyConfirmTimeout(_) => write!(f, "ServiceKeyConfirmTimeout"),
-            ReceiveUnassociatedFragment(arg0, arg1, arg2) => {
-                f.debug_tuple("ReceiveUnassociatedFragment").field(arg0).field(arg1).field(arg2).finish()
-            }
+            ReceiveUnassociatedFragment(arg0, arg1, arg2) => f
+                .debug_tuple("ReceiveUnassociatedFragment")
+                .field(arg0)
+                .field(arg1)
+                .field(arg2)
+                .finish(),
             ReceiveUncheckedXK1 => write!(f, "ReceiveUncheckedXK1"),
             ReceiveCheckXK1Challenge(arg0) => f.debug_tuple("ReceiveCheckXK1Challenge").field(arg0).finish(),
             ReceiveValidXK1 => write!(f, "ReceiveValidXK1"),

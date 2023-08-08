@@ -13,7 +13,6 @@ pub trait HashSha512 {
     fn finish_and_reset(&mut self, output: &mut [u8; SHA512_HASH_SIZE]);
 }
 
-
 /// Opaque HMAC-SHA-512 implementation.
 /// Does not need to be threadsafe.
 pub trait HmacSha512 {
