@@ -110,7 +110,7 @@ impl ApplicationLayer for &TestApplication {
 
         if let Some(rf) = update_data.added_fingerprint() {
             ratchets.rf_map.insert(*rf, update_data.state1.clone());
-            println!("[{}] new ratchet #{}", self.name, update_data.state1.chain_len);
+            println!("[{}] new ratchet #{}", self.name, update_data.state1.chain_len());
         }
         if let Some(rf) = update_data.deleted_fingerprint1() {
             ratchets.rf_map.remove(rf);

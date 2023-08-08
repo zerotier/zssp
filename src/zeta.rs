@@ -437,7 +437,7 @@ pub(crate) fn received_x1_trans<App: ApplicationLayer>(
     noise.mix_key(ekem1_secret.as_ref());
     drop(ekem1_secret);
     // Process message pattern 2 psk2 token.
-    noise.mix_key_and_hash(ratchet_state.key.as_ref());
+    noise.mix_key_and_hash(ratchet_state.key());
     // Process message pattern 2 payload.
     let session_map = ctx.session_map.borrow_mut();
     let kid_recv = gen_kid(session_map.deref(), ctx.rng.borrow_mut().deref_mut());
@@ -545,14 +545,14 @@ pub(crate) fn received_x2_trans<App: ApplicationLayer>(
             };
             // Check first key.
             let mut ratchet_i = 1;
-            let mut chain_len = zeta.ratchet_state1.chain_len;
-            let mut result = test_ratchet_key(zeta.ratchet_state1.key.as_ref());
+            let mut chain_len = zeta.ratchet_state1.chain_len();
+            let mut result = test_ratchet_key(zeta.ratchet_state1.key());
             // Check second key.
             if result.is_none() {
                 ratchet_i = 2;
                 if let Some(rs) = zeta.ratchet_state2.as_ref() {
-                    chain_len = rs.chain_len;
-                    result = test_ratchet_key(rs.key.as_ref());
+                    chain_len = rs.chain_len();
+                    result = test_ratchet_key(rs.key());
                 }
             }
             // Check zero key.
@@ -736,7 +736,7 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
 
                 let (rk, rf) = noise.get_ask(LABEL_RATCHET_STATE);
                 // We must make sure the ratchet key is saved before we transition.
-                let new_ratchet_state = RatchetState::new(rk, rf, zeta.ratchet_state.chain_len + 1);
+                let new_ratchet_state = RatchetState::new(rk, rf, zeta.ratchet_state.chain_len() + 1);
                 let result = app.save_ratchet_state(
                     &s_remote,
                     &session_data,
@@ -1066,7 +1066,7 @@ fn timeout_trans<App: ApplicationLayer>(
             noise.mix_hash(&ctx.s_secret.public_key_bytes());
             noise.mix_hash(&zeta.s_remote.to_bytes());
             // Process message pattern 1 psk0 token.
-            noise.mix_key_and_hash(zeta.ratchet_state1.key.as_ref());
+            noise.mix_key_and_hash(zeta.ratchet_state1.key());
             // Process message pattern 1 e token.
             let e_secret = noise.write_e(&ctx.rng, &mut k1);
             // Process message pattern 1 es token.
@@ -1165,7 +1165,7 @@ pub(crate) fn received_k1_trans<App: ApplicationLayer>(
         noise.mix_hash(&zeta.s_remote.to_bytes());
         noise.mix_hash(&s_secret.public_key_bytes());
         // Process message pattern 1 psk0 token.
-        noise.mix_key_and_hash(zeta.ratchet_state1.key.as_ref());
+        noise.mix_key_and_hash(zeta.ratchet_state1.key());
         // Process message pattern 1 e token.
         let e_remote = noise.read_e(&mut i, &k1).ok_or(byzantine_fault!(FailedAuth, true))?;
         // Process message pattern 1 es token.
@@ -1204,7 +1204,7 @@ pub(crate) fn received_k1_trans<App: ApplicationLayer>(
         noise.encrypt_and_hash_in_place(to_nonce(PACKET_TYPE_REKEY_COMPLETE, 0), i, &mut k2);
 
         let (rk, rf) = noise.get_ask(LABEL_RATCHET_STATE);
-        let new_ratchet_state = RatchetState::new(rk, rf, zeta.ratchet_state1.chain_len + 1);
+        let new_ratchet_state = RatchetState::new(rk, rf, zeta.ratchet_state1.chain_len() + 1);
         let result = app.save_ratchet_state(
             &zeta.s_remote,
             &zeta.session_data,
@@ -1308,7 +1308,7 @@ pub(crate) fn received_k2_trans<App: ApplicationLayer>(
                 .ok_or(byzantine_fault!(InvalidPacket, true))?;
 
             let (rk, rf) = noise.get_ask(LABEL_RATCHET_STATE);
-            let new_ratchet_state = RatchetState::new(rk, rf, zeta.ratchet_state1.chain_len + 1);
+            let new_ratchet_state = RatchetState::new(rk, rf, zeta.ratchet_state1.chain_len() + 1);
             let result = app.save_ratchet_state(
                 &zeta.s_remote,
                 &zeta.session_data,
