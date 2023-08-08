@@ -1,8 +1,9 @@
 use rand_core::RngCore;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::ops::{Deref, DerefMut};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Weak};
 use zeroize::Zeroizing;
 
 use crate::application::ApplicationLayer;
@@ -69,7 +70,7 @@ pub(crate) struct Zeta<App: ApplicationLayer> {
 /// ZeroTier Secure Session Protocol (ZSSP) Session.
 ///
 /// A FIPS/NIST compliant variant of Noise_XK with hybrid Kyber1024 PQ data forward secrecy.
-pub struct Session<App: ApplicationLayer>(pub(crate) Mutex<Zeta<App>>);
+pub struct Session<App: ApplicationLayer>(pub(crate) RefCell<Zeta<App>>);
 
 /// Corresponds to State B_2 of the Zeta State Machine found in Section 4.1 - Definition 3.
 pub(crate) struct StateB2<App: ApplicationLayer> {
@@ -130,8 +131,8 @@ pub(crate) enum ZetaAutomata<App: ApplicationLayer> {
 }
 
 impl<App: ApplicationLayer> SymmetricState<App> {
-    fn write_e(&mut self, rng: &Mutex<App::Rng>, packet: &mut Vec<u8>) -> App::KeyPair {
-        let e_secret = App::KeyPair::generate(rng.lock().unwrap().deref_mut());
+    fn write_e(&mut self, rng: &RefCell<App::Rng>, packet: &mut Vec<u8>) -> App::KeyPair {
+        let e_secret = App::KeyPair::generate(rng.borrow_mut().deref_mut());
         let pub_key = e_secret.public_key_bytes();
         packet.extend(&pub_key);
         self.mix_hash(&pub_key);
@@ -196,8 +197,8 @@ impl<App: ApplicationLayer> Zeta<App> {
         self.timeout_timer = i64::MAX;
         self.beta = ZetaAutomata::Null;
         if let Some(ctx) = self.ctx.upgrade() {
-            let mut session_map = ctx.session_map.lock().unwrap();
-            let mut sessions = ctx.sessions.lock().unwrap();
+            let mut session_map = ctx.session_map.borrow_mut();
+            let mut sessions = ctx.sessions.borrow_mut();
             for key in &self.keys {
                 if let Some(kid_recv) = key.recv.kid {
                     if let Some(weak) = session_map.remove(&kid_recv) {
@@ -226,7 +227,7 @@ impl<App: ApplicationLayer> Zeta<App> {
 }
 
 fn create_a1_state<App: ApplicationLayer>(
-    rng: &Mutex<App::Rng>,
+    rng: &RefCell<App::Rng>,
     s_remote: &App::PublicKey,
     kid_recv: NonZeroU32,
     ratchet_state1: &RatchetState,
@@ -249,7 +250,7 @@ fn create_a1_state<App: ApplicationLayer>(
     noise.mix_dh(&e_secret, s_remote)?;
     // Process message pattern 1 e1 token.
     let i = x1.len();
-    let (e1_secret, e1_public) = App::Kem::generate(rng.lock().unwrap().deref_mut());
+    let (e1_secret, e1_public) = App::Kem::generate(rng.borrow_mut().deref_mut());
     x1.extend(&e1_public);
     noise.encrypt_and_hash_in_place(to_nonce(PACKET_TYPE_HANDSHAKE_HELLO, 0), i, &mut x1);
     // Process message pattern 1 payload.
@@ -264,7 +265,7 @@ fn create_a1_state<App: ApplicationLayer>(
 
     let c = u64::from_be_bytes(x1[x1.len() - 8..].try_into().unwrap());
 
-    x1.extend(&gen_null_response(rng.lock().unwrap().deref_mut()));
+    x1.extend(&gen_null_response(rng.borrow_mut().deref_mut()));
     Some(StateA1 {
         noise,
         e_secret,
@@ -287,8 +288,8 @@ pub(crate) fn trans_to_a1<App: ApplicationLayer>(
         .map_err(|e| OpenError::StorageError(e))?;
     let RatchetStates { state1, state2 } = ratchet_states.unwrap_or_default();
 
-    let mut session_map = ctx.session_map.lock().unwrap();
-    let kid_recv = gen_kid(session_map.deref(), ctx.rng.lock().unwrap().deref_mut());
+    let mut session_map = ctx.session_map.borrow_mut();
+    let kid_recv = gen_kid(session_map.deref(), ctx.rng.borrow_mut().deref_mut());
 
     let a1 = create_a1_state(&ctx.rng, &s_remote, kid_recv, &state1, state2.as_ref(), identity)
         .ok_or(OpenError::InvalidPublicKey)?;
@@ -317,11 +318,10 @@ pub(crate) fn trans_to_a1<App: ApplicationLayer>(
     };
     zeta.key_mut(true).recv.kid = Some(kid_recv);
 
-    let session = Arc::new(Session(Mutex::new(zeta)));
+    let session = Arc::new(Session(RefCell::new(zeta)));
     session_map.insert(kid_recv, Arc::downgrade(&session));
     ctx.sessions
-        .lock()
-        .unwrap()
+        .borrow_mut()
         .insert(Arc::as_ptr(&session), Arc::downgrade(&session));
 
     send(&packet);
@@ -331,13 +331,13 @@ pub(crate) fn trans_to_a1<App: ApplicationLayer>(
 /// Corresponds to Algorithm 13 found in Section 5.
 pub(crate) fn respond_to_challenge<App: ApplicationLayer>(
     zeta: &mut Zeta<App>,
-    rng: &Mutex<App::Rng>,
+    rng: &RefCell<App::Rng>,
     challenge: &[u8; CHALLENGE_SIZE],
 ) {
     if let ZetaAutomata::A1(StateA1 { packet: Packet(_, _, x1), .. }) = &mut zeta.beta {
         let response_start = x1.len() - CHALLENGE_SIZE;
         respond_to_challenge_in_place::<App::Rng, App::Hash>(
-            rng.lock().unwrap().deref_mut(),
+            rng.borrow_mut().deref_mut(),
             challenge,
             (&mut x1[response_start..]).try_into().unwrap(),
         );
@@ -428,7 +428,7 @@ pub(crate) fn received_x1_trans<App: ApplicationLayer>(
     // Process message pattern 2 ekem1 token.
     let i = x2.len();
     let (ekem1, ekem1_secret) = App::Kem::encapsulate(
-        ctx.rng.lock().unwrap().deref_mut(),
+        ctx.rng.borrow_mut().deref_mut(),
         (&x1[e1_start..e1_end]).try_into().unwrap(),
     )
     .map(|(ct, secret)| (ct, Zeroizing::new(secret)))
@@ -440,8 +440,8 @@ pub(crate) fn received_x1_trans<App: ApplicationLayer>(
     // Process message pattern 2 psk2 token.
     noise.mix_key_and_hash(ratchet_state.key.as_ref());
     // Process message pattern 2 payload.
-    let session_map = ctx.session_map.lock().unwrap();
-    let kid_recv = gen_kid(session_map.deref(), ctx.rng.lock().unwrap().deref_mut());
+    let session_map = ctx.session_map.borrow_mut();
+    let kid_recv = gen_kid(session_map.deref(), ctx.rng.borrow_mut().deref_mut());
 
     let i = x2.len();
     x2.extend(kid_recv.get().to_be_bytes());
@@ -454,7 +454,7 @@ pub(crate) fn received_x1_trans<App: ApplicationLayer>(
     c[7] = x2[i - 1];
     let c = u64::from_be_bytes(c);
 
-    ctx.b2_map.lock().unwrap().insert(
+    ctx.b2_map.borrow_mut().insert(
         kid_recv,
         StateB2 {
             ratchet_state,
@@ -643,7 +643,7 @@ fn send_control<App: ApplicationLayer>(
     if let Some((c, _)) = zeta.get_counter() {
         if let (Some(kek), Some(kid)) = (zeta.key_ref(false).send.kek.as_ref(), zeta.key_ref(false).send.kid) {
             let nonce = to_nonce(packet_type, c);
-            let tag = App::Aead::encrypt_in_place(kek, &nonce, None, &mut payload[HEADER_SIZE..]);
+            let tag = App::Aead::encrypt_in_place(kek, &nonce, None, &mut payload);
             payload.extend(tag);
 
             send(&Packet(kid.get(), nonce, payload), Some(&zeta.hk_send));
@@ -762,7 +762,7 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
                 };
                 let current_time = app.time();
 
-                let mut session_map = ctx.session_map.lock().unwrap();
+                let mut session_map = ctx.session_map.borrow_mut();
                 use std::collections::hash_map::Entry::*;
                 let entry = match session_map.entry(zeta.kid_recv) {
                     // We could have issued the kid that we initially offered Alice to someone else
@@ -770,7 +770,7 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
                     Occupied(_) => return Err(byzantine_fault!(OutOfSequence, false)),
                     Vacant(entry) => entry,
                 };
-                let session = Arc::new(Session(Mutex::new(Zeta {
+                let session = Arc::new(Session(RefCell::new(Zeta {
                     ctx: Arc::downgrade(ctx),
                     session_data,
                     was_bob: true,
@@ -790,8 +790,7 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
                 })));
                 entry.insert(Arc::downgrade(&session));
                 ctx.sessions
-                    .lock()
-                    .unwrap()
+                    .borrow_mut()
                     .insert(Arc::as_ptr(&session), Arc::downgrade(&session));
 
                 send(&Packet(zeta.kid_send.get(), n, c1), Some(&zeta.hk_send));
@@ -810,7 +809,7 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
 pub(crate) fn received_c1_trans<App: ApplicationLayer>(
     zeta: &mut Zeta<App>,
     app: &App,
-    rng: &Mutex<App::Rng>,
+    rng: &RefCell<App::Rng>,
     kid: NonZeroU32,
     n: [u8; AES_GCM_NONCE_SIZE],
     c1: Vec<u8>,
@@ -868,11 +867,8 @@ pub(crate) fn received_c1_trans<App: ApplicationLayer>(
 
             zeta.ratchet_state2 = None;
             zeta.key_index ^= true;
-            zeta.timeout_timer = app.time()
-                + App::SETTINGS
-                    .rekey_after_time
-                    .saturating_sub(rng.lock().unwrap().next_u64() % App::SETTINGS.rekey_time_max_jitter)
-                    as i64;
+            let r = rng.borrow_mut().next_u64() % App::SETTINGS.rekey_time_max_jitter;
+            zeta.timeout_timer = app.time() + App::SETTINGS.rekey_after_time.saturating_sub(r) as i64;
             zeta.resend_timer = i64::MAX;
             zeta.beta = ZetaAutomata::S2;
         }
@@ -889,7 +885,7 @@ pub(crate) fn received_c1_trans<App: ApplicationLayer>(
 pub(crate) fn received_c2_trans<App: ApplicationLayer>(
     zeta: &mut Zeta<App>,
     app: &App,
-    rng: &Mutex<App::Rng>,
+    rng: &RefCell<App::Rng>,
     kid: NonZeroU32,
     n: [u8; AES_GCM_NONCE_SIZE],
     c2: Vec<u8>,
@@ -917,10 +913,8 @@ pub(crate) fn received_c2_trans<App: ApplicationLayer>(
         return Err(byzantine_fault!(ExpiredCounter, true));
     }
 
-    zeta.timeout_timer = app.time()
-        + App::SETTINGS
-            .rekey_after_time
-            .saturating_sub(rng.lock().unwrap().next_u64() % App::SETTINGS.rekey_time_max_jitter) as i64;
+    let r = rng.borrow_mut().next_u64() % App::SETTINGS.rekey_time_max_jitter;
+    zeta.timeout_timer = app.time() + App::SETTINGS.rekey_after_time.saturating_sub(r) as i64;
     zeta.resend_timer = i64::MAX;
     zeta.beta = ZetaAutomata::S2;
     Ok(())
@@ -1000,16 +994,16 @@ pub(crate) fn service<App: ApplicationLayer>(
 fn remap<App: ApplicationLayer>(
     session: &Arc<Session<App>>,
     zeta: &Zeta<App>,
-    rng: &Mutex<App::Rng>,
+    rng: &RefCell<App::Rng>,
     session_map: &SessionMap<App>,
 ) -> NonZeroU32 {
-    let mut session_map = session_map.lock().unwrap();
+    let mut session_map = session_map.borrow_mut();
     let weak = if let Some(Some(weak)) = zeta.key_ref(true).recv.kid.as_ref().map(|kid| session_map.remove(kid)) {
         weak
     } else {
         Arc::downgrade(&session)
     };
-    let new_kid_recv = gen_kid(session_map.deref(), rng.lock().unwrap().deref_mut());
+    let new_kid_recv = gen_kid(session_map.deref(), rng.borrow_mut().deref_mut());
     session_map.insert(new_kid_recv, weak);
     new_kid_recv
 }
@@ -1114,7 +1108,7 @@ pub(crate) fn received_k1_trans<App: ApplicationLayer>(
     zeta: &mut Zeta<App>,
     session: &Arc<Session<App>>,
     app: &App,
-    rng: &Mutex<App::Rng>,
+    rng: &RefCell<App::Rng>,
     session_map: &SessionMap<App>,
     s_secret: &App::KeyPair,
     kid: NonZeroU32,
@@ -1415,12 +1409,8 @@ pub(crate) fn received_payload_in_place<App: ApplicationLayer>(
     };
 
     let i = payload.len() - AES_GCM_TAG_SIZE;
-    let specified_key = zeta
-        .key_ref(is_other)
-        .recv
-        .nk
-        .as_ref()
-        .ok_or(byzantine_fault!(OutOfSequence, true))?;
+    let specified_key = zeta.key_ref(is_other).recv.nk.as_ref();
+    let specified_key = specified_key.ok_or(byzantine_fault!(OutOfSequence, true))?;
     let tag = payload[i..].try_into().unwrap();
     if !App::Aead::decrypt_in_place(specified_key, &n, None, &mut payload[..i], &tag) {
         return Err(byzantine_fault!(FailedAuth, true));
@@ -1441,7 +1431,7 @@ impl<App: ApplicationLayer> Session<App> {
     /// receive or send data or control packets. It is recommended to simply `drop` the session
     /// instead, but this can provide some reassurance in complex shared ownership situations.
     pub fn expire(&mut self) {
-        self.0.lock().unwrap().expire();
+        self.0.borrow_mut().expire();
     }
 }
 

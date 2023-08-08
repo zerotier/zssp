@@ -142,7 +142,7 @@ fn alice_main(
     bob_pubkey: PublicKey,
 ) {
     let startup_time = std::time::Instant::now();
-    let context = zssp_proto::Context::<&TestApplication>::new(alice_keypair, OsRng);
+    let mut context = zssp_proto::Context::<&TestApplication>::new(alice_keypair, OsRng);
     let mut next_service = startup_time.elapsed().as_millis() as i64 + 500;
     let test_data = [1u8; TEST_MTU * 10];
     let mut up = false;
@@ -245,7 +245,7 @@ fn bob_main(
     bob_keypair: EphemeralSecret,
 ) {
     let startup_time = std::time::Instant::now();
-    let context = zssp_proto::Context::<&TestApplication>::new(bob_keypair, OsRng);
+    let mut context = zssp_proto::Context::<&TestApplication>::new(bob_keypair, OsRng);
     let mut last_speed_metric = startup_time.elapsed().as_millis() as i64;
     let mut next_service = last_speed_metric + 500;
     let mut transferred = 0u64;
@@ -372,7 +372,7 @@ fn core(time: u64, packet_success_rate: u32) {
 fn main() {
     let args = std::env::args();
     let packet_success_rate = if args.len() <= 1 {
-        let default_success_rate = 1.0;
+        let default_success_rate = 0.5;
         ((u32::MAX as f64) * default_success_rate) as u32
     } else {
         ((u32::MAX as f64) * f64::from_str(args.last().unwrap().as_str()).unwrap()) as u32

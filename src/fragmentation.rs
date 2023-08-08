@@ -1,6 +1,6 @@
+use std::cell::RefCell;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
-use std::sync::Mutex;
 
 use zeroize::Zeroizing;
 
@@ -66,7 +66,7 @@ pub fn send_with_fragmentation<App: ApplicationLayer>(
 }
 
 pub struct DefragBuffer {
-    fragment_map: Mutex<HashMap<[u8; PACKET_NONCE_SIZE], Buffer>>,
+    fragment_map: RefCell<HashMap<[u8; PACKET_NONCE_SIZE], Buffer>>,
     hk_recv: Option<Zeroizing<[u8; AES_256_KEY_SIZE]>>,
 }
 
@@ -79,7 +79,7 @@ struct Buffer {
 
 impl DefragBuffer {
     pub fn new(hk_recv: Option<Zeroizing<[u8; AES_256_KEY_SIZE]>>) -> Self {
-        Self { fragment_map: Mutex::new(HashMap::new()), hk_recv }
+        Self { fragment_map: RefCell::new(HashMap::new()), hk_recv }
     }
 
     /// Corresponds to the authentication and defragmentation algorithm described in Section 6.1.
@@ -116,7 +116,7 @@ impl DefragBuffer {
         }
 
         let expiration_time = current_time + App::SETTINGS.fragment_assembly_timeout as i64;
-        let mut map = self.fragment_map.lock().unwrap();
+        let mut map = self.fragment_map.borrow_mut();
         match map.entry(n) {
             Entry::Occupied(mut entry) => {
                 let buffer = entry.get_mut();
@@ -158,7 +158,7 @@ impl DefragBuffer {
     }
 
     pub fn service<App: ApplicationLayer>(&self, current_time: i64) {
-        let mut map = self.fragment_map.lock().unwrap();
+        let mut map = self.fragment_map.borrow_mut();
         map.retain(|_, buffer| buffer.expiration_time < current_time);
     }
 }

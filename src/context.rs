@@ -1,9 +1,10 @@
 use rand_core::RngCore;
+use std::cell::RefCell;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::num::NonZeroU32;
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Weak};
 
 use crate::application::ApplicationLayer;
 use crate::crypto::{AES_256_KEY_SIZE, AES_GCM_NONCE_SIZE};
@@ -37,17 +38,17 @@ impl<App: ApplicationLayer> Clone for Context<App> {
     }
 }
 
-pub(crate) type SessionMap<App> = Mutex<HashMap<NonZeroU32, Weak<Session<App>>>>;
+pub(crate) type SessionMap<App> = RefCell<HashMap<NonZeroU32, Weak<Session<App>>>>;
 
 pub(crate) struct ContextInner<App: ApplicationLayer> {
-    pub(crate) rng: Mutex<App::Rng>,
+    pub(crate) rng: RefCell<App::Rng>,
     pub(crate) s_secret: App::KeyPair,
     pub(crate) session_map: SessionMap<App>,
-    pub(crate) sessions: Mutex<HashMap<*const Session<App>, Weak<Session<App>>>>,
-    pub(crate) b2_map: Mutex<HashMap<NonZeroU32, StateB2<App>>>,
+    pub(crate) sessions: RefCell<HashMap<*const Session<App>, Weak<Session<App>>>>,
+    pub(crate) b2_map: RefCell<HashMap<NonZeroU32, StateB2<App>>>,
 
-    hello_defrag: Mutex<DefragBuffer>,
-    challenge: Mutex<ChallengeContext>,
+    hello_defrag: RefCell<DefragBuffer>,
+    challenge: RefCell<ChallengeContext>,
 }
 
 /// Corresponds to Figure 10 found in Section 4.3.
@@ -66,19 +67,19 @@ impl<App: ApplicationLayer> Context<App> {
     pub fn new(static_secret_key: App::KeyPair, mut rng: App::Rng) -> Self {
         let challenge = ChallengeContext::new(&mut rng);
         Self(Arc::new(ContextInner {
-            rng: Mutex::new(rng),
+            rng: RefCell::new(rng),
             s_secret: static_secret_key,
-            session_map: Mutex::new(HashMap::new()),
-            b2_map: Mutex::new(HashMap::new()),
-            hello_defrag: Mutex::new(DefragBuffer::new(None)),
-            challenge: Mutex::new(challenge),
-            sessions: Mutex::new(HashMap::new()),
+            session_map: RefCell::new(HashMap::new()),
+            b2_map: RefCell::new(HashMap::new()),
+            hello_defrag: RefCell::new(DefragBuffer::new(None)),
+            challenge: RefCell::new(challenge),
+            sessions: RefCell::new(HashMap::new()),
         }))
     }
     /// Enable the ZeroTier Challenge Protocol, to protect this machine from CPU exhaustion DDOS
     /// attacks.
-    pub fn enable_challenge(&self, enabled: bool) {
-        self.0.challenge.lock().unwrap().enabled = enabled;
+    pub fn enable_challenge(&mut self, enabled: bool) {
+        self.0.challenge.borrow_mut().enabled = enabled;
     }
 
     /// Create a new session and send initial packet(s) to other side.
@@ -93,7 +94,7 @@ impl<App: ApplicationLayer> Context<App> {
     /// * `identity` - Payload to be sent to Bob that contains the information necessary
     ///   for the upper protocol to authenticate and approve of Alice's identity
     pub fn open(
-        &self,
+        &mut self,
         app: App,
         send: impl FnMut(Vec<u8>) -> bool,
         mut mtu: usize,
@@ -130,7 +131,7 @@ impl<App: ApplicationLayer> Context<App> {
     /// * `remote_address` - Whatever the remote address is, as long as you can Hash it
     /// * `raw_fragment` - Buffer containing incoming wire packet
     pub fn receive<'a, SendFn: FnMut(Vec<u8>) -> bool>(
-        &self,
+        &mut self,
         app: App,
         send_unassociated_reply: impl FnMut(Vec<u8>) -> bool,
         mut send_unassociated_mtu: usize,
@@ -145,10 +146,10 @@ impl<App: ApplicationLayer> Context<App> {
         // Multiplex session.
         let kid_recv = u32::from_be_bytes(raw_fragment[..KID_SIZE].try_into().unwrap());
         if let Some(kid_recv) = NonZeroU32::new(kid_recv) {
-            let session = ctx.session_map.lock().unwrap().get(&kid_recv).map(|r| r.upgrade());
+            let session = ctx.session_map.borrow_mut().get(&kid_recv).map(|r| r.upgrade());
             if let Some(Some(session)) = session {
                 // Process recv fragmentation layer.
-                let mut zeta = session.0.lock().unwrap();
+                let mut zeta = session.0.borrow_mut();
                 let result =
                     zeta.defrag
                         .received_fragment::<App>(raw_fragment, app.time(), |n, frag_no, frag_count| {
@@ -293,7 +294,7 @@ impl<App: ApplicationLayer> Context<App> {
                     Ok(ReceiveOk::Unassociated)
                 }
             } else {
-                let mut b2_map = ctx.b2_map.lock().unwrap();
+                let mut b2_map = ctx.b2_map.borrow_mut();
                 if let Entry::Occupied(mut entry) = b2_map.entry(kid_recv) {
                     let zeta = entry.get_mut();
                     // Process recv fragmentation layer.
@@ -341,7 +342,7 @@ impl<App: ApplicationLayer> Context<App> {
             }
         } else {
             // Process recv fragmentation layer.
-            let result = ctx.hello_defrag.lock().unwrap().received_fragment::<App>(
+            let result = ctx.hello_defrag.borrow_mut().received_fragment::<App>(
                 raw_fragment,
                 app.time(),
                 |n, frag_no, frag_count| {
@@ -360,7 +361,7 @@ impl<App: ApplicationLayer> Context<App> {
                     log!(app, ReceivedRawX1);
                     // Process recv challenge layer.
                     let challenge_start = assembled_packet.len() - CHALLENGE_SIZE;
-                    let result = ctx.challenge.lock().unwrap().process_hello::<App::Hash>(
+                    let result = ctx.challenge.borrow_mut().process_hello::<App::Hash>(
                         remote_address,
                         (&assembled_packet[challenge_start..]).try_into().unwrap(),
                     );
@@ -369,7 +370,7 @@ impl<App: ApplicationLayer> Context<App> {
                         let mut challenge_packet = Vec::new();
                         challenge_packet.extend(&assembled_packet[..KID_SIZE]);
                         challenge_packet.extend(&challenge);
-                        let nonce = to_nonce(PACKET_TYPE_CHALLENGE, ctx.rng.lock().unwrap().next_u64());
+                        let nonce = to_nonce(PACKET_TYPE_CHALLENGE, ctx.rng.borrow_mut().next_u64());
                         send_with_fragmentation::<App>(
                             send_unassociated_reply,
                             send_unassociated_mtu,
@@ -413,9 +414,8 @@ impl<App: ApplicationLayer> Context<App> {
                     if let Some(kid_recv) =
                         NonZeroU32::new(u32::from_be_bytes(assembled_packet[..KID_SIZE].try_into().unwrap()))
                     {
-                        if let Some(Some(session)) = ctx.session_map.lock().unwrap().get(&kid_recv).map(|r| r.upgrade())
-                        {
-                            let mut zeta = session.0.lock().unwrap();
+                        if let Some(Some(session)) = ctx.session_map.borrow_mut().get(&kid_recv).map(|r| r.upgrade()) {
+                            let mut zeta = session.0.borrow_mut();
                             respond_to_challenge(
                                 &mut zeta,
                                 &ctx.rng,
@@ -443,14 +443,14 @@ impl<App: ApplicationLayer> Context<App> {
     /// * `mtu` - The MTU of the link, all packets passed to `send` will be at most `mtu` in length
     /// * `payload` - Data to send
     pub fn send(
-        &self,
+        &mut self,
         session: &Arc<Session<App>>,
         send: impl FnMut(Vec<u8>) -> bool,
         mut mtu: usize,
         payload: Vec<u8>,
     ) -> Result<(), SendError> {
         mtu = mtu.max(MIN_TRANSPORT_MTU);
-        let mut zeta = session.0.lock().unwrap();
+        let mut zeta = session.0.borrow_mut();
         send_payload(&mut zeta, payload, |Packet(kid, nonce, payload), hk| {
             send_with_fragmentation::<App>(send, mtu, *kid, to_packet_nonce(nonce), &payload, hk);
         })
@@ -464,17 +464,17 @@ impl<App: ApplicationLayer> Context<App> {
     ///
     /// * `send_to` - Function to get a sender and an MTU to send something over an active session
     pub fn service<SendFn: FnMut(Vec<u8>) -> bool>(
-        &self,
+        &mut self,
         app: App,
         mut send_to: impl FnMut(&Arc<Session<App>>) -> Option<(SendFn, usize)>,
     ) -> i64 {
         let ctx = &self.0;
-        let sessions = ctx.sessions.lock().unwrap();
+        let sessions = ctx.sessions.borrow_mut();
         let current_time = app.time();
         let mut next_timer = i64::MAX;
         for (_, session) in sessions.iter() {
             if let Some(session) = session.upgrade() {
-                let mut zeta = session.0.lock().unwrap();
+                let mut zeta = session.0.borrow_mut();
                 service(
                     &mut zeta,
                     &session,
@@ -499,7 +499,7 @@ impl<App: ApplicationLayer> Context<App> {
                 zeta.defrag.service::<App>(current_time);
             }
         }
-        ctx.hello_defrag.lock().unwrap().service::<App>(current_time);
+        ctx.hello_defrag.borrow_mut().service::<App>(current_time);
         (App::SETTINGS.resend_time as i64).min(next_timer - current_time)
     }
 }
