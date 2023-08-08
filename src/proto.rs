@@ -119,7 +119,7 @@ pub(crate) const PACKET_TYPE_USES_COUNTER_RANGE: std::ops::Range<u8> = 3..9;
 
 pub(crate) const HANDSHAKE_HELLO_MIN_SIZE: usize =
     KID_SIZE + P384_PUBLIC_KEY_SIZE + KYBER_PUBLIC_KEY_SIZE + AES_GCM_TAG_SIZE + AES_GCM_TAG_SIZE;
-pub(crate) const HANDSHAKE_HELLO_MAX_SIZE: usize = HANDSHAKE_HELLO_MIN_SIZE + RATCHET_SIZE;
+pub(crate) const HANDSHAKE_HELLO_MAX_SIZE: usize = HANDSHAKE_HELLO_MIN_SIZE + RATCHET_SIZE + RATCHET_SIZE;
 
 pub(crate) const HANDSHAKE_HELLO_CHALLENGE_MIN_SIZE: usize = HANDSHAKE_HELLO_MIN_SIZE + CHALLENGE_SIZE;
 pub(crate) const HANDSHAKE_HELLO_CHALLENGE_MAX_SIZE: usize = HANDSHAKE_HELLO_MAX_SIZE + CHALLENGE_SIZE;
@@ -145,7 +145,7 @@ pub(crate) const SESSION_REJECTED_SIZE: usize = AES_GCM_TAG_SIZE;
 pub(crate) const HEADERED_SESSION_REJECTED_SIZE: usize = SESSION_REJECTED_SIZE + HEADER_SIZE;
 
 pub(crate) const REKEY_SIZE: usize = P384_PUBLIC_KEY_SIZE + KID_SIZE + AES_GCM_TAG_SIZE + AES_GCM_TAG_SIZE;
-pub(crate) const HEADERED_REKEY_SIZE: usize = P384_PUBLIC_KEY_SIZE + KID_SIZE + AES_GCM_TAG_SIZE + AES_GCM_TAG_SIZE;
+pub(crate) const HEADERED_REKEY_SIZE: usize = REKEY_SIZE + HEADER_SIZE;
 
 /// The application has the ability to attach a data payload to Alice's handshake.
 /// It will be the first payload Bob receives from Alice.
@@ -177,6 +177,6 @@ pub(crate) const MAX_UNASSOCIATED_FRAGMENTS: usize = 32 * 32;
 
 /// The maximum size a packet that is not associated to a session may be.
 /// Excludes the size of headers for fragmentation.
-pub(crate) const MAX_UNASSOCIATED_PACKET_SIZE: usize = HANDSHAKE_HELLO_MAX_SIZE;
+pub(crate) const MAX_UNASSOCIATED_PACKET_SIZE: usize = HANDSHAKE_HELLO_CHALLENGE_MAX_SIZE;
 
 pub(crate) const SESSION_MAX_FRAGMENTS_OOO: usize = 64;

@@ -42,14 +42,14 @@ pub trait Aes256Dec: Send + Sync {
 pub trait AesGcmEncContext {
     fn encrypt(&mut self, input: &[u8], output: &mut [u8]);
 
-    fn finish(&mut self) -> [u8; AES_GCM_TAG_SIZE];
+    fn finish(self) -> [u8; AES_GCM_TAG_SIZE];
 }
 
 pub trait AesGcmDecContext {
     fn decrypt_in_place(&mut self, data: &mut [u8]);
 
     #[must_use]
-    fn finish(&mut self, tag: &[u8; AES_GCM_TAG_SIZE]) -> bool;
+    fn finish(self, tag: &[u8; AES_GCM_TAG_SIZE]) -> bool;
 }
 
 pub trait HighThroughputAesGcmPool: Send + Sync {

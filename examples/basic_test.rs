@@ -18,12 +18,13 @@ use rand_core::OsRng;
 use rand_core::RngCore;
 
 use zssp::application::{
-    AcceptAction, ApplicationLayer, RatchetState, RatchetStates, RatchetUpdate, Settings, RATCHET_SIZE, IncomingSessionAction,
+    AcceptAction, ApplicationLayer, IncomingSessionAction, RatchetState, RatchetStates, RatchetUpdate, Settings,
+    RATCHET_SIZE,
 };
 use zssp::crypto::P384KeyPair;
 use zssp::crypto_impl::*;
-use zssp::Session;
 use zssp::result::ReceiveError;
+use zssp::Session;
 
 const TEST_MTU: usize = 1500;
 
@@ -70,7 +71,6 @@ impl ApplicationLayer for &TestApplication {
     type SessionData = u128;
 
     type IncomingPacketBuffer = Vec<u8>;
-
 
     fn incoming_session(&self) -> IncomingSessionAction {
         IncomingSessionAction::Allow
@@ -189,7 +189,7 @@ fn alice_main(
                         |_| Some((|b: &mut [u8]| alice_out.send(b.to_vec()).is_ok(), TEST_MTU)),
                         &0,
                         pkt,
-                        &mut output_data
+                        &mut output_data,
                     ) {
                         Ok(Unassociated) => {
                             //println!("[alice] ok");
@@ -234,13 +234,15 @@ fn alice_main(
             thread::sleep(Duration::from_millis(10));
         }
         // TODO: we need to more comprehensively test if re-opening the session works
-        if OsRng.next_u32() <= ((u32::MAX as f64) * 0.000005) as u32 {
+        if OsRng.next_u32() <= ((u32::MAX as f64) * 0.0000005) as u32 {
             alice_session = None;
         }
 
         if current_time >= next_service {
-            next_service =
-                current_time + context.service(alice_app, |_| Some((|b: &mut [u8]| alice_out.send(b.to_vec()).is_ok(), TEST_MTU)));
+            next_service = current_time
+                + context.service(alice_app, |_| {
+                    Some((|b: &mut [u8]| alice_out.send(b.to_vec()).is_ok(), TEST_MTU))
+                });
         }
     }
 }
@@ -278,7 +280,7 @@ fn bob_main(
                     |_| Some((|b: &mut [u8]| bob_out.send(b.to_vec()).is_ok(), TEST_MTU)),
                     &0,
                     pkt,
-                    &mut output_data
+                    &mut output_data,
                 ) {
                     Ok(Unassociated) => {}
                     Ok(Session(s, event)) => match event {
@@ -290,7 +292,14 @@ fn bob_main(
                             assert!(!output_data.is_empty());
                             //println!("[bob] received {}", output_data.len());
                             transferred += output_data.len() as u64 * 2; // *2 because we are also sending this many bytes back
-                            context.send(&s, |b| bob_out.send(b.to_vec()).is_ok(), &mut [0u8; TEST_MTU], &output_data).unwrap();
+                            context
+                                .send(
+                                    &s,
+                                    |b| bob_out.send(b.to_vec()).is_ok(),
+                                    &mut [0u8; TEST_MTU],
+                                    &output_data,
+                                )
+                                .unwrap();
                         }
                         Established => panic!(),
                         Rejected => panic!(),
@@ -319,7 +328,10 @@ fn bob_main(
         }
 
         if current_time >= next_service {
-            next_service = current_time + context.service(bob_app, |_| Some((|b: &mut [u8]| bob_out.send(b.to_vec()).is_ok(), TEST_MTU)));
+            next_service = current_time
+                + context.service(bob_app, |_| {
+                    Some((|b: &mut [u8]| bob_out.send(b.to_vec()).is_ok(), TEST_MTU))
+                });
         }
     }
 }

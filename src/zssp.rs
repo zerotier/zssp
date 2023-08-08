@@ -106,8 +106,8 @@ fn send_with_fragmentation<PrpEnc: Aes256Enc>(
         let j = i + fragment_base_size + (fragment_no < fragment_size_remainder) as usize;
         let fragment = &mut headered_packet[i - HEADER_SIZE..j];
 
-        header[FRAGMENT_NO_IDX] = fragment_no as u8;
         fragment[..HEADER_SIZE].copy_from_slice(&header);
+        fragment[FRAGMENT_NO_IDX] = fragment_no as u8;
 
         if let Some(hk_send) = hk_send {
             hk_send.encrypt_in_place((&mut fragment[HEADER_AUTH_START..HEADER_AUTH_END]).try_into().unwrap());
@@ -536,11 +536,11 @@ impl<App: ApplicationLayer> Context<App> {
                     return Err(byzantine_fault!(InvalidPacket, true));
                 }
                 // Process recv challenge layer.
+                let challenge_start = assembled_packet.len() - CHALLENGE_SIZE;
                 let hash = &mut App::Hash::new();
                 match app.incoming_session() {
                     IncomingSessionAction::Allow => {}
                     IncomingSessionAction::Challenge => {
-                        let challenge_start = assembled_packet.len() - CHALLENGE_SIZE;
                         let result = ctx.challenge.process_hello(
                             hash,
                             remote_address,
@@ -569,9 +569,16 @@ impl<App: ApplicationLayer> Context<App> {
                 }
 
                 // Process recv zeta layer.
-                received_x1_trans(&app, ctx, hash, &nonce, assembled_packet, |packet, hk_send| {
-                    send_with_fragmentation(send_unassociated_reply, send_unassociated_mtu, packet, hk_send);
-                })?;
+                received_x1_trans(
+                    &app,
+                    ctx,
+                    hash,
+                    &nonce,
+                    &mut assembled_packet[..challenge_start],
+                    |packet, hk_send| {
+                        send_with_fragmentation(send_unassociated_reply, send_unassociated_mtu, packet, hk_send);
+                    },
+                )?;
                 log!(app, X1IsAuthSentX2);
 
                 Ok(ReceiveOk::Unassociated)

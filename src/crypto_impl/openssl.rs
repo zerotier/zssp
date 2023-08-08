@@ -75,8 +75,6 @@ impl CipherCtx {
             tag.as_mut_ptr() as *mut _,
         ) > 0
     }
-
-    /// Sets the authentication tag for verification during decryption.
     #[allow(unused)]
     pub unsafe fn set_tag(&self, tag: &[u8]) -> bool {
         EVP_CIPHER_CTX_ctrl(
@@ -158,7 +156,7 @@ impl AesGcmEncContext for AesGcmOpenSSLEnc {
         unsafe { assert!(self.0.update::<true>(input, output.as_mut_ptr())) };
     }
 
-    fn finish(&mut self) -> [u8; AES_GCM_TAG_SIZE] {
+    fn finish(self) -> [u8; AES_GCM_TAG_SIZE] {
         let mut output = [0u8; AES_GCM_TAG_SIZE];
         unsafe {
             assert!(self.0.finalize::<true>());
@@ -175,26 +173,32 @@ impl AesGcmDecContext for AesGcmOpenSSLDec {
         unsafe { assert!(self.0.update::<false>(data, p)) };
     }
 
-    fn finish(&mut self, tag: &[u8; AES_GCM_TAG_SIZE]) -> bool {
+    fn finish(self, tag: &[u8; AES_GCM_TAG_SIZE]) -> bool {
         unsafe { self.0.set_tag(tag) && self.0.finalize::<false>() }
     }
 }
 
-pub struct AesGcmOpenSSLPool(Zeroizing<[u8; AES_256_KEY_SIZE]>, Zeroizing<[u8; AES_256_KEY_SIZE]>);
+pub struct AesGcmOpenSSLPool {
+    enc_key: Zeroizing<[u8; AES_256_KEY_SIZE]>,
+    dec_key: Zeroizing<[u8; AES_256_KEY_SIZE]>,
+}
 impl HighThroughputAesGcmPool for AesGcmOpenSSLPool {
     type EncContext<'a> = AesGcmOpenSSLEnc;
 
     type DecContext<'a> = AesGcmOpenSSLDec;
 
     fn new(encrypt_key: &[u8; AES_256_KEY_SIZE], decrypt_key: &[u8; AES_256_KEY_SIZE]) -> Self {
-        AesGcmOpenSSLPool(Zeroizing::new(*encrypt_key), Zeroizing::new(*decrypt_key))
+        AesGcmOpenSSLPool {
+            enc_key: Zeroizing::new(*encrypt_key),
+            dec_key: Zeroizing::new(*decrypt_key),
+        }
     }
 
     fn start_enc<'a>(&'a self, nonce: &[u8; AES_GCM_NONCE_SIZE]) -> AesGcmOpenSSLEnc {
         let ctx = CipherCtx::new().unwrap();
         unsafe {
             let t = openssl_sys::EVP_aes_256_gcm();
-            assert!(ctx.cipher_init::<true>(t, self.0.as_ptr(), nonce.as_ptr()));
+            assert!(ctx.cipher_init::<true>(t, self.enc_key.as_ptr(), nonce.as_ptr()));
             openssl_sys::EVP_CIPHER_CTX_set_padding(ctx.as_ptr(), 0);
         }
         AesGcmOpenSSLEnc(ctx)
@@ -204,7 +208,7 @@ impl HighThroughputAesGcmPool for AesGcmOpenSSLPool {
         let ctx = CipherCtx::new().unwrap();
         unsafe {
             let t = openssl_sys::EVP_aes_256_gcm();
-            assert!(ctx.cipher_init::<false>(t, self.0.as_ptr(), nonce.as_ptr()));
+            assert!(ctx.cipher_init::<false>(t, self.dec_key.as_ptr(), nonce.as_ptr()));
             openssl_sys::EVP_CIPHER_CTX_set_padding(ctx.as_ptr(), 0);
         }
         AesGcmOpenSSLDec(ctx)
@@ -246,12 +250,12 @@ impl LowThroughputAesGcm for AesGcmOpenSSL {
         let ctx = CipherCtx::new().unwrap();
         unsafe {
             let t = openssl_sys::EVP_aes_256_gcm();
-            assert!(ctx.cipher_init::<true>(t, key.as_ptr(), nonce.as_ptr()));
+            assert!(ctx.cipher_init::<false>(t, key.as_ptr(), nonce.as_ptr()));
             openssl_sys::EVP_CIPHER_CTX_set_padding(ctx.as_ptr(), 0);
 
-            assert!(ctx.update::<true>(aad, ptr::null_mut()));
+            assert!(ctx.update::<false>(aad, ptr::null_mut()));
             let p = data.as_mut_ptr();
-            assert!(ctx.update::<true>(data, p));
+            assert!(ctx.update::<false>(data, p));
 
             ctx.set_tag(tag) && ctx.finalize::<false>()
         }

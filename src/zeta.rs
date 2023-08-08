@@ -185,10 +185,10 @@ pub(crate) enum ZetaAutomata<App: ApplicationLayer> {
     R1 {
         noise: SymmetricState<App>,
         e_secret: App::KeyPair,
-        k1: ArrayVec<u8, REKEY_SIZE>,
+        k1: ArrayVec<u8, HEADERED_REKEY_SIZE>,
     },
     R2 {
-        k2: ArrayVec<u8, REKEY_SIZE>,
+        k2: ArrayVec<u8, HEADERED_REKEY_SIZE>,
     },
 }
 
@@ -323,7 +323,6 @@ fn create_a1_state<App: ApplicationLayer>(
     let i = x1.len();
     let (e1_secret, e1_public) = App::Kem::generate(rng.lock().unwrap().deref_mut());
     x1.extend(e1_public);
-    x1.extend([0u8; AES_GCM_NONCE_SIZE]);
     let tag = noise.encrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_HANDSHAKE_HELLO, 0), &mut x1[i..]);
     x1.extend(tag);
     // Process message pattern 1 payload.
@@ -466,7 +465,7 @@ pub(crate) fn received_x1_trans<App: ApplicationLayer>(
     //    ...
     //    -> e, es, e1
     //    <- e, ee, ekem1, psk
-    if !(HANDSHAKE_HELLO_CHALLENGE_MIN_SIZE..=HANDSHAKE_HELLO_CHALLENGE_MAX_SIZE).contains(&x1.len()) {
+    if !(HANDSHAKE_HELLO_MIN_SIZE..=HANDSHAKE_HELLO_MAX_SIZE).contains(&x1.len()) {
         return Err(byzantine_fault!(InvalidPacket, true));
     }
 
@@ -493,14 +492,14 @@ pub(crate) fn received_x1_trans<App: ApplicationLayer>(
         .ok_or(byzantine_fault!(FailedAuth, true))?;
     // Process message pattern 1 e1 token.
     let j = i + KYBER_PUBLIC_KEY_SIZE;
-    let k = i + AES_GCM_TAG_SIZE;
+    let k = j + AES_GCM_TAG_SIZE;
     let tag = x1[j..k].try_into().unwrap();
     if !noise.decrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_HANDSHAKE_HELLO, 0), &mut x1[i..j], tag) {
         return Err(byzantine_fault!(FailedAuth, true));
     }
     let e1_start = i;
     let e1_end = j;
-    i = j;
+    i = k;
     // Process message pattern 1 payload.
     let k = x1.len();
     let j = k - AES_GCM_TAG_SIZE;
@@ -529,9 +528,10 @@ pub(crate) fn received_x1_trans<App: ApplicationLayer>(
         }
         RatchetState::empty()
     };
+
     let mut hk_recv = Zeroizing::new([0u8; HASHLEN]);
     let mut hk_send = Zeroizing::new([0u8; HASHLEN]);
-    noise.get_ask(hmac, LABEL_HEADER_KEY, &mut hk_recv, &mut hk_send);
+    noise.get_ask(hmac, LABEL_HEADER_KEY, &mut hk_send, &mut hk_recv);
 
     let mut x2 = ArrayVec::<u8, HEADERED_HANDSHAKE_RESPONSE_SIZE>::new();
     x2.extend([0u8; HEADER_SIZE]);
@@ -660,7 +660,7 @@ pub(crate) fn received_x2_trans<App: ApplicationLayer>(
         }
         noise.mix_key(hmac, ekem1_secret.as_ref());
         drop(ekem1_secret);
-        i = j;
+        i = k;
         // We attempt to decrypt the payload at most three times. First two times with
         // the ratchet key Alice remembers, and final time with a ratchet
         // key of zero if Alice allows ratchet downgrades.
@@ -1705,19 +1705,22 @@ pub(crate) fn send_payload<App: ApplicationLayer>(
 
     let payload_mtu = mtu - HEADER_SIZE;
     debug_assert!(payload_mtu >= 4);
-    let fragment_count = payload.len().saturating_add(payload_mtu - 1) / payload_mtu; // Ceiling div.
-    let fragment_base_size = payload.len() / fragment_count;
-    let fragment_size_remainder = payload.len() % fragment_count;
+    let tagged_payload_len = payload.len() + AES_GCM_TAG_SIZE;
+    let fragment_count = tagged_payload_len.saturating_add(payload_mtu - 1) / payload_mtu; // Ceiling div.
+    let fragment_base_size = tagged_payload_len / fragment_count;
+    let fragment_size_remainder = tagged_payload_len % fragment_count;
 
-    mtu_sized_buffer[..KID_SIZE].copy_from_slice(&key.send.kid.unwrap().get().to_be_bytes());
-    mtu_sized_buffer[FRAGMENT_COUNT_IDX] = fragment_count as u8;
-    mtu_sized_buffer[PACKET_NONCE_START..].copy_from_slice(&nonce[NONCE_SIZE_DIFF..]);
+    let mut header = [0u8; HEADER_SIZE];
+    header[..KID_SIZE].copy_from_slice(&key.send.kid.unwrap().get().to_be_bytes());
+    header[FRAGMENT_COUNT_IDX] = fragment_count as u8;
+    header[PACKET_NONCE_START..].copy_from_slice(&nonce[NONCE_SIZE_DIFF..]);
 
     let mut i = 0;
-    for fragment_no in 0..fragment_count {
+    for fragment_no in 0..fragment_count - 1 {
         let fragment_len = fragment_base_size + (fragment_no < fragment_size_remainder) as usize;
         let j = i + fragment_len;
 
+        mtu_sized_buffer[..HEADER_SIZE].copy_from_slice(&header);
         mtu_sized_buffer[FRAGMENT_NO_IDX] = fragment_no as u8;
         cipher.encrypt(
             &payload[i..j],
@@ -1735,7 +1738,29 @@ pub(crate) fn send_payload<App: ApplicationLayer>(
         }
         i = j;
     }
-    drop(cipher);
+    let fragment_no = fragment_count - 1;
+    let payload_rem = payload.len() - i;
+    let fragment_len = payload_rem + AES_GCM_TAG_SIZE;
+    debug_assert_eq!(fragment_len, fragment_base_size);
+
+    mtu_sized_buffer[..HEADER_SIZE].copy_from_slice(&header);
+    mtu_sized_buffer[FRAGMENT_NO_IDX] = fragment_no as u8;
+    cipher.encrypt(
+        &payload[i..],
+        &mut mtu_sized_buffer[HEADER_SIZE..HEADER_SIZE + payload_rem],
+    );
+    mtu_sized_buffer[HEADER_SIZE + payload_rem..HEADER_SIZE + fragment_len].copy_from_slice(&cipher.finish());
+
+    state.hk_send.encrypt_in_place(
+        (&mut mtu_sized_buffer[HEADER_AUTH_START..HEADER_AUTH_END])
+            .try_into()
+            .unwrap(),
+    );
+
+    if !send(&mtu_sized_buffer[..HEADER_SIZE + fragment_len]) {
+        return Ok(());
+    }
+
     drop(state);
 
     if should_rekey {
@@ -1754,11 +1779,12 @@ pub(crate) fn receive_payload_in_place<App: ApplicationLayer>(
     session: &Arc<Session<App>>,
     state: RwLockReadGuard<'_, MutableState<App>>,
     kid: NonZeroU32,
-    n: &[u8; AES_GCM_NONCE_SIZE],
+    nonce: &[u8; AES_GCM_NONCE_SIZE],
     fragments: &mut [App::IncomingPacketBuffer],
     mut output_buffer: impl Write,
 ) -> Result<(), ReceiveError<App::StorageError>> {
     use FaultType::*;
+    debug_assert!(!fragments.is_empty());
 
     let specified_key = if Some(kid) == state.keys[0].recv.kid {
         state.keys[0].nk.as_ref()
@@ -1768,25 +1794,27 @@ pub(crate) fn receive_payload_in_place<App: ApplicationLayer>(
         return Err(byzantine_fault!(OutOfSequence, true));
     };
 
-    let mut cipher = specified_key.ok_or(byzantine_fault!(OutOfSequence, true))?.start_dec(n);
+    let mut cipher = specified_key
+        .ok_or(byzantine_fault!(OutOfSequence, true))?
+        .start_dec(nonce);
+    let (_, c) = from_nonce(nonce);
 
     // NOTE: This only works because we check the size of every received fragment in the receive
     // function, otherwise this could panic.
-    let mut i = 0;
-    while i + 1 < fragments.len() {
+    for i in 0..fragments.len() - 1 {
         let fragment = &mut fragments[i].as_mut()[HEADER_SIZE..];
+        debug_assert!(fragment.len() >= AES_GCM_TAG_SIZE);
         cipher.decrypt_in_place(fragment);
-        i += 1;
     }
-    let fragment = &mut fragments[i].as_mut()[HEADER_SIZE..];
-    let tag_idx = fragment.len() - AES_GCM_NONCE_SIZE;
+    let fragment = &mut fragments[fragments.len() - 1].as_mut()[HEADER_SIZE..];
+    debug_assert!(fragment.len() >= AES_GCM_TAG_SIZE);
+    let tag_idx = fragment.len() - AES_GCM_TAG_SIZE;
     cipher.decrypt_in_place(&mut fragment[..tag_idx]);
-    if cipher.finish((&fragment[tag_idx..]).try_into().unwrap()) {
+
+    if !cipher.finish((&fragment[tag_idx..]).try_into().unwrap()) {
         return Err(byzantine_fault!(FailedAuth, true));
     }
-    drop(cipher);
 
-    let (_, c) = from_nonce(n);
     if !session.window.update(c) {
         // This error is marked as not happening naturally, but it could occur if something about
         // the transport protocol is duplicating packets.
