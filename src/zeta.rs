@@ -1,19 +1,18 @@
-use rand_core::RngCore;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Weak};
+
+use rand_core::RngCore;
 use zeroize::Zeroizing;
 
-use crate::application::ApplicationLayer;
-use crate::application::RatchetUpdate;
+use crate::application::{ApplicationLayer, RatchetState, RatchetStates, RatchetUpdate};
 use crate::challenge::{gen_null_response, respond_to_challenge_in_place};
 use crate::context::{log, ContextInner, SessionMap};
 use crate::crypto::*;
 use crate::fragmentation::DefragBuffer;
 use crate::proto::*;
-use crate::ratchet_state::{RatchetState, RatchetStates};
 use crate::result::{byzantine_fault, FaultType, OpenError, ReceiveError, SendError};
 use crate::symmetric_state::SymmetricState;
 #[cfg(feature = "logging")]

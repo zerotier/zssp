@@ -372,7 +372,7 @@ fn core(time: u64, packet_success_rate: u32) {
 fn main() {
     let args = std::env::args();
     let packet_success_rate = if args.len() <= 1 {
-        let default_success_rate = 0.5;
+        let default_success_rate = 1.0;
         ((u32::MAX as f64) * default_success_rate) as u32
     } else {
         ((u32::MAX as f64) * f64::from_str(args.last().unwrap().as_str()).unwrap()) as u32

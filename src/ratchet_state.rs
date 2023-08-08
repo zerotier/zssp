@@ -1,6 +1,6 @@
 use zeroize::Zeroizing;
 
-use crate::crypto::{secure_eq, Sha512Hash};
+use crate::crypto::*;
 use crate::proto::*;
 /// A ratchet key and fingerprint,
 /// along with the length of the ratchet chain the keys were derived from.
