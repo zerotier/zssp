@@ -193,34 +193,6 @@ pub(crate) enum ZetaAutomata<App: ApplicationLayer> {
 }
 
 impl<App: ApplicationLayer> SymmetricState<App> {
-    fn write_e<const CAP: usize>(
-        &mut self,
-        hash: &mut App::Hash,
-        hmac: &mut App::Hmac,
-        rng: &Mutex<App::Rng>,
-        packet: &mut ArrayVec<u8, CAP>,
-    ) -> App::KeyPair {
-        let e_secret = App::KeyPair::generate(rng.lock().unwrap().deref_mut());
-        let pub_key = e_secret.public_key_bytes();
-        packet.extend(pub_key);
-        self.mix_hash(hash, &pub_key);
-        self.mix_key(hmac, &pub_key);
-        e_secret
-    }
-    fn read_e(
-        &mut self,
-        hash: &mut App::Hash,
-        hmac: &mut App::Hmac,
-        i: &mut usize,
-        packet: &[u8],
-    ) -> Option<App::PublicKey> {
-        let j = *i + P384_PUBLIC_KEY_SIZE;
-        let pub_key = &packet[*i..j];
-        self.mix_hash(hash, pub_key);
-        self.mix_key(hmac, pub_key);
-        *i = j;
-        App::PublicKey::from_bytes((pub_key).try_into().unwrap())
-    }
     fn write_e_no_init<const CAP: usize>(
         &mut self,
         hash: &mut App::Hash,
@@ -316,7 +288,7 @@ fn create_a1_state<App: ApplicationLayer>(
     noise.mix_hash(hash, &kid);
     noise.mix_hash(hash, &s_remote.to_bytes());
     // Process message pattern 1 e token.
-    let e_secret = noise.write_e(hash, hmac, rng, &mut x1);
+    let e_secret = noise.write_e_no_init(hash, hmac, rng, &mut x1);
     // Process message pattern 1 es token.
     noise.mix_dh(hmac, &e_secret, s_remote)?;
     // Process message pattern 1 e1 token.
@@ -484,7 +456,7 @@ pub(crate) fn received_x1_trans<App: ApplicationLayer>(
     i = j;
     // Process message pattern 1 e token.
     let e_remote = noise
-        .read_e(hash, hmac, &mut i, &x1)
+        .read_e_no_init(hash, hmac, &mut i, &x1)
         .ok_or(byzantine_fault!(FailedAuth, true))?;
     // Process message pattern 1 es token.
     noise
@@ -536,7 +508,7 @@ pub(crate) fn received_x1_trans<App: ApplicationLayer>(
     let mut x2 = ArrayVec::<u8, HEADERED_HANDSHAKE_RESPONSE_SIZE>::new();
     x2.extend([0u8; HEADER_SIZE]);
     // Process message pattern 2 e token.
-    let e_secret = noise.write_e(hash, hmac, &ctx.rng, &mut x2);
+    let e_secret = noise.write_e_no_init(hash, hmac, &ctx.rng, &mut x2);
     // Process message pattern 2 ee token.
     noise
         .mix_dh(hmac, &e_secret, &e_remote)
@@ -554,7 +526,7 @@ pub(crate) fn received_x1_trans<App: ApplicationLayer>(
         x2.extend(ekem1);
         let tag = noise.encrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_HANDSHAKE_RESPONSE, 0), &mut x2[i..]);
         x2.extend(tag);
-        noise.mix_key(hmac, ekem1_secret.as_ref());
+        noise.mix_key_no_init(hmac, ekem1_secret.as_ref());
     }
     // Process message pattern 2 psk2 token.
     noise.mix_key_and_hash(hash, hmac, ratchet_state.key.as_ref());
@@ -638,7 +610,7 @@ pub(crate) fn received_x2_trans<App: ApplicationLayer>(
         let mut i = 0;
         // Process message pattern 2 e token.
         let e_remote = noise
-            .read_e(hash, hmac, &mut i, &x2)
+            .read_e_no_init(hash, hmac, &mut i, &x2)
             .ok_or(byzantine_fault!(FailedAuth, true))?;
         // Process message pattern 2 ee token.
         noise
@@ -658,7 +630,7 @@ pub(crate) fn received_x2_trans<App: ApplicationLayer>(
         {
             return Err(byzantine_fault!(FailedAuth, true));
         }
-        noise.mix_key(hmac, ekem1_secret.as_ref());
+        noise.mix_key_no_init(hmac, ekem1_secret.as_ref());
         drop(ekem1_secret);
         i = k;
         // We attempt to decrypt the payload at most three times. First two times with
@@ -1262,11 +1234,11 @@ fn timeout_trans<App: ApplicationLayer>(
             noise.mix_hash(hash, &ctx.s_secret.public_key_bytes());
             noise.mix_hash(hash, &session.s_remote.to_bytes());
             // Process message pattern 1 psk0 token.
-            noise.mix_key_and_hash(hash, hmac, state.ratchet_state1.key.as_ref());
+            noise.mix_key_and_hash_no_init(hash, hmac, state.ratchet_state1.key.as_ref());
             // Process message pattern 1 e token.
-            let e_secret = noise.write_e(hash, hmac, &ctx.rng, &mut k1);
+            let e_secret = noise.write_e_no_init(hash, hmac, &ctx.rng, &mut k1);
             // Process message pattern 1 es token.
-            if noise.mix_dh(hmac, &e_secret, &session.s_remote).is_none() {
+            if noise.mix_dh_no_init(hmac, &e_secret, &session.s_remote).is_none() {
                 return None;
             }
             // Process message pattern 1 ss token.
@@ -1439,14 +1411,14 @@ pub(crate) fn received_k1_trans<App: ApplicationLayer>(
         noise.mix_hash(hash, &session.s_remote.to_bytes());
         noise.mix_hash(hash, &ctx.s_secret.public_key_bytes());
         // Process message pattern 1 psk0 token.
-        noise.mix_key_and_hash(hash, hmac, state.ratchet_state1.key.as_ref());
+        noise.mix_key_and_hash_no_init(hash, hmac, state.ratchet_state1.key.as_ref());
         // Process message pattern 1 e token.
         let e_remote = noise
-            .read_e(hash, hmac, &mut i, &k1)
+            .read_e_no_init(hash, hmac, &mut i, &k1)
             .ok_or(byzantine_fault!(FailedAuth, true))?;
         // Process message pattern 1 es token.
         noise
-            .mix_dh(hmac, &ctx.s_secret, &e_remote)
+            .mix_dh_no_init(hmac, &ctx.s_secret, &e_remote)
             .ok_or(byzantine_fault!(FailedAuth, true))?;
         // Process message pattern 1 ss token.
         noise.mix_key(hmac, session.noise_kk_ss.as_ref());
@@ -1463,10 +1435,10 @@ pub(crate) fn received_k1_trans<App: ApplicationLayer>(
         let mut k2 = ArrayVec::<u8, HEADERED_REKEY_SIZE>::new();
         k2.extend([0u8; HEADER_SIZE]);
         // Process message pattern 2 e token.
-        let e_secret = noise.write_e(hash, hmac, &ctx.rng, &mut k2);
+        let e_secret = noise.write_e_no_init(hash, hmac, &ctx.rng, &mut k2);
         // Process message pattern 2 ee token.
         noise
-            .mix_dh(hmac, &e_secret, &e_remote)
+            .mix_dh_no_init(hmac, &e_secret, &e_remote)
             .ok_or(byzantine_fault!(FailedAuth, true))?;
         // Process message pattern 2 se token.
         noise
@@ -1590,11 +1562,11 @@ pub(crate) fn received_k2_trans<App: ApplicationLayer>(
             let hmac = &mut App::Hmac::new();
             // Process message pattern 2 e token.
             let e_remote = noise
-                .read_e(hash, hmac, &mut i, &k2)
+                .read_e_no_init(hash, hmac, &mut i, &k2)
                 .ok_or(byzantine_fault!(FailedAuth, true))?;
             // Process message pattern 2 ee token.
             noise
-                .mix_dh(hmac, e_secret, &e_remote)
+                .mix_dh_no_init(hmac, e_secret, &e_remote)
                 .ok_or(byzantine_fault!(FailedAuth, true))?;
             // Process message pattern 2 se token.
             noise
