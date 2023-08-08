@@ -12,28 +12,24 @@ use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::io::Write;
-use std::num::{NonZeroU32, NonZeroU64};
-use std::ops::DerefMut;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, RwLock, Weak};
+use std::num::NonZeroU32;
+use std::sync::{Arc, Mutex, RwLock, Weak};
 
 use arrayvec::ArrayVec;
-use zeroize::Zeroizing;
+use rand_core::RngCore;
 
 use crate::challenge::ChallengeContext;
 use crate::crypto::*;
-use rand_core::RngCore;
 use crate::zeta::*;
 
+use crate::application::*;
 use crate::frag_cache::UnassociatedFragCache;
-use crate::fragged::{Assembled, Fragged};
+use crate::fragged::Assembled;
 use crate::handshake_cache::UnassociatedHandshakeCache;
-use crate::indexed_heap::{BinaryHeapIndex, IndexedBinaryHeap};
+use crate::indexed_heap::IndexedBinaryHeap;
 use crate::log_event::LogEvent;
 use crate::proto::*;
 use crate::result::{byzantine_fault, FaultType, OpenError, ReceiveError, ReceiveOk, SendError, SessionEvent};
-use crate::symmetric_state::SymmetricState;
-use crate::application::*;
 
 /// Macro to turn off logging at compile time.
 macro_rules! log {
@@ -70,13 +66,6 @@ pub struct ContextInner<App: ApplicationLayer> {
     pub(crate) unassociated_handshake_states: UnassociatedHandshakeCache<App>,
 
     pub(crate) challenge: ChallengeContext,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub enum IncomingSessionAction {
-    Allow,
-    Challenge,
-    Drop,
 }
 
 fn parse_fragment_header<StorageError>(
@@ -161,7 +150,7 @@ impl<App: ApplicationLayer> Context<App> {
     pub fn open(
         &self,
         app: App,
-        mut send: impl FnMut(&mut [u8]) -> bool,
+        send: impl FnMut(&mut [u8]) -> bool,
         mut mtu: usize,
         static_remote_key: App::PublicKey,
         session_data: App::SessionData,
@@ -217,9 +206,7 @@ impl<App: ApplicationLayer> Context<App> {
     ///   to put in-flight.
     pub fn receive<'a, SendFn: FnMut(&mut [u8]) -> bool>(
         &self,
-        app: &App,
-        check_allow_incoming_session: impl FnOnce() -> IncomingSessionAction,
-        check_accept_session: impl FnOnce(&App::PublicKey, &[u8], u64) -> (Option<(bool, App::SessionData)>, bool),
+        app: App,
         mut send_unassociated_reply: impl FnMut(&mut [u8]) -> bool,
         mut send_unassociated_mtu: usize,
         mut send_to: impl FnMut(&Arc<Session<App>>) -> Option<(SendFn, usize)>,
@@ -350,14 +337,22 @@ impl<App: ApplicationLayer> Context<App> {
                     match packet_type {
                         PACKET_TYPE_HANDSHAKE_RESPONSE => {
                             log!(app, ReceivedRawX2);
-                            received_x2_trans(app, ctx, &session, kid_recv, &nonce, assembled_packet, send_associated)?;
+                            received_x2_trans(
+                                &app,
+                                ctx,
+                                &session,
+                                kid_recv,
+                                &nonce,
+                                assembled_packet,
+                                send_associated,
+                            )?;
                             log!(app, X2IsAuthSentX3(&session));
                             SessionEvent::Control
                         }
                         PACKET_TYPE_KEY_CONFIRM => {
                             log!(app, ReceivedRawKeyConfirm);
                             let result = received_c1_trans(
-                                app,
+                                &app,
                                 ctx,
                                 &session,
                                 kid_recv,
@@ -374,19 +369,35 @@ impl<App: ApplicationLayer> Context<App> {
                         }
                         PACKET_TYPE_ACK => {
                             log!(app, ReceivedRawAck);
-                            received_c2_trans(app, ctx, &session, kid_recv, &nonce, assembled_packet)?;
+                            received_c2_trans(&app, ctx, &session, kid_recv, &nonce, assembled_packet)?;
                             log!(app, AckIsAuth(&session));
                             SessionEvent::Control
                         }
                         PACKET_TYPE_REKEY_INIT => {
                             log!(app, ReceivedRawK1);
-                            received_k1_trans(app, ctx, &session, kid_recv, &nonce, assembled_packet, send_associated)?;
+                            received_k1_trans(
+                                &app,
+                                ctx,
+                                &session,
+                                kid_recv,
+                                &nonce,
+                                assembled_packet,
+                                send_associated,
+                            )?;
                             log!(app, K1IsAuthSentK2(&session));
                             SessionEvent::Control
                         }
                         PACKET_TYPE_REKEY_COMPLETE => {
                             log!(app, ReceivedRawK2);
-                            received_k2_trans(app, ctx, &session, kid_recv, &nonce, assembled_packet, send_associated)?;
+                            received_k2_trans(
+                                &app,
+                                ctx,
+                                &session,
+                                kid_recv,
+                                &nonce,
+                                assembled_packet,
+                                send_associated,
+                            )?;
                             log!(app, K2IsAuthSentKeyConfirm(&session));
                             SessionEvent::Control
                         }
@@ -454,7 +465,7 @@ impl<App: ApplicationLayer> Context<App> {
                     }
 
                     log!(app, ReceivedRawX3);
-                    let session = received_x3_trans(app, ctx, zeta, kid_recv, assembled_packet, |packet, hk_send| {
+                    let session = received_x3_trans(&app, ctx, zeta, kid_recv, assembled_packet, |packet, hk_send| {
                         send_with_fragmentation(send_unassociated_reply, send_unassociated_mtu, packet, hk_send);
                     })?;
                     log!(app, X3IsAuthSentKeyConfirm(&session));
@@ -514,32 +525,38 @@ impl<App: ApplicationLayer> Context<App> {
                     return Err(byzantine_fault!(InvalidPacket, true));
                 }
                 // Process recv challenge layer.
-                let challenge_start = assembled_packet.len() - CHALLENGE_SIZE;
-                let result = ctx.challenge.process_hello::<App::Hash>(
-                    remote_address,
-                    (&assembled_packet[challenge_start..]).try_into().unwrap(),
-                );
-                if let Err(challenge) = result {
-                    log!(app, X1FailedChallengeSentNewChallenge);
-                    let mut challenge_packet = ArrayVec::<u8, HEADERED_CHALLENGE_SIZE>::new();
-                    challenge_packet.extend([0u8; HEADER_SIZE]);
-                    challenge_packet
-                        .try_extend_from_slice(&assembled_packet[..KID_SIZE])
-                        .unwrap();
-                    challenge_packet.extend(challenge);
-                    let nonce = to_nonce(PACKET_TYPE_CHALLENGE, ctx.rng.lock().unwrap().next_u64());
-                    challenge_packet[FRAGMENT_COUNT_IDX] = 1;
-                    challenge_packet[PACKET_NONCE_START..HEADER_SIZE].copy_from_slice(&nonce);
+                match app.incoming_session() {
+                    IncomingSessionAction::Allow => {}
+                    IncomingSessionAction::Challenge => {
+                        let challenge_start = assembled_packet.len() - CHALLENGE_SIZE;
+                        let result = ctx.challenge.process_hello::<App::Hash>(
+                            remote_address,
+                            (&assembled_packet[challenge_start..]).try_into().unwrap(),
+                        );
+                        if let Err(challenge) = result {
+                            log!(app, X1FailedChallengeSentNewChallenge);
+                            let mut challenge_packet = ArrayVec::<u8, HEADERED_CHALLENGE_SIZE>::new();
+                            challenge_packet.extend([0u8; HEADER_SIZE]);
+                            challenge_packet
+                                .try_extend_from_slice(&assembled_packet[..KID_SIZE])
+                                .unwrap();
+                            challenge_packet.extend(challenge);
+                            let nonce = to_nonce(PACKET_TYPE_CHALLENGE, ctx.rng.lock().unwrap().next_u64());
+                            challenge_packet[FRAGMENT_COUNT_IDX] = 1;
+                            challenge_packet[PACKET_NONCE_START..HEADER_SIZE].copy_from_slice(&nonce);
 
-                    send_unassociated_reply(&mut challenge_packet);
-                    // If we issue a challenge the first hello packet will always fail.
-                    return Err(byzantine_fault!(FailedAuth, false));
-                } else {
-                    log!(app, X1SucceededChallenge);
+                            send_unassociated_reply(&mut challenge_packet);
+                            // If we issue a challenge the first hello packet will always fail.
+                            return Err(byzantine_fault!(FailedAuth, false));
+                        } else {
+                            log!(app, X1SucceededChallenge);
+                        }
+                    }
+                    IncomingSessionAction::Drop => return Err(ReceiveError::Rejected),
                 }
 
                 // Process recv zeta layer.
-                received_x1_trans(app, ctx, &nonce, assembled_packet, |packet, hk_send| {
+                received_x1_trans(&app, ctx, &nonce, assembled_packet, |packet, hk_send| {
                     send_with_fragmentation(send_unassociated_reply, send_unassociated_mtu, packet, hk_send);
                 })?;
                 log!(app, X1IsAuthSentX2);
@@ -619,15 +636,10 @@ impl<App: ApplicationLayer> Context<App> {
                     continue;
                 }
             };
-            let result = process_timers(&app, ctx, &session, current_time, false, false, |packet, hk_send| {
+            let result = process_timers(&app, ctx, &session, current_time, |packet, hk_send| {
                 if let Some((send_fragment, mut mtu)) = send_to(&session) {
                     mtu = mtu.max(MIN_TRANSPORT_MTU);
-                    send_with_fragmentation(
-                        send_fragment,
-                        mtu,
-                        packet,
-                        hk_send
-                    );
+                    send_with_fragmentation(send_fragment, mtu, packet, hk_send);
                 }
             });
             if let Some(next_timer) = result {

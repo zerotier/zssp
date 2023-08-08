@@ -9,7 +9,7 @@ use crate::proto::*;
 
 pub struct ChallengeContext {
     counter: AtomicU64,
-    antireplay_window: Window<COUNTER_WINDOW_MAX_OOO, { u64::MAX }>,
+    antireplay_window: Window<CHALLENGE_COUNTER_WINDOW_MAX_OOO, { u64::MAX }>,
     salt: [u8; SALT_SIZE],
 }
 

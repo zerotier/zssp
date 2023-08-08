@@ -102,6 +102,7 @@ pub enum ReceiveError<StorageError> {
     /// The associated session will no longer function and has to be dropped.
     MaxKeyLifetimeExceeded,
 
+    Rejected,
     /// One of the ratchet saving or lookup functions returned an error, so the packet had to be
     /// dropped.
     StorageError(StorageError),

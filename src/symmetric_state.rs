@@ -2,9 +2,9 @@ use std::marker::PhantomData;
 
 use zeroize::Zeroizing;
 
+use crate::application::ApplicationLayer;
 use crate::crypto::*;
 use crate::proto::*;
-use crate::application::ApplicationLayer;
 
 pub struct SymmetricState<App: ApplicationLayer> {
     k: Zeroizing<[u8; AES_256_KEY_SIZE]>,

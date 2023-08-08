@@ -1,9 +1,9 @@
-use std::sync::Arc;
 use rand_core::{CryptoRng, RngCore};
+use std::sync::Arc;
 
 use crate::crypto::*;
-use crate::zeta::Session;
 use crate::ratchet_state::RatchetState;
+use crate::zeta::Session;
 
 pub use crate::proto::RATCHET_SIZE;
 pub use crate::ratchet_state::*;
@@ -156,6 +156,7 @@ pub trait ApplicationLayer: Sized {
     /// should rekey.
     fn time(&self) -> i64;
 
+    fn incoming_session(&self) -> IncomingSessionAction;
     /// This function will be called whenever Alice's initial Hello packet contains the empty ratchet
     /// fingerprint. Brand new peers will always connect to Bob with the empty ratchet, but from
     /// then on they should be using non-empty ratchet states.
@@ -247,6 +248,13 @@ pub trait ApplicationLayer: Sized {
     /// nothing else. Do not base protocol-level decisions upon the events passed to this function.
     #[cfg(feature = "logging")]
     fn event_log(&self, event: LogEvent<'_, Self>);
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum IncomingSessionAction {
+    Allow,
+    Challenge,
+    Drop,
 }
 
 /// A collection of fields specifying how to complete the key exchange with a specific remote peer,
