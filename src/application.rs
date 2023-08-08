@@ -102,11 +102,11 @@ pub trait ApplicationLayer: Sized {
     /// The implementation of AES-256 Encryption that ZSSP should use.
     ///
     /// FIPS compliance requires use of a FIPS certified implementation.
-    type PrpEnc: AesEnc;
+    type PrpEnc: Aes256Enc;
     /// The implementation of AES-256 Decryption that ZSSP should use.
     ///
     /// FIPS compliance requires use of a FIPS certified implementation.
-    type PrpDec: AesDec;
+    type PrpDec: Aes256Dec;
 
     type Aead: LowThroughputAesGcm;
     type AeadPool: HighThroughputAesGcmPool;
@@ -114,8 +114,8 @@ pub trait ApplicationLayer: Sized {
     /// The implementation of SHA-512 that ZSSP should use.
     ///
     /// FIPS compliance requires use of a FIPS certified implementation.
-    type Hash: HashSha512;
-    type HmacHash: HmacSha512;
+    type Hash: Sha512Hash;
+    type Hmac: Sha512Hmac;
     /// The implementation of P-384 public keys that ZSSP should use.
     ///
     /// FIPS compliance requires a FIPS certified implementation.

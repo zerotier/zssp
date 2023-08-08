@@ -85,7 +85,7 @@ fn parse_fragment_header<StorageError>(
 /// Fragments and sends the packet, destroying it in the process.
 ///
 /// Corresponds to the fragmentation algorithm described in Section 6.
-fn send_with_fragmentation<PrpEnc: AesEnc>(
+fn send_with_fragmentation<PrpEnc: Aes256Enc>(
     mut send: impl FnMut(&mut [u8]) -> bool,
     mtu: usize,
     headered_packet: &mut [u8],
@@ -533,11 +533,13 @@ impl<App: ApplicationLayer> Context<App> {
                     return Err(byzantine_fault!(InvalidPacket, true));
                 }
                 // Process recv challenge layer.
+                let hash = &mut App::Hash::new();
                 match app.incoming_session() {
                     IncomingSessionAction::Allow => {}
                     IncomingSessionAction::Challenge => {
                         let challenge_start = assembled_packet.len() - CHALLENGE_SIZE;
-                        let result = ctx.challenge.process_hello::<App::Hash>(
+                        let result = ctx.challenge.process_hello(
+                            hash,
                             remote_address,
                             (&assembled_packet[challenge_start..]).try_into().unwrap(),
                         );
@@ -564,7 +566,7 @@ impl<App: ApplicationLayer> Context<App> {
                 }
 
                 // Process recv zeta layer.
-                received_x1_trans(&app, ctx, &nonce, assembled_packet, |packet, hk_send| {
+                received_x1_trans(&app, ctx, hash, &nonce, assembled_packet, |packet, hk_send| {
                     send_with_fragmentation(send_unassociated_reply, send_unassociated_mtu, packet, hk_send);
                 })?;
                 log!(app, X1IsAuthSentX2);

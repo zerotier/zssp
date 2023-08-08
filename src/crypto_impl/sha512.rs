@@ -4,7 +4,7 @@ use sha2::{Digest, Sha512};
 use crate::crypto::*;
 
 pub type RustSha512 = Sha512;
-impl HashSha512 for RustSha512 {
+impl Sha512Hash for RustSha512 {
     fn new() -> Self {
         Digest::new()
     }
@@ -21,7 +21,7 @@ impl HashSha512 for RustSha512 {
 }
 
 pub struct RustHmac;
-impl HmacSha512 for RustHmac {
+impl Sha512Hmac for RustHmac {
     fn new() -> Self {
         RustHmac
     }

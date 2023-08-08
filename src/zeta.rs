@@ -46,7 +46,7 @@ pub(crate) fn from_nonce(n: &[u8]) -> (u8, u64) {
     (n[c_start - 1], u64::from_be_bytes(n[c_start..].try_into().unwrap()))
 }
 fn create_ratchet_state<App: ApplicationLayer>(
-    hmac: &mut App::HmacHash,
+    hmac: &mut App::Hmac,
     noise: &SymmetricState<App>,
     pre_chain_len: u64,
 ) -> RatchetState {
@@ -196,7 +196,7 @@ impl<App: ApplicationLayer> SymmetricState<App> {
     fn write_e<const CAP: usize>(
         &mut self,
         hash: &mut App::Hash,
-        hmac: &mut App::HmacHash,
+        hmac: &mut App::Hmac,
         rng: &Mutex<App::Rng>,
         packet: &mut ArrayVec<u8, CAP>,
     ) -> App::KeyPair {
@@ -210,7 +210,7 @@ impl<App: ApplicationLayer> SymmetricState<App> {
     fn read_e(
         &mut self,
         hash: &mut App::Hash,
-        hmac: &mut App::HmacHash,
+        hmac: &mut App::Hmac,
         i: &mut usize,
         packet: &[u8],
     ) -> Option<App::PublicKey> {
@@ -224,7 +224,7 @@ impl<App: ApplicationLayer> SymmetricState<App> {
     fn write_e_no_init<const CAP: usize>(
         &mut self,
         hash: &mut App::Hash,
-        hmac: &mut App::HmacHash,
+        hmac: &mut App::Hmac,
         rng: &Mutex<App::Rng>,
         packet: &mut ArrayVec<u8, CAP>,
     ) -> App::KeyPair {
@@ -238,7 +238,7 @@ impl<App: ApplicationLayer> SymmetricState<App> {
     fn read_e_no_init(
         &mut self,
         hash: &mut App::Hash,
-        hmac: &mut App::HmacHash,
+        hmac: &mut App::Hmac,
         i: &mut usize,
         packet: &[u8],
     ) -> Option<App::PublicKey> {
@@ -249,7 +249,7 @@ impl<App: ApplicationLayer> SymmetricState<App> {
         *i = j;
         App::PublicKey::from_bytes((pub_key).try_into().unwrap())
     }
-    fn mix_dh(&mut self, hmac: &mut App::HmacHash, secret: &App::KeyPair, remote: &App::PublicKey) -> Option<()> {
+    fn mix_dh(&mut self, hmac: &mut App::Hmac, secret: &App::KeyPair, remote: &App::PublicKey) -> Option<()> {
         let mut ecdh_secret = Zeroizing::new([0u8; P384_ECDH_SHARED_SECRET_SIZE]);
         if secret.agree(&remote, &mut ecdh_secret) {
             self.mix_key(hmac, ecdh_secret.as_ref());
@@ -260,7 +260,7 @@ impl<App: ApplicationLayer> SymmetricState<App> {
     }
     fn mix_dh_no_init(
         &mut self,
-        hmac: &mut App::HmacHash,
+        hmac: &mut App::Hmac,
         secret: &App::KeyPair,
         remote: &App::PublicKey,
     ) -> Option<()> {
@@ -301,7 +301,7 @@ fn set_header(packet: &mut [u8], kid_send: u32, nonce: &[u8; AES_GCM_NONCE_SIZE]
 
 fn create_a1_state<App: ApplicationLayer>(
     hash: &mut App::Hash,
-    hmac: &mut App::HmacHash,
+    hmac: &mut App::Hmac,
     rng: &Mutex<App::Rng>,
     s_remote: &App::PublicKey,
     kid_recv: NonZeroU32,
@@ -376,7 +376,7 @@ pub(crate) fn trans_to_a1<App: ApplicationLayer>(
     let kid_recv = gen_kid(session_map.deref(), ctx.rng.lock().unwrap().deref_mut());
 
     let hash = &mut App::Hash::new();
-    let hmac = &mut App::HmacHash::new();
+    let hmac = &mut App::Hmac::new();
     let a1 = create_a1_state(
         hash,
         hmac,
@@ -449,8 +449,9 @@ pub(crate) fn respond_to_challenge<App: ApplicationLayer>(
     let mut state = session.state.write().unwrap();
     if let ZetaAutomata::A1(a1) = &mut state.beta {
         let response_start = a1.x1.len() - CHALLENGE_SIZE;
-        respond_to_challenge_in_place::<App::Rng, App::Hash>(
+        respond_to_challenge_in_place(
             ctx.rng.lock().unwrap().deref_mut(),
+            &mut App::Hash::new(),
             challenge,
             (&mut a1.x1[response_start..]).try_into().unwrap(),
         );
@@ -460,6 +461,7 @@ pub(crate) fn respond_to_challenge<App: ApplicationLayer>(
 pub(crate) fn received_x1_trans<App: ApplicationLayer>(
     app: &App,
     ctx: &ContextInner<App>,
+    hash: &mut App::Hash,
     n: &[u8; AES_GCM_NONCE_SIZE],
     x1: &mut [u8],
     send: impl FnOnce(&mut [u8], Option<&App::PrpEnc>),
@@ -476,8 +478,7 @@ pub(crate) fn received_x1_trans<App: ApplicationLayer>(
     if &n[AES_GCM_NONCE_SIZE - 8..] != &x1[x1.len() - 8..] {
         return Err(byzantine_fault!(FailedAuth, true));
     }
-    let hash = &mut App::Hash::new();
-    let hmac = &mut App::HmacHash::new();
+    let hmac = &mut App::Hmac::new();
     let mut noise = SymmetricState::<App>::initialize(PROTOCOL_NAME_NOISE_XK);
     let mut i = 0;
     // Noise process prologue.
@@ -623,7 +624,7 @@ pub(crate) fn received_x2_trans<App: ApplicationLayer>(
     let kex_lock = session.state_machine_lock.lock().unwrap();
     let state = session.state.read().unwrap();
     let hash = &mut App::Hash::new();
-    let hmac = &mut App::HmacHash::new();
+    let hmac = &mut App::Hmac::new();
 
     if Some(kid) != state.key_ref(true).recv.kid {
         return Err(byzantine_fault!(UnknownLocalKeyId, true));
@@ -842,7 +843,7 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
         return Err(byzantine_fault!(UnknownLocalKeyId, true));
     }
     let hash = &mut App::Hash::new();
-    let hmac = &mut App::HmacHash::new();
+    let hmac = &mut App::Hmac::new();
 
     let mut noise = zeta.noise.clone();
     let mut i = 0;
@@ -1212,7 +1213,7 @@ fn timeout_trans<App: ApplicationLayer>(
             let new_kid_recv = remap(ctx, session, &state);
 
             let hash = &mut App::Hash::new();
-            let hmac = &mut App::HmacHash::new();
+            let hmac = &mut App::Hmac::new();
             if let Some(a1) = create_a1_state(
                 hash,
                 hmac,
@@ -1259,7 +1260,7 @@ fn timeout_trans<App: ApplicationLayer>(
             //    -> psk, e, es, ss
             let mut noise = SymmetricState::initialize(PROTOCOL_NAME_NOISE_KK);
             let hash = &mut App::Hash::new();
-            let hmac = &mut App::HmacHash::new();
+            let hmac = &mut App::Hmac::new();
             let mut k1 = ArrayVec::<u8, HEADERED_REKEY_SIZE>::new();
             k1.extend([0u8; HEADER_SIZE]);
             // Noise process prologue.
@@ -1438,7 +1439,7 @@ pub(crate) fn received_k1_trans<App: ApplicationLayer>(
         let mut i = 0;
         let mut noise = SymmetricState::<App>::initialize(PROTOCOL_NAME_NOISE_KK);
         let hash = &mut App::Hash::new();
-        let hmac = &mut App::HmacHash::new();
+        let hmac = &mut App::Hmac::new();
         // Noise process prologue.
         noise.mix_hash(hash, &session.s_remote.to_bytes());
         noise.mix_hash(hash, &ctx.s_secret.public_key_bytes());
@@ -1591,7 +1592,7 @@ pub(crate) fn received_k2_trans<App: ApplicationLayer>(
             let mut noise = noise.clone();
             let mut i = 0;
             let hash = &mut App::Hash::new();
-            let hmac = &mut App::HmacHash::new();
+            let hmac = &mut App::Hmac::new();
             // Process message pattern 2 e token.
             let e_remote = noise
                 .read_e(hash, hmac, &mut i, &k2)

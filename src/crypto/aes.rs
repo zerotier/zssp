@@ -10,7 +10,7 @@ pub const AES_GCM_NONCE_SIZE: usize = 12;
 /// algorithm is secure.
 ///
 /// Instances must securely delete their keys when dropped or reset.
-pub trait AesEnc: Send + Sync {
+pub trait Aes256Enc: Send + Sync {
     fn new(key: &[u8; AES_256_KEY_SIZE]) -> Self;
 
     /// Change the encryption key to `key` so that all future encryption is performed with it.
@@ -26,7 +26,7 @@ pub trait AesEnc: Send + Sync {
 /// A trait for decrypting individual blocks of plaintext using AES-256.
 ///
 /// Instances must securely delete their keys when dropped or reset.
-pub trait AesDec: Send + Sync {
+pub trait Aes256Dec: Send + Sync {
     fn new(key: &[u8; AES_256_KEY_SIZE]) -> Self;
 
     /// Change the decryption key to `key` so that all future decryption is performed with it.

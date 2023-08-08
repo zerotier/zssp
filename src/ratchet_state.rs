@@ -52,7 +52,7 @@ impl RatchetState {
             chain_len: 0,
         }
     }
-    pub fn new_from_otp<Hmac: HmacSha512>(otp: &[u8]) -> RatchetState {
+    pub fn new_from_otp<Hmac: Sha512Hmac>(otp: &[u8]) -> RatchetState {
         let mut buffer = ArrayVec::<u8, 23>::new();
         buffer.push(1);
         buffer.extend(*LABEL_OTP_TO_RATCHET);
@@ -102,7 +102,7 @@ impl RatchetStates {
     pub fn new_initial_states() -> Self {
         Self { state1: RatchetState::empty(), state2: None }
     }
-    pub fn new_otp_states<Hmac: HmacSha512>(otp: &[u8]) -> Self {
+    pub fn new_otp_states<Hmac: Sha512Hmac>(otp: &[u8]) -> Self {
         Self {
             state1: RatchetState::new_from_otp::<Hmac>(otp),
             state2: None,

@@ -40,7 +40,7 @@ impl<App: ApplicationLayer> SymmetricState<App> {
     /// Corresponds to Noise `HKDF`.
     fn kbkdf(
         &self,
-        hmac: &mut App::HmacHash,
+        hmac: &mut App::Hmac,
         input_key_material: &[u8],
         label: &[u8; 4],
         num_outputs: u16,
@@ -86,7 +86,7 @@ impl<App: ApplicationLayer> SymmetricState<App> {
         }
     }
     /// Corresponds to Noise `MixKey`.
-    pub fn mix_key(&mut self, hmac: &mut App::HmacHash, input_key_material: &[u8]) {
+    pub fn mix_key(&mut self, hmac: &mut App::Hmac, input_key_material: &[u8]) {
         let mut next_ck = Zeroizing::new([0u8; HASHLEN]);
         let mut temp_k = Zeroizing::new([0u8; HASHLEN]);
 
@@ -104,7 +104,7 @@ impl<App: ApplicationLayer> SymmetricState<App> {
         self.k.clone_from_slice(&temp_k[..AES_256_KEY_SIZE]);
     }
     /// Corresponds to Noise `MixKey`.
-    pub fn mix_key_no_init(&mut self, hmac: &mut App::HmacHash, input_key_material: &[u8]) {
+    pub fn mix_key_no_init(&mut self, hmac: &mut App::Hmac, input_key_material: &[u8]) {
         let mut next_ck = Zeroizing::new([0u8; HASHLEN]);
 
         self.kbkdf(hmac, input_key_material, LABEL_KBKDF_CHAIN, 2, &mut next_ck, None, None);
@@ -118,7 +118,7 @@ impl<App: ApplicationLayer> SymmetricState<App> {
         hash.finish_and_reset(&mut self.h);
     }
     /// Corresponds to Noise `MixKeyAndHash`.
-    pub fn mix_key_and_hash(&mut self, hash: &mut App::Hash, hmac: &mut App::HmacHash, input_key_material: &[u8]) {
+    pub fn mix_key_and_hash(&mut self, hash: &mut App::Hash, hmac: &mut App::Hmac, input_key_material: &[u8]) {
         let mut next_ck = Zeroizing::new([0u8; HASHLEN]);
         let mut temp_h = [0u8; HASHLEN];
         let mut temp_k = Zeroizing::new([0u8; HASHLEN]);
@@ -141,7 +141,7 @@ impl<App: ApplicationLayer> SymmetricState<App> {
     pub fn mix_key_and_hash_no_init(
         &mut self,
         hash: &mut App::Hash,
-        hmac: &mut App::HmacHash,
+        hmac: &mut App::Hmac,
         input_key_material: &[u8],
     ) {
         let mut next_ck = Zeroizing::new([0u8; HASHLEN]);
@@ -192,7 +192,7 @@ impl<App: ApplicationLayer> SymmetricState<App> {
         is_auth
     }
     /// Corresponds to Noise `Split`.
-    pub fn split(self, hmac: &mut App::HmacHash, key1: &mut [u8; HASHLEN], key2: &mut [u8; HASHLEN]) {
+    pub fn split(self, hmac: &mut App::Hmac, key1: &mut [u8; HASHLEN], key2: &mut [u8; HASHLEN]) {
         self.kbkdf(hmac, &[], LABEL_KBKDF_CHAIN, 2, key1, Some(key2), None);
     }
     /// Get an additional symmetric key (ASK) that is a collision resistant hash of the transcript,
@@ -201,7 +201,7 @@ impl<App: ApplicationLayer> SymmetricState<App> {
     /// https://github.com/noiseprotocol/noise_wiki/wiki/Additional-Symmetric-Keys.
     pub fn get_ask(
         &self,
-        hmac: &mut App::HmacHash,
+        hmac: &mut App::Hmac,
         label: &[u8; 4],
         key1: &mut [u8; HASHLEN],
         key2: &mut [u8; HASHLEN],

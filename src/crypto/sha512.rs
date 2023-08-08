@@ -3,7 +3,7 @@
 pub const SHA512_HASH_SIZE: usize = 64;
 
 /// A SHA-512 implementation.
-pub trait HashSha512 {
+pub trait Sha512Hash {
     /// Create a new instance of SHA-512 for streaming data to.
     fn new() -> Self;
     /// Update the instance of SHA-512 with input `data`.
@@ -15,7 +15,7 @@ pub trait HashSha512 {
 
 /// Opaque HMAC-SHA-512 implementation.
 /// Does not need to be threadsafe.
-pub trait HmacSha512 {
+pub trait Sha512Hmac {
     /// Allocate space on the stack or heap for repeated Hmac invocations.
     ///
     /// Many FIPS compliant libraries, namely OpenSSL, require initializing an Hmac context on the
