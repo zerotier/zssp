@@ -20,15 +20,17 @@ mod log_event;
 pub use log_event::*;
 
 pub mod proto;
-pub mod ratchet_state;
+mod ratchet_state;
 pub mod result;
 mod symmetric_state;
-pub mod zeta;
-pub mod zssp;
+mod zeta;
+mod zssp;
 
+pub use zeta::*;
+pub use zssp::*;
 //pub mod error;
 //pub use crate::applicationlayer::ApplicationLayer;
 //pub use crate::log_event::LogEvent;
-//pub use crate::proto::{MAX_IDENTITY_BLOB_SIZE, MIN_PACKET_SIZE, MIN_TRANSPORT_MTU, RATCHET_SIZE};
+//pub use crate::proto::{IDENTITY_MAX_SIZE, MIN_PACKET_SIZE, MIN_TRANSPORT_MTU};
 //pub use crate::ratchet_state::RatchetState;
 //pub use crate::zssp::{Context, ContextInner, IncomingSessionAction, ReceiveResult, Session, SessionEvent};

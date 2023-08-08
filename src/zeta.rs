@@ -64,12 +64,12 @@ fn get_counter<App: ApplicationLayer>(session: &Session<App>, state: &MutableSta
         None
     } else {
         let c = session.send_counter.fetch_add(1, Ordering::Relaxed);
+        if c > THREAD_SAFE_COUNTER_HARD_EXPIRE {
+            session.session_has_expired.store(true, Ordering::SeqCst);
+        }
         if c > state.key_creation_counter + EXPIRE_AFTER_USES {
             session.session_has_expired.store(true, Ordering::SeqCst);
             return None;
-        }
-        if c > THREAD_SAFE_COUNTER_HARD_EXPIRE {
-            session.session_has_expired.store(true, Ordering::SeqCst);
         }
         Some((c, c > state.key_creation_counter + App::SETTINGS.rekey_after_key_uses))
     }
@@ -258,12 +258,7 @@ impl<App: ApplicationLayer> SymmetricState<App> {
             None
         }
     }
-    fn mix_dh_no_init(
-        &mut self,
-        hmac: &mut App::Hmac,
-        secret: &App::KeyPair,
-        remote: &App::PublicKey,
-    ) -> Option<()> {
+    fn mix_dh_no_init(&mut self, hmac: &mut App::Hmac, secret: &App::KeyPair, remote: &App::PublicKey) -> Option<()> {
         let mut ecdh_secret = Zeroizing::new([0u8; P384_ECDH_SHARED_SECRET_SIZE]);
         if secret.agree(&remote, &mut ecdh_secret) {
             self.mix_key_no_init(hmac, ecdh_secret.as_ref());
@@ -1765,20 +1760,15 @@ pub(crate) fn receive_payload_in_place<App: ApplicationLayer>(
 ) -> Result<(), ReceiveError<App::StorageError>> {
     use FaultType::*;
 
-    let is_other = if Some(kid) == state.key_ref(true).recv.kid {
-        true
-    } else if Some(kid) == state.key_ref(false).recv.kid {
-        false
+    let specified_key = if Some(kid) == state.keys[0].recv.kid {
+        state.keys[0].nk.as_ref()
+    } else if Some(kid) == state.keys[1].recv.kid {
+        state.keys[1].nk.as_ref()
     } else {
         return Err(byzantine_fault!(OutOfSequence, true));
     };
 
-    let mut cipher = state
-        .key_ref(is_other)
-        .nk
-        .as_ref()
-        .ok_or(byzantine_fault!(OutOfSequence, true))?
-        .start_dec(n);
+    let mut cipher = specified_key.ok_or(byzantine_fault!(OutOfSequence, true))?.start_dec(n);
 
     // NOTE: This only works because we check the size of every received fragment in the receive
     // function, otherwise this could panic.
@@ -1794,6 +1784,7 @@ pub(crate) fn receive_payload_in_place<App: ApplicationLayer>(
     if cipher.finish((&fragment[tag_idx..]).try_into().unwrap()) {
         return Err(byzantine_fault!(FailedAuth, true));
     }
+    drop(cipher);
 
     let (_, c) = from_nonce(n);
     if !session.window.update(c) {
@@ -1802,7 +1793,6 @@ pub(crate) fn receive_payload_in_place<App: ApplicationLayer>(
         return Err(byzantine_fault!(ExpiredCounter, true));
     }
 
-    drop(cipher);
     for fragment in fragments {
         let result = output_buffer.write(&fragment.as_ref()[HEADER_SIZE..]);
         if let Err(e) = result {
@@ -1859,46 +1849,14 @@ impl<App: ApplicationLayer> Session<App> {
     ///
     ///// The current ratchet state of this session.
     ///// The returned values are sensitive and should be securely erased before being dropped.
-    //pub fn ratchet_states(&self) -> [RatchetState; 2] {
-    //    let state = self.state.read().unwrap();
-    //    state.ratchet_states.clone()
-    //}
+    pub fn ratchet_states(&self) -> RatchetStates {
+        let state = self.state.read().unwrap();
+        RatchetStates::new(state.ratchet_state1.clone(), state.ratchet_state2.clone())
+    }
     /// The current ratchet count of this session.
-    //pub fn ratchet_count(&self) -> u64 {
-    //    self.state.read().unwrap().
-    //}
-    /// Mark a session as expired. This will make it impossible for this session to successfully
-    /// receive or send data or control packets. It is recommended to simply `drop` the session
-    /// instead, but this can provide some reassurance in complex shared ownership situations.
-    //pub fn expire(&self) {
-    //    if let Some(context) = self.context.upgrade() {
-    //        self.expire_inner(&context, &mut context.session_queue.lock().unwrap());
-    //    }
-    //}
-    //fn expire_inner(
-    //    &self,
-    //    context: &Arc<ContextInner<Application>>,
-    //    session_queue: &mut IndexedBinaryHeap<Weak<Session<Application>>, Reverse<i64>>,
-    //) {
-    //    // Prevent this session from being updated.
-    //    session_queue.remove(self.queue_idx);
-    //    self.session_has_expired.store(true, Ordering::Relaxed);
-    //    let _kex_lock = self.state_machine_lock.lock().unwrap();
-    //    let mut state = self.state.write().unwrap();
-    //    let mut session_map = context.session_map.write().unwrap();
-    //    for key in &state.cipher_states {
-    //        if let Some(pre_id) = key.as_ref().map(|k| k.local_key_id) {
-    //            session_map.remove(&pre_id);
-    //        }
-    //    }
-    //    use OfferStateMachine::*;
-    //    match &state.outgoing_offer {
-    //        NoiseXKPattern1or3(handshake_state) => session_map.remove(&handshake_state.local_key_id),
-    //        NoiseKKPattern1 { new_key_id, .. } => session_map.remove(new_key_id),
-    //        _ => None,
-    //    };
-    //    state.outgoing_offer = OfferStateMachine::Null;
-    //}
+    pub fn ratchet_count(&self) -> u64 {
+        self.state.read().unwrap().ratchet_state1.chain_len
+    }
     /// Check whether this session is established.
     pub fn established(&self) -> bool {
         let state = self.state.read().unwrap();

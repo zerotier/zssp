@@ -62,21 +62,21 @@ pub trait HighThroughputAesGcmPool: Send + Sync {
 
     fn new(encrypt_key: &[u8; AES_256_KEY_SIZE], decrypt_key: &[u8; AES_256_KEY_SIZE]) -> Self;
 
-    fn start_enc<'a>(&'a self, iv: &[u8; AES_GCM_NONCE_SIZE]) -> Self::EncContext<'a>;
-    fn start_dec<'a>(&'a self, iv: &[u8; AES_GCM_NONCE_SIZE]) -> Self::DecContext<'a>;
+    fn start_enc<'a>(&'a self, nonce: &[u8; AES_GCM_NONCE_SIZE]) -> Self::EncContext<'a>;
+    fn start_dec<'a>(&'a self, nonce: &[u8; AES_GCM_NONCE_SIZE]) -> Self::DecContext<'a>;
 }
 
 pub trait LowThroughputAesGcm {
     fn encrypt_in_place(
         key: &[u8; AES_256_KEY_SIZE],
-        iv: &[u8; AES_GCM_NONCE_SIZE],
+        nonce: &[u8; AES_GCM_NONCE_SIZE],
         aad: &[u8],
         data: &mut [u8],
     ) -> [u8; AES_GCM_TAG_SIZE];
     #[must_use]
     fn decrypt_in_place(
         key: &[u8; AES_256_KEY_SIZE],
-        iv: &[u8; AES_GCM_NONCE_SIZE],
+        nonce: &[u8; AES_GCM_NONCE_SIZE],
         aad: &[u8],
         data: &mut [u8],
         tag: &[u8; AES_GCM_TAG_SIZE],

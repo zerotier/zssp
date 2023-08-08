@@ -35,17 +35,3 @@ impl<Rng: RngCore + CryptoRng> Kyber1024PrivateKey<Rng> for RustKyber1024Private
         }
     }
 }
-
-//impl<Rng: RngCore + CryptoRng> Kyber1024PrivateKey<Rng> for RustKyber1024PrivateKey {
-//    fn generate(rng: &mut Rng) -> (Self, [u8; KYBER_PUBLIC_KEY_SIZE]) {
-//    }
-
-//    fn encapsulate(
-//        rng: &mut Rng,
-//        public_key: &[u8; KYBER_PUBLIC_KEY_SIZE],
-//    ) -> Option<([u8; KYBER_CIPHERTEXT_SIZE], [u8; KYBER_PLAINTEXT_SIZE])> {
-//    }
-
-//    fn decapsulate(&self, ciphertext: &[u8; KYBER_CIPHERTEXT_SIZE]) -> Option<[u8; KYBER_PLAINTEXT_SIZE]> {
-//    }
-//}

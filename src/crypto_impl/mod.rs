@@ -11,6 +11,9 @@ mod sha512;
 #[cfg(feature = "sha2")]
 pub use sha512::*;
 
+mod openssl;
+pub use openssl::*;
+
 #[cfg(feature = "hmac")]
 pub use hmac;
 #[cfg(feature = "p384")]

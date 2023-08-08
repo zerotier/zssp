@@ -2,7 +2,6 @@ use rand_core::{CryptoRng, RngCore};
 use std::sync::Arc;
 
 use crate::crypto::*;
-use crate::ratchet_state::RatchetState;
 use crate::zeta::Session;
 
 pub use crate::proto::RATCHET_SIZE;
@@ -145,10 +144,6 @@ pub trait ApplicationLayer: Sized {
     /// hold these for a short period of time when assembling fragmented packets on the receive
     /// path.
     type IncomingPacketBuffer: AsRef<[u8]> + AsMut<[u8]>;
-    /// Data type for giving ZSSP temporary ownership of a buffer containing the local party's
-    /// identity.
-    /// It will be dropped as soon as the session is established.
-    type LocalIdentityBlob: AsRef<[u8]>;
 
     /// Should return the current time in milliseconds. Does not have to be monotonic, nor synced
     /// with remote peers (although both of these properties would help reliability slightly).

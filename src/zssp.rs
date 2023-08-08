@@ -98,13 +98,16 @@ fn send_with_fragmentation<PrpEnc: Aes256Enc>(
     let fragment_base_size = payload_len / fragment_count;
     let fragment_size_remainder = payload_len % fragment_count;
 
+    let mut header: [u8; HEADER_SIZE] = headered_packet[..HEADER_SIZE].try_into().unwrap();
+    header[FRAGMENT_COUNT_IDX] = fragment_count as u8;
+
     let mut i = HEADER_SIZE;
     for fragment_no in 0..fragment_count {
         let j = i + fragment_base_size + (fragment_no < fragment_size_remainder) as usize;
         let fragment = &mut headered_packet[i - HEADER_SIZE..j];
 
-        fragment[FRAGMENT_NO_IDX] = fragment_no as u8;
-        fragment[FRAGMENT_COUNT_IDX] = fragment_count as u8;
+        header[FRAGMENT_NO_IDX] = fragment_no as u8;
+        fragment[..HEADER_SIZE].copy_from_slice(&header);
 
         if let Some(hk_send) = hk_send {
             hk_send.encrypt_in_place((&mut fragment[HEADER_AUTH_START..HEADER_AUTH_END]).try_into().unwrap());
@@ -482,7 +485,7 @@ impl<App: ApplicationLayer> Context<App> {
                     // This can occur naturally because either Bob's incoming_sessions cache got
                     // full so Alice's incoming session was dropped, or the session this packet
                     // was for was dropped by the application.
-                    return Err(byzantine_fault!(UnknownLocalKeyId, true));
+                    return Err(byzantine_fault!(UnknownLocalKeyId, false));
                 }
             }
         } else {
@@ -626,10 +629,10 @@ impl<App: ApplicationLayer> Context<App> {
         &self,
         app: App,
         mut send_to: impl FnMut(&Arc<Session<App>>) -> Option<(SendFn, usize)>,
-        current_time: i64,
     ) -> i64 {
         let ctx = &self.0;
         let mut session_queue = ctx.session_queue.lock().unwrap();
+        let current_time = app.time();
         let mut next_service_time = current_time + App::SETTINGS.fragment_assembly_timeout as i64;
         // This update system takes heavy advantage of the fact that sessions only need to be updated
         // either roughly every second or roughly every hour. That big gap allows for minor optimizations.
@@ -668,6 +671,6 @@ impl<App: ApplicationLayer> Context<App> {
             .check_for_expiry(App::SETTINGS.fragment_assembly_timeout as i64, current_time);
         self.0.unassociated_handshake_states.service(current_time);
 
-        next_service_time
+        next_service_time - current_time
     }
 }
