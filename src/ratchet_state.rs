@@ -1,6 +1,6 @@
 use zeroize::Zeroizing;
 
-use crate::crypto::{secure_eq, HashSha512};
+use crate::crypto::{secure_eq, Sha512Hash};
 use crate::proto::*;
 /// A ratchet key and fingerprint,
 /// along with the length of the ratchet chain the keys were derived from.
@@ -51,7 +51,7 @@ impl RatchetState {
             chain_len: 0,
         }
     }
-    pub fn new_from_otp<Hmac: HashSha512>(otp: &[u8]) -> RatchetState {
+    pub fn new_from_otp<Hmac: Sha512Hash>(otp: &[u8]) -> RatchetState {
         let mut buffer = Vec::new();
         buffer.push(1);
         buffer.extend(LABEL_OTP_TO_RATCHET);
@@ -99,7 +99,7 @@ impl RatchetStates {
     pub fn new_initial_states() -> Self {
         Self { state1: RatchetState::empty(), state2: None }
     }
-    pub fn new_otp_states<Hmac: HashSha512>(otp: &[u8]) -> Self {
+    pub fn new_otp_states<Hmac: Sha512Hash>(otp: &[u8]) -> Self {
         Self {
             state1: RatchetState::new_from_otp::<Hmac>(otp),
             state2: None,

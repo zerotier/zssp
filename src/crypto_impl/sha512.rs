@@ -3,7 +3,7 @@ use sha2::{Digest, Sha512};
 
 use crate::crypto::*;
 
-impl HashSha512 for Sha512 {
+impl Sha512Hash for Sha512 {
     fn new() -> Self {
         Digest::new()
     }

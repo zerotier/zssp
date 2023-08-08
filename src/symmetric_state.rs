@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 use zeroize::Zeroizing;
 
 use crate::application::ApplicationLayer;
-use crate::crypto::{AeadAesGcm, HashSha512, AES_256_KEY_SIZE, AES_GCM_IV_SIZE, AES_GCM_TAG_SIZE};
+use crate::crypto::{AesGcmAead, Sha512Hash, AES_256_KEY_SIZE, AES_GCM_NONCE_SIZE, AES_GCM_TAG_SIZE};
 use crate::proto::{HASHLEN, LABEL_KBKDF_CHAIN};
 
 pub struct SymmetricState<App: ApplicationLayer> {
@@ -125,11 +125,11 @@ impl<App: ApplicationLayer> SymmetricState<App> {
     /// Corresponds to Noise `EncryptAndHash`.
     pub fn encrypt_and_hash_in_place(
         &mut self,
-        iv: [u8; AES_GCM_IV_SIZE],
+        iv: [u8; AES_GCM_NONCE_SIZE],
         plaintext_start: usize,
         buffer: &mut Vec<u8>,
     ) {
-        let tag = App::Aead::encrypt_in_place(&self.k, iv, Some(&self.h), &mut buffer[plaintext_start..]);
+        let tag = App::Aead::encrypt_in_place(&self.k, &iv, Some(&self.h), &mut buffer[plaintext_start..]);
         buffer.extend(&tag);
         self.mix_hash(&buffer[plaintext_start..]);
     }
@@ -137,7 +137,7 @@ impl<App: ApplicationLayer> SymmetricState<App> {
     #[must_use]
     pub fn decrypt_and_hash_in_place(
         &mut self,
-        iv: [u8; AES_GCM_IV_SIZE],
+        iv: [u8; AES_GCM_NONCE_SIZE],
         buffer: &mut [u8],
         tag: [u8; AES_GCM_TAG_SIZE],
     ) -> bool {
@@ -145,7 +145,7 @@ impl<App: ApplicationLayer> SymmetricState<App> {
         hash.update(&self.h);
         hash.update(buffer);
         hash.update(&tag);
-        let ret = App::Aead::decrypt_in_place(&self.k, iv, Some(&self.h), buffer, tag);
+        let ret = App::Aead::decrypt_in_place(&self.k, &iv, Some(&self.h), buffer, &tag);
         self.h = hash.finish();
         ret
     }

@@ -6,7 +6,7 @@ pub const P384_PUBLIC_KEY_SIZE: usize = 49;
 pub const P384_ECDH_SHARED_SECRET_SIZE: usize = 48;
 
 /// A NIST P-384 ECDH/ECDSA public key.
-pub trait PublicKeyP384: Sized + Send + Sync {
+pub trait P384PublicKey: Sized + Send + Sync {
     /// Create a P-384 public key from raw bytes.
     ///
     /// **CRITICAL**: This function must return `None` if the input `raw_key` is not on the P-384
@@ -22,9 +22,9 @@ pub trait PublicKeyP384: Sized + Send + Sync {
 /// A NIST P-384 ECDH/ECDSA public/private key pair.
 ///
 /// Instances must securely delete the private key when dropped.
-pub trait KeyPairP384<Rng: RngCore + CryptoRng> {
+pub trait P384KeyPair<Rng: RngCore + CryptoRng> {
     /// The `PublicKeyP384` implementation which matches this `KeyPairP384` implementation.
-    type PublicKey: PublicKeyP384;
+    type PublicKey: P384PublicKey;
     /// Randomly generate a new P-384 keypair.
     ///
     /// This function may use the provided RNG or its own, so long as the output is cryptographically random.

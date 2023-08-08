@@ -3,7 +3,7 @@ use rand_core::{CryptoRng, RngCore};
 
 use crate::crypto::*;
 
-impl PublicKeyP384 for PublicKey {
+impl P384PublicKey for PublicKey {
     fn from_bytes(raw_key: &[u8; P384_PUBLIC_KEY_SIZE]) -> Option<Self> {
         PublicKey::from_sec1_bytes(raw_key).ok()
     }
@@ -14,7 +14,7 @@ impl PublicKeyP384 for PublicKey {
     }
 }
 
-impl<Rng: RngCore + CryptoRng> KeyPairP384<Rng> for EphemeralSecret {
+impl<Rng: RngCore + CryptoRng> P384KeyPair<Rng> for EphemeralSecret {
     type PublicKey = PublicKey;
 
     fn generate(rng: &mut Rng) -> Self {

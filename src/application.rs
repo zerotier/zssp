@@ -1,7 +1,7 @@
 use rand_core::{CryptoRng, RngCore};
 use std::sync::Arc;
 
-use crate::crypto::{AeadAesGcm, HashSha512, KeyPairP384, PrivateKeyKyber1024, PrpAes256, PublicKeyP384};
+use crate::crypto::{Aes256Prp, AesGcmAead, Kyber1024PrivateKey, P384KeyPair, P384PublicKey, Sha512Hash};
 #[cfg(feature = "logging")]
 use crate::LogEvent;
 use crate::Session;
@@ -101,35 +101,35 @@ pub trait ApplicationLayer: Sized {
     /// We provide an optional implementation for this trait using the `aes` crate.
     ///
     /// FIPS compliance requires use of a FIPS certified implementation.
-    type Prp: PrpAes256;
+    type Prp: Aes256Prp;
     /// The implementation of AES-GCM-256 that ZSSP should use.
     /// The efficiency and security of ZSSP is very closely tied to the efficiency and security of
     /// this implementation.
     /// We provide an optional implementation for this trait using the `aes-gcm` crate.
     ///
     /// FIPS compliance requires a FIPS certified implementation.
-    type Aead: AeadAesGcm;
+    type Aead: AesGcmAead;
     /// The implementation of SHA-512 that ZSSP should use.
     /// We provide an optional implementation for this trait using the `sha2` crate.
     ///
     /// FIPS compliance requires use of a FIPS certified implementation.
-    type Hash: HashSha512;
+    type Hash: Sha512Hash;
     /// The implementation of P-384 public keys that ZSSP should use.
     /// We provide an optional implementation for this trait using the `p384` crate.
     ///
     /// FIPS compliance requires a FIPS certified implementation.
-    type PublicKey: PublicKeyP384;
+    type PublicKey: P384PublicKey;
     /// The implementation of P-384 private keys that ZSSP should use.
     /// We provide an optional implementation for this trait using the `p384` crate.
     ///
     /// FIPS compliance requires use of a FIPS certified implementation.
-    type KeyPair: KeyPairP384<Self::Rng, PublicKey = Self::PublicKey>;
+    type KeyPair: P384KeyPair<Self::Rng, PublicKey = Self::PublicKey>;
     /// The implementation of Kyber1024 that ZSSP should use.
     /// We provide an optional implementation for this trait using the `pqc_kyber` crate.
     ///
     /// No implementation of Kyber1024 can be FIPS certified, but this is not required
     /// for ZSSP to achieve FIPS compliance.
-    type Kem: PrivateKeyKyber1024<Self::Rng>;
+    type Kem: Kyber1024PrivateKey<Self::Rng>;
 
     /// A user-defined error returned when the `ApplicationLayer` fails to access persistent storage
     /// for a peer's ratchet states.

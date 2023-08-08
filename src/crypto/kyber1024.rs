@@ -8,7 +8,7 @@ pub const KYBER_CIPHERTEXT_SIZE: usize = 1568;
 pub const KYBER_PLAINTEXT_SIZE: usize = 32;
 
 /// Instances must securely delete the private key when dropped.
-pub trait PrivateKeyKyber1024<Rng: RngCore + CryptoRng>: Sized + Send + Sync {
+pub trait Kyber1024PrivateKey<Rng: RngCore + CryptoRng>: Sized + Send + Sync {
     /// Generate a Kyber1024 private key and public key pair, and return the raw bytes of the public
     /// key.
     /// The private key will be temporarily held in memory but the public key will be immediately

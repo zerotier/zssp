@@ -27,8 +27,8 @@ use crate::LogEvent::*;
 /// the key id.
 ///
 /// Corresponds to Figure 10 found in Section 4.3.
-pub(crate) fn to_nonce(packet_type: u8, counter: u64) -> [u8; AES_GCM_IV_SIZE] {
-    let mut ret = [0u8; AES_GCM_IV_SIZE];
+pub(crate) fn to_nonce(packet_type: u8, counter: u64) -> [u8; AES_GCM_NONCE_SIZE] {
+    let mut ret = [0u8; AES_GCM_NONCE_SIZE];
     ret[3] = packet_type;
     // Noise requires a big endian counter at the end of the Nonce
     ret[4..].copy_from_slice(&counter.to_be_bytes());
@@ -97,7 +97,7 @@ pub(crate) struct Keys {
 
 /// Corresponds to the tuple of values the Transition Algorithms send to the remote peer in Section 4.3.
 #[derive(Clone)]
-pub(crate) struct Packet(pub u32, pub [u8; AES_GCM_IV_SIZE], pub Vec<u8>);
+pub(crate) struct Packet(pub u32, pub [u8; AES_GCM_NONCE_SIZE], pub Vec<u8>);
 
 /// Corresponds to State A_1 of the Zeta State Machine found in Section 4.1.
 #[derive(Clone)]
@@ -347,7 +347,7 @@ pub(crate) fn respond_to_challenge<App: ApplicationLayer>(
 pub(crate) fn received_x1_trans<App: ApplicationLayer>(
     app: &App,
     ctx: &ContextInner<App>,
-    n: [u8; AES_GCM_IV_SIZE],
+    n: [u8; AES_GCM_NONCE_SIZE],
     mut x1: Vec<u8>,
     send: impl FnOnce(&Packet, &[u8; AES_256_KEY_SIZE]),
 ) -> Result<(), ReceiveError<App::StorageError>> {
@@ -359,7 +359,7 @@ pub(crate) fn received_x1_trans<App: ApplicationLayer>(
     if !(HANDSHAKE_HELLO_MIN_SIZE..=HANDSHAKE_HELLO_MAX_SIZE).contains(&x1.len()) {
         return Err(byzantine_fault!(InvalidPacket, true));
     }
-    if &n[AES_GCM_IV_SIZE - 8..] != &x1[x1.len() - 8..] {
+    if &n[AES_GCM_NONCE_SIZE - 8..] != &x1[x1.len() - 8..] {
         return Err(byzantine_fault!(FailedAuth, true));
     }
     let mut noise = SymmetricState::<App>::initialize(PROTOCOL_NAME_NOISE_XK);
@@ -480,7 +480,7 @@ pub(crate) fn received_x2_trans<App: ApplicationLayer>(
     app: &App,
     ctx: &Arc<ContextInner<App>>,
     kid: NonZeroU32,
-    n: [u8; AES_GCM_IV_SIZE],
+    n: [u8; AES_GCM_NONCE_SIZE],
     mut x2: Vec<u8>,
     send: impl FnOnce(&Packet, Option<&[u8; AES_256_KEY_SIZE]>),
 ) -> Result<(), ReceiveError<App::StorageError>> {
@@ -494,7 +494,7 @@ pub(crate) fn received_x2_trans<App: ApplicationLayer>(
         return Err(byzantine_fault!(UnknownLocalKeyId, true));
     }
     let (_, c) = from_nonce(&n);
-    if c >= COUNTER_WINDOW_MAX_SKIP_AHEAD || &n[AES_GCM_IV_SIZE - 3..] != &x2[x2.len() - 3..] {
+    if c >= COUNTER_WINDOW_MAX_SKIP_AHEAD || &n[AES_GCM_NONCE_SIZE - 3..] != &x2[x2.len() - 3..] {
         return Err(byzantine_fault!(FailedAuth, true));
     }
     let result = (|| {
@@ -634,6 +634,27 @@ pub(crate) fn received_x2_trans<App: ApplicationLayer>(
     }
     result.map(|_| ())
 }
+fn send_control<App: ApplicationLayer>(
+    zeta: &mut Zeta<App>,
+    packet_type: u8,
+    mut payload: Vec<u8>,
+    send: impl FnOnce(&Packet, Option<&[u8; AES_256_KEY_SIZE]>),
+) -> bool {
+    if let Some((c, _)) = zeta.get_counter() {
+        if let (Some(kek), Some(kid)) = (zeta.key_ref(false).send.kek.as_ref(), zeta.key_ref(false).send.kid) {
+            let nonce = to_nonce(packet_type, c);
+            let tag = App::Aead::encrypt_in_place(kek, &nonce, None, &mut payload[HEADER_SIZE..]);
+            payload.extend(tag);
+
+            send(&Packet(kid.get(), nonce, payload), Some(&zeta.hk_send));
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    }
+}
 /// Corresponds to Transition Algorithm 4 found in Section 4.3.
 pub(crate) fn received_x3_trans<App: ApplicationLayer>(
     zeta: StateB2<App>,
@@ -688,7 +709,7 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
     let create_reject = || {
         let mut d = Vec::<u8>::new();
         let n = to_nonce(PACKET_TYPE_SESSION_REJECTED, c);
-        let tag = App::Aead::encrypt_in_place(&kek_send, n, None, &mut []);
+        let tag = App::Aead::encrypt_in_place(&kek_send, &n, None, &mut []);
         d.extend(&tag);
         // We just used a counter with this key, but we are not storing
         // the fact we used it in memory. This is currently ok because the
@@ -731,7 +752,7 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
 
                 let mut c1 = Vec::new();
                 let n = to_nonce(PACKET_TYPE_KEY_CONFIRM, c);
-                let tag = App::Aead::encrypt_in_place(&kek_send, n, None, &mut []);
+                let tag = App::Aead::encrypt_in_place(&kek_send, &n, None, &mut []);
                 c1.extend(&tag);
 
                 let (nk1, nk2) = noise.split();
@@ -791,7 +812,7 @@ pub(crate) fn received_c1_trans<App: ApplicationLayer>(
     app: &App,
     rng: &Mutex<App::Rng>,
     kid: NonZeroU32,
-    n: [u8; AES_GCM_IV_SIZE],
+    n: [u8; AES_GCM_NONCE_SIZE],
     c1: Vec<u8>,
     send: impl FnOnce(&Packet, Option<&[u8; AES_256_KEY_SIZE]>),
 ) -> Result<bool, ReceiveError<App::StorageError>> {
@@ -817,7 +838,7 @@ pub(crate) fn received_c1_trans<App: ApplicationLayer>(
         .as_ref()
         .ok_or(byzantine_fault!(OutOfSequence, true))?;
     let tag = c1[..].try_into().unwrap();
-    if !App::Aead::decrypt_in_place(specified_key, n, None, &mut [], tag) {
+    if !App::Aead::decrypt_in_place(specified_key, &n, None, &mut [], tag) {
         return Err(byzantine_fault!(FailedAuth, true));
     }
     let (_, c) = from_nonce(&n);
@@ -856,23 +877,11 @@ pub(crate) fn received_c1_trans<App: ApplicationLayer>(
             zeta.beta = ZetaAutomata::S2;
         }
     }
-    let mut c2 = Vec::new();
+    let c2 = Vec::new();
+    if !send_control(zeta, PACKET_TYPE_ACK, c2, send) {
+        return Err(byzantine_fault!(OutOfSequence, true));
+    }
 
-    let (c, _) = zeta.get_counter().ok_or(byzantine_fault!(ExpiredCounter, true))?;
-    let n = to_nonce(PACKET_TYPE_ACK, c);
-    let latest_confirmed_key = zeta
-        .key_ref(false)
-        .send
-        .kek
-        .as_ref()
-        .ok_or(byzantine_fault!(OutOfSequence, true))?;
-    let tag = App::Aead::encrypt_in_place(latest_confirmed_key, n, None, &mut []);
-    c2.extend(&tag);
-
-    send(
-        &Packet(zeta.key_ref(false).send.kid.unwrap().get(), n, c2),
-        Some(&zeta.hk_send),
-    );
     Ok(just_establised)
 }
 /// Corresponds to the trivial Transition Algorithm described for processing C_2 packets found in
@@ -882,7 +891,7 @@ pub(crate) fn received_c2_trans<App: ApplicationLayer>(
     app: &App,
     rng: &Mutex<App::Rng>,
     kid: NonZeroU32,
-    n: [u8; AES_GCM_IV_SIZE],
+    n: [u8; AES_GCM_NONCE_SIZE],
     c2: Vec<u8>,
 ) -> Result<(), ReceiveError<App::StorageError>> {
     use FaultType::*;
@@ -900,7 +909,7 @@ pub(crate) fn received_c2_trans<App: ApplicationLayer>(
     }
 
     let tag = c2[..].try_into().unwrap();
-    if !App::Aead::decrypt_in_place(zeta.key_ref(false).recv.kek.as_ref().unwrap(), n, None, &mut [], tag) {
+    if !App::Aead::decrypt_in_place(zeta.key_ref(false).recv.kek.as_ref().unwrap(), &n, None, &mut [], tag) {
         return Err(byzantine_fault!(FailedAuth, true));
     }
     let (_, c) = from_nonce(&n);
@@ -921,7 +930,7 @@ pub(crate) fn received_c2_trans<App: ApplicationLayer>(
 pub(crate) fn received_d_trans<App: ApplicationLayer>(
     zeta: &mut Zeta<App>,
     kid: NonZeroU32,
-    n: [u8; AES_GCM_IV_SIZE],
+    n: [u8; AES_GCM_NONCE_SIZE],
     d: Vec<u8>,
 ) -> Result<(), ReceiveError<App::StorageError>> {
     use FaultType::*;
@@ -934,7 +943,7 @@ pub(crate) fn received_d_trans<App: ApplicationLayer>(
     }
 
     let tag = d[..].try_into().unwrap();
-    if !App::Aead::decrypt_in_place(zeta.key_ref(true).recv.kek.as_ref().unwrap(), n, None, &mut [], tag) {
+    if !App::Aead::decrypt_in_place(zeta.key_ref(true).recv.kek.as_ref().unwrap(), &n, None, &mut [], tag) {
         return Err(byzantine_fault!(FailedAuth, true));
     }
     let (_, c) = from_nonce(&n);
@@ -960,7 +969,7 @@ pub(crate) fn service<App: ApplicationLayer>(
         // Corresponds to the resend timer rules found in Section 4.1 - Definition 3.
         zeta.resend_timer = current_time + App::SETTINGS.resend_time as i64;
 
-        let (p, mut control_payload) = match &zeta.beta {
+        let (p, control_payload) = match &zeta.beta {
             ZetaAutomata::Null => return,
             ZetaAutomata::A1(StateA1 { packet, .. }) => {
                 log!(app, ResentX1(session));
@@ -984,20 +993,8 @@ pub(crate) fn service<App: ApplicationLayer>(
                 (PACKET_TYPE_REKEY_COMPLETE, k2.clone())
             }
         };
-        if let Some((c, _)) = zeta.get_counter() {
-            let n = to_nonce(p, c);
-            let tag = App::Aead::encrypt_in_place(
-                zeta.key_ref(false).send.kek.as_ref().unwrap(),
-                n,
-                None,
-                &mut control_payload,
-            );
-            control_payload.extend(&tag);
-            send(
-                &Packet(zeta.key_ref(false).send.kid.unwrap().get(), n, control_payload),
-                Some(&zeta.hk_send),
-            );
-        }
+
+        send_control(zeta, p, control_payload, send);
     }
 }
 fn remap<App: ApplicationLayer>(
@@ -1096,16 +1093,7 @@ fn timeout_trans<App: ApplicationLayer>(
             zeta.resend_timer = current_time + App::SETTINGS.resend_time as i64;
             zeta.beta = ZetaAutomata::R1 { noise, e_secret, k1: k1.clone() };
 
-            if let Some((c, _)) = zeta.get_counter() {
-                let n = to_nonce(PACKET_TYPE_REKEY_INIT, c);
-                let tag = App::Aead::encrypt_in_place(zeta.key_ref(false).send.kek.as_ref().unwrap(), n, None, &mut k1);
-                k1.extend(&tag);
-
-                send(
-                    &Packet(zeta.key_ref(false).send.kid.unwrap().get(), n, k1),
-                    Some(&zeta.hk_send),
-                );
-            };
+            send_control(zeta, PACKET_TYPE_REKEY_INIT, k1, send);
         }
         ZetaAutomata::S1 { .. } => {
             log!(app, TimeoutKeyConfirm(session));
@@ -1130,7 +1118,7 @@ pub(crate) fn received_k1_trans<App: ApplicationLayer>(
     session_map: &SessionMap<App>,
     s_secret: &App::KeyPair,
     kid: NonZeroU32,
-    n: [u8; AES_GCM_IV_SIZE],
+    n: [u8; AES_GCM_NONCE_SIZE],
     mut k1: Vec<u8>,
     send: impl FnOnce(&Packet, Option<&[u8; AES_256_KEY_SIZE]>),
 ) -> Result<(), ReceiveError<App::StorageError>> {
@@ -1161,10 +1149,10 @@ pub(crate) fn received_k1_trans<App: ApplicationLayer>(
     let tag = k1[i..].try_into().unwrap();
     if !App::Aead::decrypt_in_place(
         zeta.key_ref(false).recv.kek.as_ref().unwrap(),
-        n,
+        &n,
         None,
         &mut k1[..i],
-        tag,
+        &tag,
     ) {
         return Err(byzantine_fault!(FailedAuth, true));
     }
@@ -1252,15 +1240,7 @@ pub(crate) fn received_k1_trans<App: ApplicationLayer>(
         zeta.resend_timer = current_time + App::SETTINGS.resend_time as i64;
         zeta.beta = ZetaAutomata::R2 { k2: k2.clone() };
 
-        let (c, _) = zeta.get_counter().ok_or(byzantine_fault!(ExpiredCounter, true))?;
-        let n = to_nonce(PACKET_TYPE_REKEY_COMPLETE, c);
-        let tag = App::Aead::encrypt_in_place(zeta.key_ref(false).send.kek.as_ref().unwrap(), n, None, &mut k2);
-        k2.extend(&tag);
-
-        send(
-            &Packet(zeta.key_ref(false).send.kid.unwrap().get(), n, k2),
-            Some(&zeta.hk_send),
-        );
+        send_control(zeta, PACKET_TYPE_REKEY_COMPLETE, k2, send);
         Ok(())
     })();
     if matches!(result, Err(ReceiveError::ByzantineFault { .. })) {
@@ -1273,7 +1253,7 @@ pub(crate) fn received_k2_trans<App: ApplicationLayer>(
     zeta: &mut Zeta<App>,
     app: &App,
     kid: NonZeroU32,
-    n: [u8; AES_GCM_IV_SIZE],
+    n: [u8; AES_GCM_NONCE_SIZE],
     mut k2: Vec<u8>,
     send: impl FnOnce(&Packet, Option<&[u8; AES_256_KEY_SIZE]>),
 ) -> Result<(), ReceiveError<App::StorageError>> {
@@ -1295,10 +1275,10 @@ pub(crate) fn received_k2_trans<App: ApplicationLayer>(
     let tag = k2[i..].try_into().unwrap();
     if !App::Aead::decrypt_in_place(
         zeta.key_ref(false).recv.kek.as_ref().unwrap(),
-        n,
+        &n,
         None,
         &mut k2[..i],
-        tag,
+        &tag,
     ) {
         return Err(byzantine_fault!(FailedAuth, true));
     }
@@ -1363,16 +1343,8 @@ pub(crate) fn received_k2_trans<App: ApplicationLayer>(
             zeta.resend_timer = current_time + App::SETTINGS.resend_time as i64;
             zeta.beta = ZetaAutomata::S1;
 
-            let mut c1 = Vec::new();
-            let (c, _) = zeta.get_counter().ok_or(byzantine_fault!(ExpiredCounter, true))?;
-            let n = to_nonce(PACKET_TYPE_KEY_CONFIRM, c);
-            let tag = App::Aead::encrypt_in_place(zeta.key_ref(false).send.kek.as_ref().unwrap(), n, None, &mut []);
-            c1.extend(&tag);
-
-            send(
-                &Packet(zeta.key_ref(false).send.kid.unwrap().get(), n, c1),
-                Some(&zeta.hk_send),
-            );
+            let c1 = Vec::new();
+            send_control(zeta, PACKET_TYPE_KEY_CONFIRM, c1, send);
             Ok(())
         } else {
             unreachable!()
@@ -1407,7 +1379,7 @@ pub(crate) fn send_payload<App: ApplicationLayer>(
         }
 
         let n = to_nonce(PACKET_TYPE_DATA, c);
-        let tag = App::Aead::encrypt_in_place(zeta.key_ref(false).send.nk.as_ref().unwrap(), n, None, &mut payload);
+        let tag = App::Aead::encrypt_in_place(zeta.key_ref(false).send.nk.as_ref().unwrap(), &n, None, &mut payload);
         payload.extend(&tag);
 
         send(
@@ -1424,7 +1396,7 @@ pub(crate) fn send_payload<App: ApplicationLayer>(
 pub(crate) fn received_payload_in_place<App: ApplicationLayer>(
     zeta: &mut Zeta<App>,
     kid: NonZeroU32,
-    n: [u8; AES_GCM_IV_SIZE],
+    n: [u8; AES_GCM_NONCE_SIZE],
     payload: &mut Vec<u8>,
 ) -> Result<(), ReceiveError<App::StorageError>> {
     use FaultType::*;
@@ -1450,7 +1422,7 @@ pub(crate) fn received_payload_in_place<App: ApplicationLayer>(
         .as_ref()
         .ok_or(byzantine_fault!(OutOfSequence, true))?;
     let tag = payload[i..].try_into().unwrap();
-    if !App::Aead::decrypt_in_place(specified_key, n, None, &mut payload[..i], tag) {
+    if !App::Aead::decrypt_in_place(specified_key, &n, None, &mut payload[..i], &tag) {
         return Err(byzantine_fault!(FailedAuth, true));
     }
     let (_, c) = from_nonce(&n);

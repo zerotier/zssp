@@ -2,7 +2,7 @@
 pub const SHA512_HASH_SIZE: usize = 64;
 
 /// A SHA-512 and HMAC-SHA-512 implementation.
-pub trait HashSha512 {
+pub trait Sha512Hash {
     /// Create a new instance of SHA-512 for streaming data to.
     fn new() -> Self;
     /// Update the instance of SHA-512 with input `data`.

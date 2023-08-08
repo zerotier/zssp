@@ -6,12 +6,12 @@ pub const AES_256_KEY_SIZE: usize = 32;
 /// Some implementations of AES-GCM allow use of smaller tags, but ZSSP will only accept 16 byte tags.
 pub const AES_GCM_TAG_SIZE: usize = 16;
 /// The size of an AES-GCM IV, or nonce, which is 12 bytes, or 96 bits.
-pub const AES_GCM_IV_SIZE: usize = 12;
+pub const AES_GCM_NONCE_SIZE: usize = 12;
 
 /// A trait for encrypting individual blocks of plaintext using AES-256.
 /// It is used for header authentication, for which we have a standard model proof that our
 /// algorithm is secure.
-pub trait PrpAes256 {
+pub trait Aes256Prp {
     /// Encrypt the given `block` of plaintext directly using the AES block cipher
     /// (i.e. AES-256 in zero-padding ECB mode).
     /// The ciphertext should be written directly back to `block`.
@@ -24,12 +24,12 @@ pub trait PrpAes256 {
 
 /// A trait accessing AES-GCM-256 encryption and decryption as a set of pure-functions.
 /// These should be trivial to implement for most implementations of AES-GCM.
-pub trait AeadAesGcm {
+pub trait AesGcmAead {
     /// Encrypt the given `buffer` of plaintext using AES-GCM-256, with the given `key`, `iv` and `aad`.
     /// The ciphertext should be written directly back to `buffer`, and the GCM tag should be returned.
     fn encrypt_in_place(
         key: &[u8; AES_256_KEY_SIZE],
-        iv: [u8; AES_GCM_IV_SIZE],
+        nonce: &[u8; AES_GCM_NONCE_SIZE],
         aad: Option<&[u8]>,
         buffer: &mut [u8],
     ) -> [u8; AES_GCM_TAG_SIZE];
@@ -37,9 +37,9 @@ pub trait AeadAesGcm {
     /// The ciphertext should be written directly back to `buffer`, and the GCM tag should be returned.
     fn decrypt_in_place(
         key: &[u8; AES_256_KEY_SIZE],
-        iv: [u8; AES_GCM_IV_SIZE],
+        nonce: &[u8; AES_GCM_NONCE_SIZE],
         aad: Option<&[u8]>,
         buffer: &mut [u8],
-        tag: [u8; AES_GCM_TAG_SIZE],
+        tag: &[u8; AES_GCM_TAG_SIZE],
     ) -> bool;
 }

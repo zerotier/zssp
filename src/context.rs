@@ -6,7 +6,7 @@ use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex, Weak};
 
 use crate::application::ApplicationLayer;
-use crate::crypto::{AES_256_KEY_SIZE, AES_GCM_IV_SIZE};
+use crate::crypto::{AES_256_KEY_SIZE, AES_GCM_NONCE_SIZE};
 use crate::fragmentation::{send_with_fragmentation, DefragBuffer};
 use crate::proto::*;
 use crate::result::{byzantine_fault, ReceiveError, ReceiveOk, SendError, SessionEvent};
@@ -51,13 +51,13 @@ pub(crate) struct ContextInner<App: ApplicationLayer> {
 }
 
 /// Corresponds to Figure 10 found in Section 4.3.
-fn to_aes_nonce(pn: &[u8; PACKET_NONCE_SIZE]) -> [u8; AES_GCM_IV_SIZE] {
-    let mut an = [0u8; AES_GCM_IV_SIZE];
+fn to_aes_nonce(pn: &[u8; PACKET_NONCE_SIZE]) -> [u8; AES_GCM_NONCE_SIZE] {
+    let mut an = [0u8; AES_GCM_NONCE_SIZE];
     an[2..].copy_from_slice(pn);
     an
 }
 /// Corresponds to Figure 14 found near Section 6.
-fn to_packet_nonce(n: &[u8; AES_GCM_IV_SIZE]) -> &[u8; PACKET_NONCE_SIZE] {
+fn to_packet_nonce(n: &[u8; AES_GCM_NONCE_SIZE]) -> &[u8; PACKET_NONCE_SIZE] {
     (&n[n.len() - PACKET_NONCE_SIZE..]).try_into().unwrap()
 }
 
