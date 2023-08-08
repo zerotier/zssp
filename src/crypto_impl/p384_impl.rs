@@ -3,7 +3,9 @@ use rand_core::{CryptoRng, RngCore};
 
 use crate::crypto::*;
 
-impl P384PublicKey for PublicKey {
+/// The version and type of the p384 crate that the `P384PublicKey` trait is implemented for.
+pub type P384CratePublicKey = PublicKey;
+impl P384PublicKey for P384CratePublicKey {
     fn from_bytes(raw_key: &[u8; P384_PUBLIC_KEY_SIZE]) -> Option<Self> {
         PublicKey::from_sec1_bytes(raw_key).ok()
     }
@@ -14,7 +16,9 @@ impl P384PublicKey for PublicKey {
     }
 }
 
-impl<Rng: RngCore + CryptoRng> P384KeyPair<Rng> for EphemeralSecret {
+/// The version and type of the p384 crate that the `P384KeyPair` trait is implemented for.
+pub type P384CrateKeyPair = EphemeralSecret;
+impl<Rng: RngCore + CryptoRng> P384KeyPair<Rng> for P384CrateKeyPair {
     type PublicKey = PublicKey;
 
     fn generate(rng: &mut Rng) -> Self {

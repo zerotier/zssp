@@ -14,17 +14,16 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use aes::Aes256;
-use aes_gcm::Aes256Gcm;
-use p384::{ecdh::EphemeralSecret, PublicKey};
 use rand_core::OsRng;
 use rand_core::RngCore;
-use sha2::Sha512;
 
 use zssp_proto::application::{
     AcceptAction, ApplicationLayer, RatchetState, RatchetStates, RatchetUpdate, Settings, RATCHET_SIZE,
 };
-use zssp_proto::crypto_impl::PqcKyberSecretKey;
+use zssp_proto::crypto::P384KeyPair;
+use zssp_proto::crypto_impl::{
+    Aes256Crate, AesGcmCrate, RustKyber1024PrivateKey, P384CrateKeyPair, P384CratePublicKey, Sha512Crate,
+};
 use zssp_proto::Session;
 
 const TEST_MTU: usize = 1500;
@@ -57,12 +56,12 @@ impl ApplicationLayer for &TestApplication {
         fragment_assembly_timeout: Settings::FRAGMENT_ASSEMBLY_TIMEOUT_MS,
     };
     type Rng = OsRng;
-    type Prp = Aes256;
-    type Aead = Aes256Gcm;
-    type Hash = Sha512;
-    type PublicKey = PublicKey;
-    type KeyPair = EphemeralSecret;
-    type Kem = PqcKyberSecretKey;
+    type Prp = Aes256Crate;
+    type Aead = AesGcmCrate;
+    type Hash = Sha512Crate;
+    type PublicKey = P384CratePublicKey;
+    type KeyPair = P384CrateKeyPair;
+    type Kem = RustKyber1024PrivateKey;
 
     type StorageError = std::convert::Infallible;
     type SessionData = u128;
@@ -138,8 +137,8 @@ fn alice_main(
     alice_out: mpsc::SyncSender<Vec<u8>>,
     alice_in: mpsc::Receiver<Vec<u8>>,
     recursive_out: mpsc::SyncSender<Vec<u8>>,
-    alice_keypair: EphemeralSecret,
-    bob_pubkey: PublicKey,
+    alice_keypair: P384CrateKeyPair,
+    bob_pubkey: P384CratePublicKey,
 ) {
     let startup_time = std::time::Instant::now();
     let mut context = zssp_proto::Context::<&TestApplication>::new(alice_keypair, OsRng);
@@ -242,7 +241,7 @@ fn bob_main(
     bob_out: mpsc::SyncSender<Vec<u8>>,
     bob_in: mpsc::Receiver<Vec<u8>>,
     recursive_out: mpsc::SyncSender<Vec<u8>>,
-    bob_keypair: EphemeralSecret,
+    bob_keypair: P384CrateKeyPair,
 ) {
     let startup_time = std::time::Instant::now();
     let mut context = zssp_proto::Context::<&TestApplication>::new(bob_keypair, OsRng);
@@ -316,13 +315,13 @@ fn bob_main(
 fn core(time: u64, packet_success_rate: u32) {
     let run = &AtomicBool::new(true);
 
-    let alice_keypair = EphemeralSecret::random(&mut OsRng);
+    let alice_keypair = P384CrateKeyPair::generate(&mut OsRng);
     let alice_app = TestApplication {
         time: Instant::now(),
         name: "alice",
         ratchets: Mutex::new(Ratchets::new()),
     };
-    let bob_keypair = EphemeralSecret::random(&mut OsRng);
+    let bob_keypair = P384CrateKeyPair::generate(&mut OsRng);
     let bob_pubkey = bob_keypair.public_key();
     let bob_app = TestApplication {
         time: Instant::now(),

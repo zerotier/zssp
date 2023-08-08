@@ -109,7 +109,7 @@ pub trait ApplicationLayer: Sized {
     ///
     /// FIPS compliance requires a FIPS certified implementation.
     type Aead: AesGcmAead;
-    /// The implementation of SHA-512 that ZSSP should use.
+    /// The implementation of SHA-512 and HMAC-SHA-512 that ZSSP should use.
     /// We provide an optional implementation for this trait using the `sha2` crate.
     ///
     /// FIPS compliance requires use of a FIPS certified implementation.

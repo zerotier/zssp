@@ -5,7 +5,9 @@ use aes_gcm::{Aes256Gcm, Key, Nonce, Tag};
 
 use crate::crypto::*;
 
-impl Aes256Prp for Aes256 {
+/// The version and type of the aes crate that the `Aes256Prp` trait is implemented for.
+pub type Aes256Crate = Aes256;
+impl Aes256Prp for Aes256Crate {
     fn encrypt_in_place(key: &[u8; AES_256_KEY_SIZE], block: &mut [u8; AES_256_BLOCK_SIZE]) {
         let cipher = Aes256::new(GenericArray::from_slice(key));
         cipher.encrypt_block(GenericArray::from_mut_slice(block));
@@ -17,7 +19,9 @@ impl Aes256Prp for Aes256 {
     }
 }
 
-impl AesGcmAead for Aes256Gcm {
+/// The version and type of the aes-gcm crate that the `Aes256Gcm` trait is implemented for.
+pub type AesGcmCrate = Aes256Gcm;
+impl AesGcmAead for AesGcmCrate {
     fn encrypt_in_place(
         key: &[u8; AES_256_KEY_SIZE],
         iv: &[u8; AES_GCM_NONCE_SIZE],

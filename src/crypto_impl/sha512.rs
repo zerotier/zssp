@@ -3,7 +3,9 @@ use sha2::{Digest, Sha512};
 
 use crate::crypto::*;
 
-impl Sha512Hash for Sha512 {
+/// The version and type of the sha2 crate that the `Sha512Hash` trait is implemented for.
+pub type Sha512Crate = Sha512;
+impl Sha512Hash for Sha512Crate {
     fn new() -> Self {
         Digest::new()
     }
