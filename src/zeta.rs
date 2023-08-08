@@ -10,21 +10,14 @@ use std::sync::{Arc, Mutex, RwLock, Weak};
 use zeroize::Zeroizing;
 
 use crate::antireplay::Window;
-use crate::applicationlayer::ApplicationLayer;
-use crate::applicationlayer::RatchetUpdate;
+use crate::application::*;
 use crate::challenge::{gen_null_response, respond_to_challenge_in_place};
 use crate::zssp::{log, ContextInner, SessionQueue};
-//use crate::context::{log, ContextInner, SessionMap};
-use crate::crypto::aes::*;
-use crate::crypto::kyber1024::{
-    Kyber1024PrivateKey, KYBER_CIPHERTEXT_SIZE, KYBER_PLAINTEXT_SIZE, KYBER_PUBLIC_KEY_SIZE,
-};
-use crate::crypto::p384::{P384KeyPair, P384PublicKey, P384_ECDH_SHARED_SECRET_SIZE, P384_PUBLIC_KEY_SIZE};
-use crate::crypto::sha512::{HashSha512, HmacSha512};
+use crate::crypto::*;
 use crate::fragged::Fragged;
 use crate::indexed_heap::BinaryHeapIndex;
 use crate::proto::*;
-use crate::ratchet_state::RatchetState;
+use crate::ratchet_state::{RatchetState, RatchetStates};
 use crate::result::{byzantine_fault, FaultType, OpenError, ReceiveError, SendError};
 use crate::symmetric_state::SymmetricState;
 #[cfg(feature = "logging")]
@@ -167,10 +160,6 @@ impl Keys {
     }
 }
 
-/// Corresponds to the tuple of values the Transition Algorithms send to the remote peer in Section 4.3.
-//#[derive(Clone)]
-//pub(crate) struct Packet(pub u32, pub [u8; AES_GCM_IV_SIZE], pub Vec<u8>);
-
 /// Corresponds to State A_1 of the Zeta State Machine found in Section 4.1.
 #[derive(Clone)]
 pub(crate) struct StateA1<App: ApplicationLayer> {
@@ -181,16 +170,17 @@ pub(crate) struct StateA1<App: ApplicationLayer> {
     x1: ArrayVec<u8, HEADERED_HANDSHAKE_HELLO_CHALLENGE_MAX_SIZE>,
 }
 
+pub(crate) struct StateA3 {
+    identity: ArrayVec<u8, IDENTITY_MAX_SIZE>,
+    x3: ArrayVec<u8, HEADERED_HANDSHAKE_COMPLETION_MAX_SIZE>,
+}
+
+
 /// Corresponds to the ZKE Automata found in Section 4.1 - Definition 2.
 pub(crate) enum ZetaAutomata<App: ApplicationLayer> {
     Null,
     A1(Box<StateA1<App>>),
-    A3 {
-        identity: ArrayVec<u8, IDENTITY_MAX_SIZE>,
-        kid_send: u32,
-        nonce: [u8; AES_GCM_IV_SIZE],
-        x3: ArrayVec<u8, HEADERED_HANDSHAKE_COMPLETION_MAX_SIZE>,
-    },
+    A3(Box<StateA3>),
     S1,
     S2,
     R1 {
@@ -232,10 +222,47 @@ impl<App: ApplicationLayer> SymmetricState<App> {
         *i = j;
         App::PublicKey::from_bytes((pub_key).try_into().unwrap())
     }
+    fn write_e_no_init<const CAP: usize>(
+        &mut self,
+        hash: &mut App::Hash,
+        hmac: &mut App::HmacHash,
+        rng: &Mutex<App::Rng>,
+        packet: &mut ArrayVec<u8, CAP>,
+    ) -> App::KeyPair {
+        let e_secret = App::KeyPair::generate(rng.lock().unwrap().deref_mut());
+        let pub_key = e_secret.public_key_bytes();
+        packet.extend(pub_key);
+        self.mix_hash(hash, &pub_key);
+        self.mix_key_no_init(hmac, &pub_key);
+        e_secret
+    }
+    fn read_e_no_init(
+        &mut self,
+        hash: &mut App::Hash,
+        hmac: &mut App::HmacHash,
+        i: &mut usize,
+        packet: &[u8],
+    ) -> Option<App::PublicKey> {
+        let j = *i + P384_PUBLIC_KEY_SIZE;
+        let pub_key = &packet[*i..j];
+        self.mix_hash(hash, pub_key);
+        self.mix_key_no_init(hmac, pub_key);
+        *i = j;
+        App::PublicKey::from_bytes((pub_key).try_into().unwrap())
+    }
     fn mix_dh(&mut self, hmac: &mut App::HmacHash, secret: &App::KeyPair, remote: &App::PublicKey) -> Option<()> {
         let mut ecdh_secret = Zeroizing::new([0u8; P384_ECDH_SHARED_SECRET_SIZE]);
         if secret.agree(&remote, &mut ecdh_secret) {
             self.mix_key(hmac, ecdh_secret.as_ref());
+            Some(())
+        } else {
+            None
+        }
+    }
+    fn mix_dh_no_init(&mut self, hmac: &mut App::HmacHash, secret: &App::KeyPair, remote: &App::PublicKey) -> Option<()> {
+        let mut ecdh_secret = Zeroizing::new([0u8; P384_ECDH_SHARED_SECRET_SIZE]);
+        if secret.agree(&remote, &mut ecdh_secret) {
+            self.mix_key_no_init(hmac, ecdh_secret.as_ref());
             Some(())
         } else {
             None
@@ -335,9 +362,9 @@ pub(crate) fn trans_to_a1<App: ApplicationLayer>(
     identity: &[u8],
     send: impl FnOnce(&mut [u8], Option<&App::PrpEnc>),
 ) -> Result<Arc<Session<App>>, OpenError<App::StorageError>> {
-    let (ratchet_state1, ratchet_state2) = app
+    let RatchetStates{state1, state2} = app
         .restore_by_identity(&s_remote, &session_data)
-        .map_err(|e| OpenError::RatchetIoError(e))?;
+        .map_err(|e| OpenError::RatchetIoError(e))?.unwrap_or_default();
 
     let mut session_queue = ctx.session_queue.lock().unwrap();
     let mut session_map = ctx.session_map.write().unwrap();
@@ -351,8 +378,8 @@ pub(crate) fn trans_to_a1<App: ApplicationLayer>(
         &ctx.rng,
         &s_remote,
         kid_recv,
-        &ratchet_state1,
-        ratchet_state2.as_ref(),
+        &state1,
+        state2.as_ref(),
         identity,
     )
     .ok_or(OpenError::InvalidPublicKey)?;
@@ -382,8 +409,8 @@ pub(crate) fn trans_to_a1<App: ApplicationLayer>(
         window: Window::new(),
         state_machine_lock: Mutex::new(()),
         state: RwLock::new(MutableState {
-            ratchet_state1: ratchet_state1.clone(),
-            ratchet_state2: ratchet_state2.clone(),
+            ratchet_state1: state1.clone(),
+            ratchet_state2: state2.clone(),
             key_creation_counter: 0,
             key_index: true,
             keys: [DuplexKey::default(), DuplexKey::default()],
@@ -709,8 +736,8 @@ pub(crate) fn received_x2_trans<App: ApplicationLayer>(
                 state1: &new_ratchet_state,
                 state2: ratchet_to_preserve,
                 state1_was_just_added: true,
-                state_deleted1: ratchet_to_delete,
-                state_deleted2: None,
+                deleted_state1: ratchet_to_delete,
+                deleted_state2: None,
             },
         );
         if let Err(e) = result {
@@ -746,12 +773,10 @@ pub(crate) fn received_x2_trans<App: ApplicationLayer>(
                 // This return is unreachable.
                 return Err(byzantine_fault!(FailedAuth, true));
             };
-            state.beta = ZetaAutomata::A3 {
+            state.beta = ZetaAutomata::A3(Box::new(StateA3 {
                 identity: a1.identity.clone(),
                 x3: x3.clone(),
-                kid_send: kid_send.get(),
-                nonce,
-            };
+            }));
             resend_timer
         };
         drop(kex_lock);
@@ -845,8 +870,9 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
     if let Some(session_data) = session_data {
         let result = app.restore_by_identity(&s_remote, &session_data);
         match result {
-            Ok((ratchet_state1, ratchet_state2)) => {
-                if (&zeta.ratchet_state != &ratchet_state1) & (Some(&zeta.ratchet_state) != ratchet_state2.as_ref()) {
+            Ok(rss) => {
+                let RatchetStates { state1, state2 } = rss.unwrap_or_default();
+                if (&zeta.ratchet_state != &state1) & (Some(&zeta.ratchet_state) != state2.as_ref()) {
                     if !responder_disallows_downgrade && zeta.ratchet_state.fingerprint().is_none() {
                         // TODO: add some kind of warning callback or signal.
                     } else {
@@ -875,8 +901,8 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
                         state1: &new_ratchet_state,
                         state2: None,
                         state1_was_just_added: true,
-                        state_deleted1: Some(&ratchet_state1),
-                        state_deleted2: ratchet_state2.as_ref(),
+                        deleted_state1: Some(&state1),
+                        deleted_state2: state2.as_ref(),
                     },
                 );
                 if let Err(e) = result {
@@ -1003,8 +1029,8 @@ pub(crate) fn received_c1_trans<App: ApplicationLayer>(
                         state1: &state.ratchet_state1,
                         state2: None,
                         state1_was_just_added: false,
-                        state_deleted1: state.ratchet_state2.as_ref(),
-                        state_deleted2: None,
+                        deleted_state1: state.ratchet_state2.as_ref(),
+                        deleted_state2: None,
                     },
                 );
                 if let Err(e) = result {
@@ -1164,7 +1190,7 @@ pub(crate) fn process_timers<App: ApplicationLayer>(
             ZetaAutomata::A1(_) | ZetaAutomata::A3 { .. } => {
                 let identity = match &state.beta {
                     ZetaAutomata::A1(a1) => &a1.identity,
-                    ZetaAutomata::A3 { identity, .. } => identity,
+                    ZetaAutomata::A3(a3) => &a3.identity,
                     _ => unreachable!(),
                 };
                 if matches!(&state.beta, ZetaAutomata::A1(_)) {
@@ -1302,9 +1328,9 @@ pub(crate) fn process_timers<App: ApplicationLayer>(
                     send(&mut a1.x1.clone(), None);
                     return Some(resend_next);
                 }
-                ZetaAutomata::A3 { x3, .. } => {
+                ZetaAutomata::A3(a3) => {
                     log!(app, ResentX3(session));
-                    send(&mut x3.clone(), Some(&session.hk_send));
+                    send(&mut a3.x3.clone(), Some(&session.hk_send));
                     return Some(resend_next);
                 }
                 ZetaAutomata::S1 => {
@@ -1471,8 +1497,8 @@ pub(crate) fn received_k1_trans<App: ApplicationLayer>(
                 state1: &new_ratchet_state,
                 state2: Some(&state.ratchet_state1),
                 state1_was_just_added: true,
-                state_deleted1: state.ratchet_state2.as_ref(),
-                state_deleted2: None,
+                deleted_state1: state.ratchet_state2.as_ref(),
+                deleted_state2: None,
             },
         );
         if let Err(e) = result {
@@ -1605,8 +1631,8 @@ pub(crate) fn received_k2_trans<App: ApplicationLayer>(
                     state1: &new_ratchet_state,
                     state2: None,
                     state1_was_just_added: true,
-                    state_deleted1: Some(&state.ratchet_state1),
-                    state_deleted2: state.ratchet_state2.as_ref(),
+                    deleted_state1: Some(&state.ratchet_state1),
+                    deleted_state2: state.ratchet_state2.as_ref(),
                 },
             );
             if let Err(e) = result {

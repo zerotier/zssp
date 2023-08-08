@@ -4,10 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use rand_core::{CryptoRng, RngCore};
 
 use crate::antireplay::Window;
-use crate::crypto::{
-    secure_eq,
-    sha512::{HashSha512, SHA512_HASH_SIZE},
-};
+use crate::crypto::*;
 use crate::proto::*;
 
 pub struct ChallengeContext {

@@ -1,12 +1,10 @@
 use std::marker::PhantomData;
 
-use arrayvec::ArrayVec;
 use zeroize::Zeroizing;
 
-use crate::crypto::aes::{HighThroughputAesGcmPool, LowThroughputAesGcm, AES_GCM_IV_SIZE, AES_GCM_TAG_SIZE};
-use crate::crypto::sha512::{HashSha512, HmacSha512};
+use crate::crypto::*;
 use crate::proto::*;
-use crate::{applicationlayer::ApplicationLayer, crypto::aes::AES_256_KEY_SIZE};
+use crate::application::ApplicationLayer;
 
 pub struct SymmetricState<App: ApplicationLayer> {
     k: Zeroizing<[u8; AES_256_KEY_SIZE]>,

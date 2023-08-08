@@ -8,7 +8,7 @@
 pub mod crypto;
 
 mod antireplay;
-pub mod applicationlayer;
+pub mod application;
 mod challenge;
 mod frag_cache;
 mod fragged;

@@ -9,7 +9,7 @@
 use arrayvec::ArrayVec;
 use std::mem::{needs_drop, zeroed, MaybeUninit};
 
-use crate::crypto::aes::AES_GCM_IV_SIZE;
+use crate::crypto::AES_GCM_IV_SIZE;
 use crate::proto::{MAX_FRAGMENTS, NONCE_SIZE_DIFF};
 
 pub type Assembled<Fragment> = ArrayVec<Fragment, MAX_FRAGMENTS>;

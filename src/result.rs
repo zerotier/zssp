@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::applicationlayer::ApplicationLayer;
+use crate::application::ApplicationLayer;
 use crate::zeta::Session;
 
 /// An error that can occur when attempting to open a session.

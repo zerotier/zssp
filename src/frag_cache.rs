@@ -10,7 +10,7 @@ use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::mem::MaybeUninit;
 
-use crate::crypto::aes::AES_GCM_IV_SIZE;
+use crate::crypto::AES_GCM_IV_SIZE;
 use crate::fragged::Assembled;
 use crate::proto::{MAX_FRAGMENTS, MAX_UNASSOCIATED_FRAGMENTS, MAX_UNASSOCIATED_PACKETS, MAX_UNASSOCIATED_PACKET_SIZE};
 
