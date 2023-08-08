@@ -560,7 +560,6 @@ pub(crate) fn received_x2_trans<App: ApplicationLayer>(
                 chain_len = 0;
                 result = test_ratchet_key(&[0u8; RATCHET_SIZE]);
                 if result.is_some() {
-                    // TODO: add some kind of warning callback or signal.
                     should_warn_missing_ratchet = true;
                 }
             }
