@@ -1,15 +1,21 @@
+use std::cell::RefCell;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
-use std::sync::Mutex;
 
 use zeroize::Zeroizing;
 
-use crate::crypto::{PrpAes256, AES_256_KEY_SIZE};
+use crate::application::{CryptoLayer, ApplicationLayer};
+use crate::crypto::{Aes256Prp, AES_256_KEY_SIZE};
 use crate::proto::*;
 use crate::result::{byzantine_fault, ReceiveError};
-use crate::ApplicationLayer;
 
-fn create_fragment_header(kid_send: u32, fragment_count: usize, fragment_no: usize, n: &[u8; PACKET_NONCE_SIZE]) -> [u8; HEADER_SIZE] {
+/// Corresponds to Figure 13 found in Section 6.
+fn create_fragment_header(
+    kid_send: u32,
+    fragment_count: usize,
+    fragment_no: usize,
+    n: &[u8; PACKET_NONCE_SIZE],
+) -> [u8; HEADER_SIZE] {
     debug_assert!(fragment_count > 0);
     debug_assert!(fragment_count <= MAX_FRAGMENTS);
     debug_assert!(fragment_no < MAX_FRAGMENTS);
@@ -21,7 +27,8 @@ fn create_fragment_header(kid_send: u32, fragment_count: usize, fragment_no: usi
     header
 }
 
-pub fn send_with_fragmentation<App: ApplicationLayer>(
+/// Corresponds to the fragmentation algorithm described in Section 6.
+pub fn send_with_fragmentation<Crypto: CryptoLayer>(
     mut send: impl FnMut(Vec<u8>) -> bool,
     mtu: usize,
     identifier: u32,
@@ -45,7 +52,10 @@ pub fn send_with_fragmentation<App: ApplicationLayer>(
         fragment.extend(&packet[i..j]);
 
         if let Some(hk_send) = hk_send {
-            App::Prp::encrypt_in_place(hk_send, (&mut fragment[HEADER_AUTH_START..HEADER_AUTH_END]).try_into().unwrap());
+            Crypto::Prp::encrypt_in_place(
+                hk_send,
+                (&mut fragment[HEADER_AUTH_START..HEADER_AUTH_END]).try_into().unwrap(),
+            );
         }
         if !send(fragment) {
             return false;
@@ -56,7 +66,7 @@ pub fn send_with_fragmentation<App: ApplicationLayer>(
 }
 
 pub struct DefragBuffer {
-    fragment_map: Mutex<HashMap<[u8; PACKET_NONCE_SIZE], Buffer>>,
+    fragment_map: RefCell<HashMap<[u8; PACKET_NONCE_SIZE], Buffer>>,
     hk_recv: Option<Zeroizing<[u8; AES_256_KEY_SIZE]>>,
 }
 
@@ -69,22 +79,28 @@ struct Buffer {
 
 impl DefragBuffer {
     pub fn new(hk_recv: Option<Zeroizing<[u8; AES_256_KEY_SIZE]>>) -> Self {
-        Self { fragment_map: Mutex::new(HashMap::new()), hk_recv }
+        Self { fragment_map: RefCell::new(HashMap::new()), hk_recv }
     }
 
+    /// Corresponds to the authentication and defragmentation algorithm described in Section 6.1.
     pub fn received_fragment<App: ApplicationLayer>(
         &self,
         mut raw_fragment: Vec<u8>,
         current_time: i64,
-        vrfy: impl FnOnce(&[u8; PACKET_NONCE_SIZE], usize, usize) -> Result<(), ReceiveError<App::DiskError>>,
-    ) -> Result<Option<([u8; PACKET_NONCE_SIZE], Vec<u8>)>, ReceiveError<App::DiskError>> {
+        vrfy: impl FnOnce(&[u8; PACKET_NONCE_SIZE], usize, usize) -> Result<(), ReceiveError<App::StorageError>>,
+    ) -> Result<Option<([u8; PACKET_NONCE_SIZE], Vec<u8>)>, ReceiveError<App::StorageError>> {
         use crate::result::FaultType::*;
-        if raw_fragment.len() < HEADER_AUTH_END {
+        if raw_fragment.len() < MIN_PACKET_SIZE {
             return Err(byzantine_fault!(InvalidPacket, true));
         }
 
         if let Some(hk_recv) = self.hk_recv.as_ref() {
-            App::Prp::decrypt_in_place(hk_recv, (&mut raw_fragment[HEADER_AUTH_START..HEADER_AUTH_END]).try_into().unwrap())
+            <App::Crypto as CryptoLayer>::Prp::decrypt_in_place(
+                hk_recv,
+                (&mut raw_fragment[HEADER_AUTH_START..HEADER_AUTH_END])
+                    .try_into()
+                    .unwrap(),
+            )
         }
 
         let fragment_no = raw_fragment[FRAGMENT_NO_IDX] as usize;
@@ -99,8 +115,8 @@ impl DefragBuffer {
             return Err(e);
         }
 
-        let expiration_time = current_time + App::SETTINGS.fragment_assembly_timeout as i64;
-        let mut map = self.fragment_map.lock().unwrap();
+        let expiration_time = current_time + App::Crypto::SETTINGS.fragment_assembly_timeout as i64;
+        let mut map = self.fragment_map.borrow_mut();
         match map.entry(n) {
             Entry::Occupied(mut entry) => {
                 let buffer = entry.get_mut();
@@ -141,8 +157,8 @@ impl DefragBuffer {
         }
     }
 
-    pub fn service<App: ApplicationLayer>(&self, current_time: i64) {
-        let mut map = self.fragment_map.lock().unwrap();
+    pub fn service(&self, current_time: i64) {
+        let mut map = self.fragment_map.borrow_mut();
         map.retain(|_, buffer| buffer.expiration_time < current_time);
     }
 }

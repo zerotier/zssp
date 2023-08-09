@@ -2,19 +2,19 @@ use std::marker::PhantomData;
 
 use zeroize::Zeroizing;
 
-use crate::crypto::{AeadAesGcm, HashSha512, AES_256_KEY_SIZE, AES_GCM_IV_SIZE, AES_GCM_TAG_SIZE};
-use crate::proto::{HASHLEN, LABEL_KBKDF_CHAIN};
-use crate::ApplicationLayer;
+use crate::application::CryptoLayer;
+use crate::crypto::*;
+use crate::proto::*;
 
-pub struct SymmetricState<App: ApplicationLayer> {
+pub struct SymmetricState<Crypto: CryptoLayer> {
     k: Zeroizing<[u8; AES_256_KEY_SIZE]>,
     ck: Zeroizing<[u8; HASHLEN]>,
     h: [u8; HASHLEN],
-    /// If anyone knows a better way to get rid of the "parameter `App` is never used" error please
-    /// let me know.
-    _app: PhantomData<fn() -> App::Data>,
+    /// If anyone knows a better way to get rid of the "parameter `Crypto` is never used" error
+    /// please let me know.
+    _app: PhantomData<fn() -> Crypto::SessionData>,
 }
-impl<App: ApplicationLayer> Clone for SymmetricState<App> {
+impl<Crypto: CryptoLayer> Clone for SymmetricState<Crypto> {
     fn clone(&self) -> Self {
         Self {
             k: self.k.clone(),
@@ -25,14 +25,7 @@ impl<App: ApplicationLayer> Clone for SymmetricState<App> {
     }
 }
 
-const KBKDF_LABEL_START: usize = 1;
-const KBKDF_LABEL_END: usize = KBKDF_LABEL_START + 4;
-const KBKDF_CONTEXT_START: usize = KBKDF_LABEL_END + 1;
-const KBKDF_LENGTH_START: usize = KBKDF_CONTEXT_START + HASHLEN;
-const KBKDF_INPUT_SIZE: usize = KBKDF_LENGTH_START + 2;
-const HASHLEN_BITS: usize = HASHLEN * 8;
-
-impl<App: ApplicationLayer> SymmetricState<App> {
+impl<Crypto: CryptoLayer> SymmetricState<Crypto> {
     /// HMAC-SHA512 key derivation based on KBKDF Counter Mode:
     /// https://csrc.nist.gov/publications/detail/sp/800-108/rev-1/final.
     /// Cryptographically this isn't meaningfully different from
@@ -44,6 +37,7 @@ impl<App: ApplicationLayer> SymmetricState<App> {
     /// * L = `num_outputs*512u16`
     /// We have intentionally made every input small and fixed size to avoid unnecessary complexity
     /// and data representation ambiguity.
+    /// Corresponds to Noise `HKDF`.
     fn kbkdf(
         &self,
         input_key_material: &[u8],
@@ -53,53 +47,63 @@ impl<App: ApplicationLayer> SymmetricState<App> {
         output2: Option<&mut [u8; HASHLEN]>,
         output3: Option<&mut [u8; HASHLEN]>,
     ) {
-        let mut buffer = Zeroizing::new([0u8; KBKDF_INPUT_SIZE]);
-        let buffer: &mut [u8] = buffer.as_mut();
-        buffer[0] = 1;
-        buffer[KBKDF_LABEL_START..KBKDF_LABEL_END].copy_from_slice(label);
-        buffer[KBKDF_LABEL_END] = 0x00;
-        buffer[KBKDF_CONTEXT_START..KBKDF_LENGTH_START].copy_from_slice(self.ck.as_ref());
-        buffer[KBKDF_LENGTH_START..].copy_from_slice(&(num_outputs * HASHLEN_BITS as u16).to_be_bytes());
+        let mut buffer = Zeroizing::new(Vec::new());
+        buffer.push(1);
+        buffer.extend(label);
+        buffer.push(0x00);
+        buffer.extend(self.ck.as_ref());
+        buffer.extend(&(num_outputs * 8 * HASHLEN as u16).to_be_bytes());
 
         debug_assert!(num_outputs >= 1);
-        *output1 = App::Hash::hmac(input_key_material, &buffer);
+        *output1 = Crypto::Hash::hmac(input_key_material, &buffer);
 
         if let Some(output2) = output2 {
             debug_assert!(num_outputs >= 2);
             buffer[0] = 2;
-            *output2 = App::Hash::hmac(input_key_material, &buffer);
+            *output2 = Crypto::Hash::hmac(input_key_material, &buffer);
         }
 
         if let Some(output3) = output3 {
             debug_assert!(num_outputs >= 3);
             buffer[0] = 3;
-            *output3 = App::Hash::hmac(input_key_material, &buffer);
+            *output3 = Crypto::Hash::hmac(input_key_material, &buffer);
         }
     }
 
-    pub fn initialize(h: [u8; HASHLEN]) -> Self {
+    /// Corresponds to Noise `Initialize` on a SymmetricState.
+    pub fn initialize(h: &[u8; HASHLEN]) -> Self {
         Self {
             k: Zeroizing::default(),
-            ck: Zeroizing::new(h),
-            h,
+            ck: Zeroizing::new(*h),
+            h: *h,
             _app: PhantomData,
         }
     }
+    /// Corresponds to Noise `MixKey`.
     pub fn mix_key(&mut self, input_key_material: &[u8]) {
         let mut next_ck = [0u8; HASHLEN];
         let mut temp_k = [0u8; HASHLEN];
 
-        self.kbkdf(input_key_material, LABEL_KBKDF_CHAIN, 2, &mut next_ck, Some(&mut temp_k), None);
+        self.kbkdf(
+            input_key_material,
+            LABEL_KBKDF_CHAIN,
+            2,
+            &mut next_ck,
+            Some(&mut temp_k),
+            None,
+        );
 
         *self.ck = next_ck;
         self.k.clone_from_slice(&temp_k[..AES_256_KEY_SIZE]);
     }
+    /// Corresponds to Noise `MixHash`.
     pub fn mix_hash(&mut self, data: &[u8]) {
-        let mut hash = App::Hash::new();
+        let mut hash = Crypto::Hash::new();
         hash.update(&self.h);
         hash.update(data);
         self.h = hash.finish();
     }
+    /// Corresponds to Noise `MixKeyAndHash`.
     pub fn mix_key_and_hash(&mut self, input_key_material: &[u8]) {
         let mut next_ck = [0u8; HASHLEN];
         let mut temp_h = [0u8; HASHLEN];
@@ -118,19 +122,30 @@ impl<App: ApplicationLayer> SymmetricState<App> {
         self.mix_hash(&temp_h);
         self.k.clone_from_slice(&temp_k[..AES_256_KEY_SIZE]);
     }
-    pub fn encrypt_and_hash_in_place(&mut self, iv: [u8; AES_GCM_IV_SIZE], plaintext_start: usize, buffer: &mut Vec<u8>) {
-        let tag = App::Aead::encrypt_in_place(&self.k, iv, Some(&self.h), &mut buffer[plaintext_start..]);
+    /// Corresponds to Noise `EncryptAndHash`.
+    pub fn encrypt_and_hash_in_place(
+        &mut self,
+        iv: [u8; AES_GCM_NONCE_SIZE],
+        plaintext_start: usize,
+        buffer: &mut Vec<u8>,
+    ) {
+        let tag = Crypto::Aead::encrypt_in_place(&self.k, &iv, Some(&self.h), &mut buffer[plaintext_start..]);
         buffer.extend(&tag);
-        let mut hash = App::Hash::new();
-        hash.update(&buffer[plaintext_start..]);
-        self.h = hash.finish();
+        self.mix_hash(&buffer[plaintext_start..]);
     }
+    /// Corresponds to Noise `DecryptAndHash`.
     #[must_use]
-    pub fn decrypt_and_hash_in_place(&mut self, iv: [u8; AES_GCM_IV_SIZE], buffer: &mut [u8], tag: [u8; AES_GCM_TAG_SIZE]) -> bool {
-        let mut hash = App::Hash::new();
+    pub fn decrypt_and_hash_in_place(
+        &mut self,
+        iv: [u8; AES_GCM_NONCE_SIZE],
+        buffer: &mut [u8],
+        tag: [u8; AES_GCM_TAG_SIZE],
+    ) -> bool {
+        let mut hash = Crypto::Hash::new();
+        hash.update(&self.h);
         hash.update(buffer);
         hash.update(&tag);
-        let ret = App::Aead::decrypt_in_place(&self.k, iv, Some(&self.h), buffer, tag);
+        let ret = Crypto::Aead::decrypt_in_place(&self.k, &iv, Some(&self.h), buffer, &tag);
         self.h = hash.finish();
         ret
     }

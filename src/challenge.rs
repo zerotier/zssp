@@ -2,23 +2,24 @@ use std::hash::Hasher;
 
 use rand_core::{CryptoRng, RngCore};
 
-use crate::crypto::{secure_eq, HashSha512};
+use crate::crypto::{secure_eq, Sha512Hash};
 use crate::proto::*;
 
 pub struct ChallengeContext {
     pub enabled: bool,
     counter: u64,
-    antireplay_window: [u64; COUNTER_WINDOW_MAX_OOO],
+    antireplay_window: [u64; CHALLENGE_COUNTER_WINDOW_MAX_OOO],
     salt: [u8; SALT_SIZE],
 }
 
+/// Corresponds to Algorithm 11 found in Section 5.
 pub fn gen_null_response<Rng: RngCore + CryptoRng>(rng: &mut Rng) -> [u8; CHALLENGE_SIZE] {
     let mut response = [0u8; CHALLENGE_SIZE];
     response[POW_START..].copy_from_slice(&rng.next_u64().to_be_bytes());
     response
 }
-
-pub fn respond_to_challenge_in_place<Rng: RngCore + CryptoRng, Hash: HashSha512>(
+/// Corresponds to Algorithm 13 found in Section 5.
+pub fn respond_to_challenge_in_place<Rng: RngCore + CryptoRng, Hash: Sha512Hash>(
     rng: &mut Rng,
     challenge: &[u8; CHALLENGE_SIZE],
     pre_response: &mut [u8; CHALLENGE_SIZE],
@@ -47,7 +48,8 @@ impl ChallengeContext {
             salt,
         }
     }
-    pub fn process_hello<Hash: HashSha512>(
+    /// Corresponds to Algorithm 12 found in Section 5.
+    pub fn process_hello<Hash: Sha512Hash>(
         &mut self,
         addr: &impl std::hash::Hash,
         response: &[u8; CHALLENGE_SIZE],
@@ -56,7 +58,10 @@ impl ChallengeContext {
             return Ok(false);
         }
         let c = u64::from_be_bytes(response[..COUNTER_SIZE].try_into().unwrap());
-        if self.check_window(c) && secure_eq(&response[COUNTER_SIZE..POW_START], &self.create_mac::<Hash>(c, addr)) && verify_pow::<Hash>(response) {
+        if self.check_window(c)
+            && secure_eq(&response[COUNTER_SIZE..POW_START], &self.create_mac::<Hash>(c, addr))
+            && verify_pow::<Hash>(response)
+        {
             self.update_window(c);
             Ok(true)
         } else {
@@ -69,7 +74,7 @@ impl ChallengeContext {
             Err(challenge)
         }
     }
-    fn create_mac<Hash: HashSha512>(&self, c: u64, addr: &impl std::hash::Hash) -> [u8; MAC_SIZE] {
+    fn create_mac<Hash: Sha512Hash>(&self, c: u64, addr: &impl std::hash::Hash) -> [u8; MAC_SIZE] {
         let mut h = Hash::new();
         let mut hasher = ShaHasher(&mut h);
         hasher.write(&c.to_be_bytes());
@@ -95,8 +100,8 @@ impl ChallengeContext {
 }
 
 /// Trick rust into letting us use a hasher that returns more than 64 bits.
-struct ShaHasher<'a, ShaImpl: HashSha512>(&'a mut ShaImpl);
-impl<'a, ShaImpl: HashSha512> Hasher for ShaHasher<'a, ShaImpl> {
+struct ShaHasher<'a, ShaImpl: Sha512Hash>(&'a mut ShaImpl);
+impl<'a, ShaImpl: Sha512Hash> Hasher for ShaHasher<'a, ShaImpl> {
     fn finish(&self) -> u64 {
         unimplemented!()
     }
@@ -107,7 +112,7 @@ impl<'a, ShaImpl: HashSha512> Hasher for ShaHasher<'a, ShaImpl> {
 
 /// Check if the proof of work attached to the first message contains the correct number of leading
 /// zeros.
-fn verify_pow<Hash: HashSha512>(response: &[u8]) -> bool {
+fn verify_pow<Hash: Sha512Hash>(response: &[u8]) -> bool {
     if DIFFICULTY == 0 {
         return true;
     }
