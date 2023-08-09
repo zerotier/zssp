@@ -1,6 +1,8 @@
 ZeroTier Secure Sessions Protocol
 ======
 
+*NOTICE: ZSSP has not yet completed peer review or code audit, so use at your own risk for now. This will be updated as the project matures.*
+
 ## Introduction
 
 An in-depth guide to the full protocol specification can be found in the [protocol whitepaper](./whitepaper.pdf) provided in this repo. This implementation references it heavily.
