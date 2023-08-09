@@ -290,7 +290,7 @@ fn create_a1_state<App: ApplicationLayer>(
 }
 /// Corresponds to Transition Algorithm 1 found in Section 4.3.
 pub(crate) fn trans_to_a1<App: ApplicationLayer>(
-    app: App,
+    mut app: App,
     ctx: &Arc<ContextInner<App>>,
     s_remote: App::PublicKey,
     session_data: App::SessionData,
@@ -359,7 +359,7 @@ pub(crate) fn respond_to_challenge<App: ApplicationLayer>(
 }
 /// Corresponds to Transition Algorithm 2 found in Section 4.3.
 pub(crate) fn received_x1_trans<App: ApplicationLayer>(
-    app: &App,
+    app: &mut App,
     ctx: &ContextInner<App>,
     n: [u8; AES_GCM_NONCE_SIZE],
     mut x1: Vec<u8>,
@@ -491,7 +491,7 @@ pub(crate) fn received_x1_trans<App: ApplicationLayer>(
 pub(crate) fn received_x2_trans<App: ApplicationLayer>(
     zeta: &mut Zeta<App>,
     session: &Arc<Session<App>>,
-    app: &App,
+    app: &mut App,
     ctx: &Arc<ContextInner<App>>,
     kid: NonZeroU32,
     n: [u8; AES_GCM_NONCE_SIZE],
@@ -643,7 +643,10 @@ pub(crate) fn received_x2_trans<App: ApplicationLayer>(
         }
     })();
     match &result {
-        Err(ReceiveError::ByzantineFault { .. }) => timeout_trans(zeta, session, app, ctx, app.time(), send),
+        Err(ReceiveError::ByzantineFault { .. }) => {
+            let current_time = app.time();
+            timeout_trans(zeta, session, app, ctx, current_time, send);
+        }
         Ok(packet) => send(packet, Some(&zeta.hk_send)),
         _ => {}
     }
@@ -673,7 +676,7 @@ fn send_control<App: ApplicationLayer>(
 /// Corresponds to Transition Algorithm 4 found in Section 4.3.
 pub(crate) fn received_x3_trans<App: ApplicationLayer>(
     zeta: StateB2<App>,
-    app: &App,
+    app: &mut App,
     ctx: &Arc<ContextInner<App>>,
     kid: NonZeroU32,
     mut x3: Vec<u8>,
@@ -825,7 +828,7 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
 /// Corresponds to Transition Algorithm 5 found in Section 4.3.
 pub(crate) fn received_c1_trans<App: ApplicationLayer>(
     zeta: &mut Zeta<App>,
-    app: &App,
+    app: &mut App,
     rng: &RefCell<App::Rng>,
     kid: NonZeroU32,
     n: [u8; AES_GCM_NONCE_SIZE],
@@ -901,7 +904,7 @@ pub(crate) fn received_c1_trans<App: ApplicationLayer>(
 /// Section 4.3.
 pub(crate) fn received_c2_trans<App: ApplicationLayer>(
     zeta: &mut Zeta<App>,
-    app: &App,
+    app: &mut App,
     rng: &RefCell<App::Rng>,
     kid: NonZeroU32,
     n: [u8; AES_GCM_NONCE_SIZE],
@@ -970,7 +973,7 @@ pub(crate) fn service<App: ApplicationLayer>(
     zeta: &mut Zeta<App>,
     session: &Arc<Session<App>>,
     ctx: &Arc<ContextInner<App>>,
-    app: &App,
+    app: &mut App,
     current_time: i64,
     send: impl FnOnce(&Packet, Option<&[u8; AES_256_KEY_SIZE]>),
 ) {
@@ -1012,7 +1015,7 @@ pub(crate) fn service<App: ApplicationLayer>(
 fn timeout_trans<App: ApplicationLayer>(
     zeta: &mut Zeta<App>,
     session: &Arc<Session<App>>,
-    app: &App,
+    app: &mut App,
     ctx: &Arc<ContextInner<App>>,
     current_time: i64,
     send: impl FnOnce(&Packet, Option<&[u8; AES_256_KEY_SIZE]>),
@@ -1108,7 +1111,7 @@ fn timeout_trans<App: ApplicationLayer>(
 pub(crate) fn received_k1_trans<App: ApplicationLayer>(
     zeta: &mut Zeta<App>,
     session: &Arc<Session<App>>,
-    app: &App,
+    app: &mut App,
     rng: &RefCell<App::Rng>,
     session_map: &SessionMap<App>,
     s_secret: &App::KeyPair,
@@ -1246,7 +1249,7 @@ pub(crate) fn received_k1_trans<App: ApplicationLayer>(
 /// Corresponds to Transition Algorithm 8 found in Section 4.3.
 pub(crate) fn received_k2_trans<App: ApplicationLayer>(
     zeta: &mut Zeta<App>,
-    app: &App,
+    app: &mut App,
     kid: NonZeroU32,
     n: [u8; AES_GCM_NONCE_SIZE],
     mut k2: Vec<u8>,

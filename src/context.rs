@@ -130,9 +130,9 @@ impl<App: ApplicationLayer> Context<App> {
     /// * `send_to` - Function to get senders for existing sessions, permitting MTU and path lookup
     /// * `remote_address` - Whatever the remote address is, as long as you can Hash it
     /// * `raw_fragment` - Buffer containing incoming wire packet
-    pub fn receive<'a, SendFn: FnMut(Vec<u8>) -> bool>(
+    pub fn receive<SendFn: FnMut(Vec<u8>) -> bool>(
         &mut self,
-        app: App,
+        mut app: App,
         send_unassociated_reply: impl FnMut(Vec<u8>) -> bool,
         mut send_unassociated_mtu: usize,
         send_to: impl FnOnce(&Arc<Session<App>>) -> Option<(SendFn, usize)>,
@@ -209,7 +209,7 @@ impl<App: ApplicationLayer> Context<App> {
                             let should_warn_missing_ratchet = received_x2_trans(
                                 &mut zeta,
                                 &session,
-                                &app,
+                                &mut app,
                                 &ctx,
                                 kid_recv,
                                 to_aes_nonce(&pn),
@@ -227,7 +227,7 @@ impl<App: ApplicationLayer> Context<App> {
                             log!(app, ReceivedRawKeyConfirm);
                             let result = received_c1_trans(
                                 &mut zeta,
-                                &app,
+                                &mut app,
                                 &ctx.rng,
                                 kid_recv,
                                 to_aes_nonce(&pn),
@@ -245,7 +245,7 @@ impl<App: ApplicationLayer> Context<App> {
                             log!(app, ReceivedRawAck);
                             received_c2_trans(
                                 &mut zeta,
-                                &app,
+                                &mut app,
                                 &ctx.rng,
                                 kid_recv,
                                 to_aes_nonce(&pn),
@@ -259,7 +259,7 @@ impl<App: ApplicationLayer> Context<App> {
                             received_k1_trans(
                                 &mut zeta,
                                 &session,
-                                &app,
+                                &mut app,
                                 &ctx.rng,
                                 &ctx.session_map,
                                 &ctx.s_secret,
@@ -275,7 +275,7 @@ impl<App: ApplicationLayer> Context<App> {
                             log!(app, ReceivedRawK2);
                             received_k2_trans(
                                 &mut zeta,
-                                &app,
+                                &mut app,
                                 kid_recv,
                                 to_aes_nonce(&pn),
                                 assembled_packet,
@@ -318,7 +318,7 @@ impl<App: ApplicationLayer> Context<App> {
                         let zeta = entry.remove();
                         let (session, should_warn_missing_ratchet) = received_x3_trans(
                             zeta,
-                            &app,
+                            &mut app,
                             ctx,
                             kid_recv,
                             assembled_packet,
@@ -396,7 +396,7 @@ impl<App: ApplicationLayer> Context<App> {
 
                     // Process recv zeta layer.
                     received_x1_trans(
-                        &app,
+                        &mut app,
                         &ctx,
                         to_aes_nonce(&n),
                         assembled_packet,
@@ -476,7 +476,7 @@ impl<App: ApplicationLayer> Context<App> {
     /// * `send_to` - Function to get a sender and an MTU to send something over an active session
     pub fn service<SendFn: FnMut(Vec<u8>) -> bool>(
         &mut self,
-        app: App,
+        mut app: App,
         mut send_to: impl FnMut(&Arc<Session<App>>) -> Option<(SendFn, usize)>,
     ) -> i64 {
         let ctx = &self.0;
@@ -490,7 +490,7 @@ impl<App: ApplicationLayer> Context<App> {
                     &mut zeta,
                     &session,
                     ctx,
-                    &app,
+                    &mut app,
                     current_time,
                     |Packet(kid, nonce, payload): &Packet, hk| {
                         if let Some((send_fragment, mut mtu)) = send_to(&session) {

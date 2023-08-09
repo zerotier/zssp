@@ -142,7 +142,7 @@ pub trait ApplicationLayer: Sized {
     /// with remote peers (although both of these properties would help reliability slightly).
     /// Used to determine if any current handshakes should be resent or timed-out, or if a session
     /// should rekey.
-    fn time(&self) -> i64;
+    fn time(&mut self) -> i64;
 
     /// This function will be called whenever Alice's initial Hello packet contains the empty ratchet
     /// fingerprint. Brand new peers will always connect to Bob with the empty ratchet, but from
@@ -153,7 +153,7 @@ pub trait ApplicationLayer: Sized {
     /// If this function is configured to always return true, it means peers will not be able to
     /// connect to us unless they had a prior-established ratchet key with us. This is the best way
     /// for the paranoid to enforce a manual allow-list.
-    fn hello_requires_recognized_ratchet(&self) -> bool;
+    fn hello_requires_recognized_ratchet(&mut self) -> bool;
     /// This function is called if we, as Alice, attempted to open a session with Bob using a
     /// non-empty ratchet key, but Bob does not have this ratchet key and wants to downgrade
     /// to the zero ratchet key.
@@ -169,14 +169,14 @@ pub trait ApplicationLayer: Sized {
     /// least one party is misconfigured and got their ratchet keys corrupted or lost, or Bob has
     /// been compromised and is being impersonated. An attacker must at least have Bob's private
     /// static key to be able to ask Alice to downgrade.
-    fn initiator_disallows_downgrade(&self, session: &Arc<Session<Self>>) -> bool;
+    fn initiator_disallows_downgrade(&mut self, session: &Arc<Session<Self>>) -> bool;
     /// Function to accept sessions after final negotiation.
     /// The second argument is the identity that the remote peer sent us. The application
     /// must verify this identity is associated with the remote peer's static key.
     /// To prevent desync, if this function specifies that we should connect, no other open session
     /// with the same remote peer must exist. Drop or call expire on any pre-existing sessions
     /// before returning.
-    fn check_accept_session(&self, remote_static_key: &Self::PublicKey, identity: &[u8]) -> AcceptAction<Self>;
+    fn check_accept_session(&mut self, remote_static_key: &Self::PublicKey, identity: &[u8]) -> AcceptAction<Self>;
 
     /// Lookup a specific ratchet state based on its ratchet fingerprint.
     /// This function will be called whenever Alice attempts to connect to us with a non-empty
@@ -185,7 +185,7 @@ pub trait ApplicationLayer: Sized {
     /// If a ratchet state with a matching fingerprint could not be found, this function should
     /// return `Ok(None)`.
     fn restore_by_fingerprint(
-        &self,
+        &mut self,
         ratchet_fingerprint: &[u8; RATCHET_SIZE],
     ) -> Result<Option<RatchetState>, Self::StorageError>;
     /// Lookup the specific ratchet states based on the identity of the peer being communicated with.
@@ -203,7 +203,7 @@ pub trait ApplicationLayer: Sized {
     /// Filtering peers should be done by the caller to `Context::open` as well as by the
     /// function `ApplicationLayer::check_accept_session`.
     fn restore_by_identity(
-        &self,
+        &mut self,
         remote_static_key: &Self::PublicKey,
         session_data: &Self::SessionData,
     ) -> Result<Option<RatchetStates>, Self::StorageError>;
@@ -224,7 +224,7 @@ pub trait ApplicationLayer: Sized {
     /// to us will have to allow downgrade across the board.
     /// Otherwise, when we restart, we will not be allowed to reconnect.
     fn save_ratchet_state(
-        &self,
+        &mut self,
         remote_static_key: &Self::PublicKey,
         session_data: &Self::SessionData,
         update_data: RatchetUpdate<'_>,
@@ -234,7 +234,7 @@ pub trait ApplicationLayer: Sized {
     /// These are provided for debugging, logging or metrics purposes, and must be used for
     /// nothing else. Do not base protocol-level decisions upon the events passed to this function.
     #[cfg(feature = "logging")]
-    fn event_log(&self, event: LogEvent<'_, Self>);
+    fn event_log(&mut self, event: LogEvent<'_, Self>);
 }
 
 /// A collection of fields specifying how to complete the key exchange with a specific remote peer,
