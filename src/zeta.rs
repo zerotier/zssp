@@ -23,58 +23,6 @@ use crate::zssp::{log, ContextInner, SessionQueue};
 #[cfg(feature = "logging")]
 use crate::LogEvent::*;
 
-/// Create a 96-bit AES-GCM nonce.
-///
-/// The primary information that we want to be contained here is the counter and the
-/// packet type. The former makes this unique and the latter's inclusion authenticates
-/// it as effectively AAD. Other elements of the header are either not authenticated,
-/// like fragmentation info, or their authentication is implied via key exchange like
-/// the key id.
-///
-/// Corresponds to Figure 10 found in Section 4.3.
-pub(crate) fn to_nonce(packet_type: u8, counter: u64) -> [u8; AES_GCM_NONCE_SIZE] {
-    let mut ret = [0u8; AES_GCM_NONCE_SIZE];
-    ret[3] = packet_type;
-    // Noise requires a big endian counter at the end of the Nonce
-    ret[4..].copy_from_slice(&counter.to_be_bytes());
-    ret
-}
-/// Corresponds to Figure 10 and Figure 14 found in Section 4.3.
-pub(crate) fn from_nonce(n: &[u8]) -> (u8, u64) {
-    assert!(n.len() >= PACKET_NONCE_SIZE);
-    let c_start = n.len() - 8;
-    (n[c_start - 1], u64::from_be_bytes(n[c_start..].try_into().unwrap()))
-}
-fn create_ratchet_state<App: ApplicationLayer>(
-    hmac: &mut App::Hmac,
-    noise: &SymmetricState<App>,
-    pre_chain_len: u64,
-) -> RatchetState {
-    let mut rk = Zeroizing::new([0u8; HASHLEN]);
-    let mut rf = Zeroizing::new([0u8; HASHLEN]);
-    noise.get_ask(hmac, LABEL_RATCHET_STATE, &mut rk, &mut rf);
-    RatchetState::new(
-        Zeroizing::new(rk[..RATCHET_SIZE].try_into().unwrap()),
-        Zeroizing::new(rf[..RATCHET_SIZE].try_into().unwrap()),
-        pre_chain_len + 1,
-    )
-}
-fn get_counter<App: ApplicationLayer>(session: &Session<App>, state: &MutableState<App>) -> Option<(u64, bool)> {
-    if session.session_has_expired.load(Ordering::Relaxed) {
-        None
-    } else {
-        let c = session.send_counter.fetch_add(1, Ordering::Relaxed);
-        if c > THREAD_SAFE_COUNTER_HARD_EXPIRE {
-            session.session_has_expired.store(true, Ordering::SeqCst);
-        }
-        if c > state.key_creation_counter + EXPIRE_AFTER_USES {
-            session.session_has_expired.store(true, Ordering::SeqCst);
-            return None;
-        }
-        Some((c, c > state.key_creation_counter + App::SETTINGS.rekey_after_key_uses))
-    }
-}
-
 /// Corresponds to the Zeta State Machine found in Section 4.1.
 pub struct Session<App: ApplicationLayer> {
     ctx: Weak<ContextInner<App>>,
@@ -131,33 +79,11 @@ pub(crate) struct DuplexKey<App: ApplicationLayer> {
     recv: Keys,
     nk: Option<App::AeadPool>,
 }
-impl<App: ApplicationLayer> Default for DuplexKey<App> {
-    fn default() -> Self {
-        Self { send: Default::default(), recv: Default::default(), nk: None }
-    }
-}
-impl<App: ApplicationLayer> DuplexKey<App> {
-    fn replace_nk(&mut self, nk_send: &[u8; HASHLEN], nk_recv: &[u8; HASHLEN]) {
-        self.nk = Some(App::AeadPool::new(
-            (&nk_send[..AES_256_KEY_SIZE]).try_into().unwrap(),
-            (&nk_recv[..AES_256_KEY_SIZE]).try_into().unwrap(),
-        ))
-    }
-}
 
 #[derive(Default)]
 pub(crate) struct Keys {
     kek: Option<Zeroizing<[u8; AES_256_KEY_SIZE]>>,
     kid: Option<NonZeroU32>,
-}
-impl Keys {
-    fn replace_kek(&mut self, kek: &[u8; HASHLEN]) {
-        // We want to give rust the best chance of implementing this in a way that does
-        // not leak the key on the stack.
-        self.kek
-            .get_or_insert(Zeroizing::new([0u8; AES_256_KEY_SIZE]))
-            .copy_from_slice(&kek[..AES_256_KEY_SIZE]);
-    }
 }
 
 /// Corresponds to State A_1 of the Zeta State Machine found in Section 4.1.
@@ -190,6 +116,38 @@ pub(crate) enum ZetaAutomata<App: ApplicationLayer> {
     R2 {
         k2: ArrayVec<u8, HEADERED_REKEY_SIZE>,
     },
+}
+
+impl<App: ApplicationLayer> Default for DuplexKey<App> {
+    fn default() -> Self {
+        Self { send: Default::default(), recv: Default::default(), nk: None }
+    }
+}
+impl<App: ApplicationLayer> DuplexKey<App> {
+    fn replace_nk(&mut self, nk_send: &[u8; HASHLEN], nk_recv: &[u8; HASHLEN]) {
+        self.nk = Some(App::AeadPool::new(
+            (&nk_send[..AES_256_KEY_SIZE]).try_into().unwrap(),
+            (&nk_recv[..AES_256_KEY_SIZE]).try_into().unwrap(),
+        ))
+    }
+}
+impl Keys {
+    fn replace_kek(&mut self, kek: &[u8; HASHLEN]) {
+        // We want to give rust the best chance of implementing this in a way that does
+        // not leak the key on the stack.
+        self.kek
+            .get_or_insert(Zeroizing::new([0u8; AES_256_KEY_SIZE]))
+            .copy_from_slice(&kek[..AES_256_KEY_SIZE]);
+    }
+}
+
+impl<App: ApplicationLayer> MutableState<App> {
+    fn key_ref(&self, is_next: bool) -> &DuplexKey<App> {
+        &self.keys[(self.key_index ^ is_next) as usize]
+    }
+    fn key_mut(&mut self, is_next: bool) -> &mut DuplexKey<App> {
+        &mut self.keys[(self.key_index ^ is_next) as usize]
+    }
 }
 
 impl<App: ApplicationLayer> SymmetricState<App> {
@@ -241,6 +199,62 @@ impl<App: ApplicationLayer> SymmetricState<App> {
     }
 }
 
+/// Create a 96-bit AES-GCM nonce.
+///
+/// The primary information that we want to be contained here is the counter and the
+/// packet type. The former makes this unique and the latter's inclusion authenticates
+/// it as effectively AAD. Other elements of the header are either not authenticated,
+/// like fragmentation info, or their authentication is implied via key exchange like
+/// the key id.
+///
+/// Corresponds to Figure 10 found in Section 4.3.
+pub(crate) fn to_nonce(packet_type: u8, counter: u64) -> [u8; AES_GCM_NONCE_SIZE] {
+    let mut ret = [0u8; AES_GCM_NONCE_SIZE];
+    ret[3] = packet_type;
+    // Noise requires a big endian counter at the end of the Nonce
+    ret[4..].copy_from_slice(&counter.to_be_bytes());
+    ret
+}
+/// Corresponds to Figure 10 and Figure 14 found in Section 4.3.
+pub(crate) fn from_nonce(n: &[u8]) -> (u8, u64) {
+    assert!(n.len() >= PACKET_NONCE_SIZE);
+    let c_start = n.len() - 8;
+    (n[c_start - 1], u64::from_be_bytes(n[c_start..].try_into().unwrap()))
+}
+fn set_header(packet: &mut [u8], kid_send: u32, nonce: &[u8; AES_GCM_NONCE_SIZE]) {
+    packet[..KID_SIZE].copy_from_slice(&kid_send.to_ne_bytes());
+    packet[PACKET_NONCE_START..HEADER_SIZE].copy_from_slice(&nonce[NONCE_SIZE_DIFF..]);
+}
+fn create_ratchet_state<App: ApplicationLayer>(
+    hmac: &mut App::Hmac,
+    noise: &SymmetricState<App>,
+    pre_chain_len: u64,
+) -> RatchetState {
+    let mut rk = Zeroizing::new([0u8; HASHLEN]);
+    let mut rf = Zeroizing::new([0u8; HASHLEN]);
+    noise.get_ask(hmac, LABEL_RATCHET_STATE, &mut rk, &mut rf);
+    RatchetState::new(
+        Zeroizing::new(rk[..RATCHET_SIZE].try_into().unwrap()),
+        Zeroizing::new(rf[..RATCHET_SIZE].try_into().unwrap()),
+        pre_chain_len + 1,
+    )
+}
+fn get_counter<App: ApplicationLayer>(session: &Session<App>, state: &MutableState<App>) -> Option<(u64, bool)> {
+    if session.session_has_expired.load(Ordering::Relaxed) {
+        None
+    } else {
+        let c = session.send_counter.fetch_add(1, Ordering::Relaxed);
+        if c > THREAD_SAFE_COUNTER_HARD_EXPIRE {
+            session.session_has_expired.store(true, Ordering::SeqCst);
+        }
+        if c > state.key_creation_counter + EXPIRE_AFTER_USES {
+            session.session_has_expired.store(true, Ordering::SeqCst);
+            return None;
+        }
+        Some((c, c > state.key_creation_counter + App::SETTINGS.rekey_after_key_uses))
+    }
+}
+
 /// Generate a random local key id that is currently unused.
 fn gen_kid<T>(session_map: &HashMap<NonZeroU32, T>, rng: &mut impl RngCore) -> NonZeroU32 {
     loop {
@@ -251,19 +265,20 @@ fn gen_kid<T>(session_map: &HashMap<NonZeroU32, T>, rng: &mut impl RngCore) -> N
         }
     }
 }
-
-impl<App: ApplicationLayer> MutableState<App> {
-    fn key_ref(&self, is_next: bool) -> &DuplexKey<App> {
-        &self.keys[(self.key_index ^ is_next) as usize]
-    }
-    fn key_mut(&mut self, is_next: bool) -> &mut DuplexKey<App> {
-        &mut self.keys[(self.key_index ^ is_next) as usize]
-    }
-}
-
-fn set_header(packet: &mut [u8], kid_send: u32, nonce: &[u8; AES_GCM_NONCE_SIZE]) {
-    packet[..KID_SIZE].copy_from_slice(&kid_send.to_be_bytes());
-    packet[PACKET_NONCE_START..HEADER_SIZE].copy_from_slice(&nonce[NONCE_SIZE_DIFF..]);
+fn remap<App: ApplicationLayer>(
+    ctx: &Arc<ContextInner<App>>,
+    session: &Arc<Session<App>>,
+    state: &MutableState<App>,
+) -> NonZeroU32 {
+    let mut session_map = ctx.session_map.write().unwrap();
+    let weak = if let Some(Some(weak)) = state.key_ref(true).recv.kid.as_ref().map(|kid| session_map.remove(kid)) {
+        weak
+    } else {
+        Arc::downgrade(&session)
+    };
+    let new_kid_recv = gen_kid(session_map.deref(), ctx.rng.lock().unwrap().deref_mut());
+    session_map.insert(new_kid_recv, weak);
+    new_kid_recv
 }
 
 fn create_a1_state<App: ApplicationLayer>(
@@ -283,7 +298,7 @@ fn create_a1_state<App: ApplicationLayer>(
     let mut x1 = ArrayVec::<u8, HEADERED_HANDSHAKE_HELLO_CHALLENGE_MAX_SIZE>::new();
     x1.extend([0u8; HEADER_SIZE]);
     // Noise process prologue.
-    let kid = kid_recv.get().to_be_bytes();
+    let kid = kid_recv.get().to_ne_bytes();
     x1.extend(kid);
     noise.mix_hash(hash, &kid);
     noise.mix_hash(hash, &s_remote.to_bytes());
@@ -450,7 +465,7 @@ pub(crate) fn received_x1_trans<App: ApplicationLayer>(
     // Noise process prologue.
     let j = i + KID_SIZE;
     noise.mix_hash(hash, &x1[i..j]);
-    let kid_send = NonZeroU32::new(u32::from_be_bytes(x1[i..j].try_into().unwrap()))
+    let kid_send = NonZeroU32::new(u32::from_ne_bytes(x1[i..j].try_into().unwrap()))
         .ok_or(byzantine_fault!(InvalidPacket, true))?;
     noise.mix_hash(hash, &ctx.s_secret.public_key_bytes());
     i = j;
@@ -537,12 +552,12 @@ pub(crate) fn received_x1_trans<App: ApplicationLayer>(
     );
 
     let i = x2.len();
-    x2.extend(kid_recv.get().to_be_bytes());
+    x2.extend(kid_recv.get().to_ne_bytes());
     let tag = noise.encrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_HANDSHAKE_RESPONSE, 0), &mut x2[i..]);
     x2.extend(tag);
 
     let i = x2.len();
-    let mut c = 0u64.to_be_bytes();
+    let mut c = [0u8; 8];
     c[5] = x2[i - 3];
     c[6] = x2[i - 2];
     c[7] = x2[i - 1];
@@ -654,7 +669,7 @@ pub(crate) fn received_x2_trans<App: ApplicationLayer>(
             if !noise.decrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_HANDSHAKE_RESPONSE, 0), &mut payload, tag) {
                 return None;
             }
-            NonZeroU32::new(u32::from_be_bytes(payload)).map(|kid2| (kid2, noise))
+            NonZeroU32::new(u32::from_ne_bytes(payload)).map(|kid2| (kid2, noise))
         };
         // Check first key.
         let mut ratchet_i = 1;
@@ -1248,7 +1263,7 @@ fn timeout_trans<App: ApplicationLayer>(
             noise.mix_key(hmac, session.noise_kk_ss.as_ref());
             // Process message pattern 1 payload.
             let i = k1.len();
-            k1.extend(new_kid_recv.get().to_be_bytes());
+            k1.extend(new_kid_recv.get().to_ne_bytes());
             let tag = noise.encrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_REKEY_INIT, 0), &mut k1[i..]);
             k1.extend(tag);
 
@@ -1337,21 +1352,6 @@ pub(crate) fn process_timers<App: ApplicationLayer>(
         }
     }
 }
-fn remap<App: ApplicationLayer>(
-    ctx: &Arc<ContextInner<App>>,
-    session: &Arc<Session<App>>,
-    state: &MutableState<App>,
-) -> NonZeroU32 {
-    let mut session_map = ctx.session_map.write().unwrap();
-    let weak = if let Some(Some(weak)) = state.key_ref(true).recv.kid.as_ref().map(|kid| session_map.remove(kid)) {
-        weak
-    } else {
-        Arc::downgrade(&session)
-    };
-    let new_kid_recv = gen_kid(session_map.deref(), ctx.rng.lock().unwrap().deref_mut());
-    session_map.insert(new_kid_recv, weak);
-    new_kid_recv
-}
 /// Corresponds to Transition Algorithm 7 found in Section 4.3.
 pub(crate) fn received_k1_trans<App: ApplicationLayer>(
     app: &App,
@@ -1432,7 +1432,7 @@ pub(crate) fn received_k1_trans<App: ApplicationLayer>(
         if !noise.decrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_REKEY_INIT, 0), &mut k1[i..j], tag) {
             return Err(byzantine_fault!(FailedAuth, true));
         }
-        let kid_send = NonZeroU32::new(u32::from_be_bytes(k1[i..j].try_into().unwrap()))
+        let kid_send = NonZeroU32::new(u32::from_ne_bytes(k1[i..j].try_into().unwrap()))
             .ok_or(byzantine_fault!(FailedAuth, true))?;
 
         let mut k2 = ArrayVec::<u8, HEADERED_REKEY_SIZE>::new();
@@ -1450,7 +1450,7 @@ pub(crate) fn received_k1_trans<App: ApplicationLayer>(
         // Process message pattern 2 payload.
         let i = k2.len();
         let new_kid_recv = remap(ctx, session, &state);
-        k2.extend(new_kid_recv.get().to_be_bytes());
+        k2.extend(new_kid_recv.get().to_ne_bytes());
         let tag = noise.encrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_REKEY_COMPLETE, 0), &mut k2[i..]);
         k2.extend(tag);
 
@@ -1582,7 +1582,7 @@ pub(crate) fn received_k2_trans<App: ApplicationLayer>(
             if !noise.decrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_REKEY_COMPLETE, 0), &mut k2[i..j], tag) {
                 return Err(byzantine_fault!(FailedAuth, true));
             }
-            let kid_send = NonZeroU32::new(u32::from_be_bytes(k2[i..j].try_into().unwrap()))
+            let kid_send = NonZeroU32::new(u32::from_ne_bytes(k2[i..j].try_into().unwrap()))
                 .ok_or(byzantine_fault!(InvalidPacket, true))?;
 
             let new_ratchet_state = create_ratchet_state(hmac, &noise, state.ratchet_state1.chain_len);
@@ -1667,7 +1667,7 @@ pub(crate) fn send_payload<App: ApplicationLayer>(
     let nonce = to_nonce(PACKET_TYPE_DATA, c);
 
     let key = state.key_ref(false);
-    let kid_send = key.send.kid.ok_or(SessionNotEstablished)?.get().to_be_bytes();
+    let kid_send = key.send.kid.ok_or(SessionNotEstablished)?.get().to_ne_bytes();
     let mut cipher = key.nk.as_ref().ok_or(SessionNotEstablished)?.start_enc(&nonce);
 
     debug_assert!(matches!(
@@ -1763,7 +1763,8 @@ pub(crate) fn receive_payload_in_place<App: ApplicationLayer>(
     } else if Some(kid) == state.keys[1].recv.kid {
         state.keys[1].nk.as_ref()
     } else {
-        return Err(byzantine_fault!(OutOfSequence, true));
+        // Should be unreachable unless we are leaking kids somewhere.
+        return Err(byzantine_fault!(UnknownLocalKeyId, true));
     };
 
     let mut cipher = specified_key

@@ -35,9 +35,9 @@ pub trait P384KeyPair<Rng: RngCore + CryptoRng> {
     /// This must output the compressed SEC1 NIST encoding of P-384 public keys.
     fn public_key_bytes(&self) -> [u8; P384_PUBLIC_KEY_SIZE];
 
-    /// Perform ECDH key agreement, writing the raw (un-hashed!) ECDH secret to `output`.
+    /// Perform ECDH key agreement, writing the raw (un-hashed!) ECDH secret to `ecdh_out`.
     ///
-    /// **CRITICAL**: This function must return `None` if key agreement between this private key and
+    /// **CRITICAL**: This function must return `false` if key agreement between this private key and
     /// the input `public_key` key would result in an invalid, non-standard or predictable ECDH secret.
     /// Please refer to the NIST spec for P-384 ECDH key agreement, or better yet use a peer reviewed
     /// library that has already implemented this correctly.

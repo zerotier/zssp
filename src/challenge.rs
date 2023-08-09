@@ -16,7 +16,7 @@ pub struct ChallengeContext {
 /// Corresponds to Algorithm 11 found in Section 5.
 pub fn gen_null_response(rng: &mut impl RngCore) -> [u8; CHALLENGE_SIZE] {
     let mut response = [0u8; CHALLENGE_SIZE];
-    response[POW_START..].copy_from_slice(&rng.next_u64().to_be_bytes());
+    response[POW_START..].copy_from_slice(&rng.next_u64().to_ne_bytes());
     response
 }
 /// Corresponds to Algorithm 13 found in Section 5.
@@ -31,7 +31,7 @@ pub fn respond_to_challenge_in_place(
         let mut pow = rng.next_u64();
         let mut work_buf = [0u8; SHA512_HASH_SIZE];
         loop {
-            pre_response[POW_START..].copy_from_slice(&pow.to_be_bytes());
+            pre_response[POW_START..].copy_from_slice(&pow.to_ne_bytes());
             if verify_pow(hash, pre_response, &mut work_buf) {
                 return;
             }

@@ -219,11 +219,9 @@ impl<App: ApplicationLayer> Context<App> {
         let mut fragment_buffer = Assembled::new();
 
         let kid_recv = incoming_fragment[0..KID_SIZE].try_into().unwrap();
-        if let Some(kid_recv) = NonZeroU32::new(u32::from_be_bytes(kid_recv)) {
-            let session_map = self.0.session_map.read().unwrap();
+        if let Some(kid_recv) = NonZeroU32::new(u32::from_ne_bytes(kid_recv)) {
             let session = ctx.session_map.read().unwrap().get(&kid_recv).map(|r| r.upgrade());
             if let Some(Some(session)) = session {
-                drop(session_map);
                 let state = session.state.read().unwrap();
                 state.hk_recv.decrypt_in_place(
                     (&mut incoming_fragment[HEADER_AUTH_START..HEADER_AUTH_END])
@@ -417,7 +415,6 @@ impl<App: ApplicationLayer> Context<App> {
                 };
                 Ok(ReceiveOk::Session(session, ret))
             } else {
-                drop(session_map);
                 // Check for and handle PACKET_TYPE_ALICE_NOISE_XK_PATTERN_3
                 let zeta = self.0.unassociated_handshake_states.get(kid_recv);
                 if let Some(zeta) = zeta {
@@ -591,7 +588,7 @@ impl<App: ApplicationLayer> Context<App> {
                     return Err(byzantine_fault!(InvalidPacket, true));
                 }
                 if let Some(kid_recv) =
-                    NonZeroU32::new(u32::from_be_bytes(assembled_packet[..KID_SIZE].try_into().unwrap()))
+                    NonZeroU32::new(u32::from_ne_bytes(assembled_packet[..KID_SIZE].try_into().unwrap()))
                 {
                     if let Some(Some(session)) = ctx.session_map.read().unwrap().get(&kid_recv).map(|r| r.upgrade()) {
                         respond_to_challenge(ctx, &session, &assembled_packet[KID_SIZE..].try_into().unwrap());
