@@ -443,7 +443,9 @@ impl<App: ApplicationLayer> Context<App> {
         }
     }
 
-    /// Send data over the session.
+    /// Send data as fragments over the session to the remote peer.
+    ///
+    /// The session used here must have been created from this instance of a ZSSP context.
     ///
     /// * `session` - The session to send to
     /// * `send` - Function to call to send physical packet(s); the buffer passed to `send` is a
@@ -457,6 +459,7 @@ impl<App: ApplicationLayer> Context<App> {
         mut mtu: usize,
         payload: Vec<u8>,
     ) -> Result<(), SendError> {
+        debug_assert_eq!(session.0.borrow().ctx.as_ptr(), Arc::as_ptr(&self.0));
         mtu = mtu.max(MIN_TRANSPORT_MTU);
         let mut zeta = session.0.borrow_mut();
         send_payload(&mut zeta, payload, |Packet(kid, nonce, payload), hk| {
@@ -468,7 +471,7 @@ impl<App: ApplicationLayer> Context<App> {
     ///
     /// This returns the number of milliseconds until it should be called again. The caller should
     /// try to satisfy this but small variations in timing of up to a few seconds are not
-    /// a problem.
+    /// a problem. It is completely fine to call this function more often than the returned interval.
     ///
     /// * `send_to` - Function to get a sender and an MTU to send something over an active session
     pub fn service<SendFn: FnMut(Vec<u8>) -> bool>(

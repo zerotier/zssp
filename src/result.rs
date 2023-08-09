@@ -174,5 +174,4 @@ pub enum SessionEvent {
     /// This means either Bob corrupted their ratchet key storage, or someone is impersonating Alice.
     /// The application should attempt to warn the user of this fact.
     DowngradedRatchetKey,
-
 }

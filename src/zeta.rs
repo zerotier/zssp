@@ -18,32 +18,9 @@ use crate::symmetric_state::SymmetricState;
 #[cfg(feature = "logging")]
 use crate::LogEvent::*;
 
-/// Create a 96-bit AES-GCM nonce.
-///
-/// The primary information that we want to be contained here is the counter and the
-/// packet type. The former makes this unique and the latter's inclusion authenticates
-/// it as effectively AAD. Other elements of the header are either not authenticated,
-/// like fragmentation info, or their authentication is implied via key exchange like
-/// the key id.
-///
-/// Corresponds to Figure 10 found in Section 4.3.
-pub(crate) fn to_nonce(packet_type: u8, counter: u64) -> [u8; AES_GCM_NONCE_SIZE] {
-    let mut ret = [0u8; AES_GCM_NONCE_SIZE];
-    ret[3] = packet_type;
-    // Noise requires a big endian counter at the end of the Nonce
-    ret[4..].copy_from_slice(&counter.to_be_bytes());
-    ret
-}
-/// Corresponds to Figure 10 and Figure 14 found in Section 4.3.
-pub(crate) fn from_nonce(n: &[u8]) -> (u8, u64) {
-    assert!(n.len() >= PACKET_NONCE_SIZE);
-    let c_start = n.len() - 8;
-    (n[c_start - 1], u64::from_be_bytes(n[c_start..].try_into().unwrap()))
-}
-
 /// Corresponds to the Zeta State Machine found in Section 4.1.
 pub(crate) struct Zeta<App: ApplicationLayer> {
-    ctx: Weak<ContextInner<App>>,
+    pub ctx: Weak<ContextInner<App>>,
     /// An arbitrary application defined object associated with each session.
     pub session_data: App::SessionData,
     /// Is true if the local peer acted as Bob, the responder in the initial key exchange.
@@ -156,6 +133,28 @@ impl<App: ApplicationLayer> SymmetricState<App> {
     }
 }
 
+/// Create a 96-bit AES-GCM nonce.
+///
+/// The primary information that we want to be contained here is the counter and the
+/// packet type. The former makes this unique and the latter's inclusion authenticates
+/// it as effectively AAD. Other elements of the header are either not authenticated,
+/// like fragmentation info, or their authentication is implied via key exchange like
+/// the key id.
+///
+/// Corresponds to Figure 10 found in Section 4.3.
+pub(crate) fn to_nonce(packet_type: u8, counter: u64) -> [u8; AES_GCM_NONCE_SIZE] {
+    let mut ret = [0u8; AES_GCM_NONCE_SIZE];
+    ret[3] = packet_type;
+    // Noise requires a big endian counter at the end of the Nonce
+    ret[4..].copy_from_slice(&counter.to_be_bytes());
+    ret
+}
+/// Corresponds to Figure 10 and Figure 14 found in Section 4.3.
+pub(crate) fn from_nonce(n: &[u8]) -> (u8, u64) {
+    assert!(n.len() >= PACKET_NONCE_SIZE);
+    let c_start = n.len() - 8;
+    (n[c_start - 1], u64::from_be_bytes(n[c_start..].try_into().unwrap()))
+}
 /// Generate a random local key id that is currently unused.
 fn gen_kid<T>(session_map: &HashMap<NonZeroU32, T>, rng: &mut impl RngCore) -> NonZeroU32 {
     loop {
@@ -165,6 +164,22 @@ fn gen_kid<T>(session_map: &HashMap<NonZeroU32, T>, rng: &mut impl RngCore) -> N
             }
         }
     }
+}
+fn remap<App: ApplicationLayer>(
+    session: &Arc<Session<App>>,
+    zeta: &Zeta<App>,
+    rng: &RefCell<App::Rng>,
+    session_map: &SessionMap<App>,
+) -> NonZeroU32 {
+    let mut session_map = session_map.borrow_mut();
+    let weak = if let Some(Some(weak)) = zeta.key_ref(true).recv.kid.as_ref().map(|kid| session_map.remove(kid)) {
+        weak
+    } else {
+        Arc::downgrade(&session)
+    };
+    let new_kid_recv = gen_kid(session_map.deref(), rng.borrow_mut().deref_mut());
+    session_map.insert(new_kid_recv, weak);
+    new_kid_recv
 }
 
 impl<App: ApplicationLayer> Zeta<App> {
@@ -447,7 +462,7 @@ pub(crate) fn received_x1_trans<App: ApplicationLayer>(
     noise.encrypt_and_hash_in_place(to_nonce(PACKET_TYPE_HANDSHAKE_RESPONSE, 0), i, &mut x2);
 
     let i = x2.len();
-    let mut c = 0u64.to_be_bytes();
+    let mut c = [0u8; 8];
     c[5] = x2[i - 3];
     c[6] = x2[i - 2];
     c[7] = x2[i - 1];
@@ -992,22 +1007,6 @@ pub(crate) fn service<App: ApplicationLayer>(
 
         send_control(zeta, p, control_payload, send);
     }
-}
-fn remap<App: ApplicationLayer>(
-    session: &Arc<Session<App>>,
-    zeta: &Zeta<App>,
-    rng: &RefCell<App::Rng>,
-    session_map: &SessionMap<App>,
-) -> NonZeroU32 {
-    let mut session_map = session_map.borrow_mut();
-    let weak = if let Some(Some(weak)) = zeta.key_ref(true).recv.kid.as_ref().map(|kid| session_map.remove(kid)) {
-        weak
-    } else {
-        Arc::downgrade(&session)
-    };
-    let new_kid_recv = gen_kid(session_map.deref(), rng.borrow_mut().deref_mut());
-    session_map.insert(new_kid_recv, weak);
-    new_kid_recv
 }
 /// Corresponds to the timeout timer Transition Algorithm described in Section 4.1 - Definition 3.
 fn timeout_trans<App: ApplicationLayer>(
