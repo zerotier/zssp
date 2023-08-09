@@ -580,7 +580,7 @@ pub(crate) fn received_x2_trans<App: ApplicationLayer>(
     n: &[u8; AES_GCM_NONCE_SIZE],
     x2: &mut [u8],
     send: impl FnOnce(&mut [u8], Option<&App::PrpEnc>),
-) -> Result<(), ReceiveError<App::StorageError>> {
+) -> Result<bool, ReceiveError<App::StorageError>> {
     use FaultType::*;
     //    <- e, ee, ekem1, psk
     //    -> s, se
@@ -600,6 +600,7 @@ pub(crate) fn received_x2_trans<App: ApplicationLayer>(
     if c >= COUNTER_WINDOW_MAX_SKIP_AHEAD || &n[AES_GCM_NONCE_SIZE - 3..] != &x2[x2.len() - 3..] {
         return Err(byzantine_fault!(FailedAuth, true));
     }
+    let mut should_warn_missing_ratchet = false;
     let mut result = (|| {
         let a1 = if let ZetaAutomata::A1(a1) = &state.beta {
             a1
@@ -672,7 +673,7 @@ pub(crate) fn received_x2_trans<App: ApplicationLayer>(
             chain_len = 0;
             result = test_ratchet_key(&[0u8; RATCHET_SIZE]);
             if result.is_some() {
-                // TODO: add some kind of warning callback or signal.
+                should_warn_missing_ratchet = true;
             }
         }
 
@@ -768,7 +769,7 @@ pub(crate) fn received_x2_trans<App: ApplicationLayer>(
         Ok(ref mut packet) => send(packet, Some(&session.state.read().unwrap().hk_send)),
         _ => {}
     }
-    result.map(|_| ())
+    result.map(|_| should_warn_missing_ratchet)
 }
 fn send_control<App: ApplicationLayer, const CAP: usize>(
     session: &Arc<Session<App>>,
@@ -800,7 +801,7 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
     kid: NonZeroU32,
     x3: &mut [u8],
     send: impl FnOnce(&mut [u8], Option<&App::PrpEnc>),
-) -> Result<Arc<Session<App>>, ReceiveError<App::StorageError>> {
+) -> Result<(Arc<Session<App>>, bool), ReceiveError<App::StorageError>> {
     use FaultType::*;
     //    -> s, se
     if x3.len() < HANDSHAKE_COMPLETION_MIN_SIZE {
@@ -868,9 +869,11 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
         match result {
             Ok(rss) => {
                 let RatchetStates { state1, state2 } = rss.unwrap_or_default();
+                let mut should_warn_missing_ratchet = false;
+
                 if (&zeta.ratchet_state != &state1) & (Some(&zeta.ratchet_state) != state2.as_ref()) {
                     if !responder_disallows_downgrade && zeta.ratchet_state.fingerprint().is_none() {
-                        // TODO: add some kind of warning callback or signal.
+                        should_warn_missing_ratchet = true;
                     } else {
                         if !responder_silently_rejects {
                             send(&mut create_reject(), Some(&App::PrpEnc::new(&zeta.hk_send)))
@@ -963,7 +966,7 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
                 send_control(&session, &state, PACKET_TYPE_KEY_CONFIRM, c1, send);
                 drop(state);
 
-                Ok(session)
+                Ok((session, should_warn_missing_ratchet))
             }
             Err(e) => Err(ReceiveError::StorageError(e)),
         }
@@ -1650,30 +1653,27 @@ pub(crate) fn send_payload<App: ApplicationLayer>(
     ctx: &Arc<ContextInner<App>>,
     session: &Arc<Session<App>>,
     payload: &[u8],
-    mut send: impl FnMut(&[u8]) -> bool,
+    mut send: impl FnMut(&mut [u8]) -> bool,
     mtu_sized_buffer: &mut [u8],
 ) -> Result<(), SendError> {
     use SendError::*;
     let mtu = mtu_sized_buffer.len();
     if mtu < MIN_TRANSPORT_MTU {
-        return Err(InvalidParameter);
+        return Err(MtuTooSmall);
     }
 
     let state = session.state.read().unwrap();
-    if matches!(&state.beta, ZetaAutomata::Null) {
-        return Err(SessionExpired);
-    }
-    if !matches!(
-        &state.beta,
-        ZetaAutomata::S1 | ZetaAutomata::S2 | ZetaAutomata::R1 { .. } | ZetaAutomata::R2 { .. }
-    ) {
-        return Err(SessionNotEstablished);
-    }
     let (c, should_rekey) = get_counter(session, &state).ok_or(SessionExpired)?;
     let nonce = to_nonce(PACKET_TYPE_DATA, c);
 
     let key = state.key_ref(false);
-    let mut cipher = key.nk.as_ref().unwrap().start_enc(&nonce);
+    let kid_send = key.send.kid.ok_or(SessionNotEstablished)?.get().to_be_bytes();
+    let mut cipher = key.nk.as_ref().ok_or(SessionNotEstablished)?.start_enc(&nonce);
+
+    debug_assert!(matches!(
+        &state.beta,
+        ZetaAutomata::S1 | ZetaAutomata::S2 | ZetaAutomata::R1 { .. } | ZetaAutomata::R2 { .. }
+    ));
 
     let payload_mtu = mtu - HEADER_SIZE;
     debug_assert!(payload_mtu >= 4);
@@ -1683,7 +1683,7 @@ pub(crate) fn send_payload<App: ApplicationLayer>(
     let fragment_size_remainder = tagged_payload_len % fragment_count;
 
     let mut header = [0u8; HEADER_SIZE];
-    header[..KID_SIZE].copy_from_slice(&key.send.kid.unwrap().get().to_be_bytes());
+    header[..KID_SIZE].copy_from_slice(&kid_send);
     header[FRAGMENT_COUNT_IDX] = fragment_count as u8;
     header[PACKET_NONCE_START..].copy_from_slice(&nonce[NONCE_SIZE_DIFF..]);
 
@@ -1705,7 +1705,7 @@ pub(crate) fn send_payload<App: ApplicationLayer>(
                 .unwrap(),
         );
 
-        if !send(&mtu_sized_buffer[..HEADER_SIZE + fragment_len]) {
+        if !send(&mut mtu_sized_buffer[..HEADER_SIZE + fragment_len]) {
             return Ok(());
         }
         i = j;
@@ -1729,7 +1729,7 @@ pub(crate) fn send_payload<App: ApplicationLayer>(
             .unwrap(),
     );
 
-    if !send(&mtu_sized_buffer[..HEADER_SIZE + fragment_len]) {
+    if !send(&mut mtu_sized_buffer[..HEADER_SIZE + fragment_len]) {
         return Ok(());
     }
 

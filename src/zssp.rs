@@ -338,7 +338,7 @@ impl<App: ApplicationLayer> Context<App> {
                     match packet_type {
                         PACKET_TYPE_HANDSHAKE_RESPONSE => {
                             log!(app, ReceivedRawX2);
-                            received_x2_trans(
+                            let should_warn_missing_ratchet = received_x2_trans(
                                 &app,
                                 ctx,
                                 &session,
@@ -348,11 +348,15 @@ impl<App: ApplicationLayer> Context<App> {
                                 send_associated,
                             )?;
                             log!(app, X2IsAuthSentX3(&session));
-                            SessionEvent::Control
+                            if should_warn_missing_ratchet {
+                                SessionEvent::DowngradedRatchetKey
+                            } else {
+                                SessionEvent::Control
+                            }
                         }
                         PACKET_TYPE_KEY_CONFIRM => {
                             log!(app, ReceivedRawKeyConfirm);
-                            let result = received_c1_trans(
+                            let just_established = received_c1_trans(
                                 &app,
                                 ctx,
                                 &session,
@@ -362,7 +366,7 @@ impl<App: ApplicationLayer> Context<App> {
                                 send_associated,
                             )?;
                             log!(app, KeyConfirmIsAuthSentAck(&session));
-                            if result {
+                            if just_established {
                                 SessionEvent::Established
                             } else {
                                 SessionEvent::Control
@@ -466,11 +470,19 @@ impl<App: ApplicationLayer> Context<App> {
                     }
 
                     log!(app, ReceivedRawX3);
-                    let session = received_x3_trans(&app, ctx, zeta, kid_recv, assembled_packet, |packet, hk_send| {
-                        send_with_fragmentation(send_unassociated_reply, send_unassociated_mtu, packet, hk_send);
-                    })?;
+                    let (session, should_warn_missing_ratchet) =
+                        received_x3_trans(&app, ctx, zeta, kid_recv, assembled_packet, |packet, hk_send| {
+                            send_with_fragmentation(send_unassociated_reply, send_unassociated_mtu, packet, hk_send);
+                        })?;
                     log!(app, X3IsAuthSentKeyConfirm(&session));
-                    Ok(ReceiveOk::Session(session, SessionEvent::NewSession))
+                    Ok(ReceiveOk::Session(
+                        session,
+                        if should_warn_missing_ratchet {
+                            SessionEvent::NewDowngradedSession
+                        } else {
+                            SessionEvent::NewSession
+                        },
+                    ))
                 } else {
                     // This can occur naturally because either Bob's incoming_sessions cache got
                     // full so Alice's incoming session was dropped, or the session this packet
@@ -604,7 +616,7 @@ impl<App: ApplicationLayer> Context<App> {
     pub fn send(
         &self,
         session: &Arc<Session<App>>,
-        send: impl FnMut(&[u8]) -> bool,
+        send: impl FnMut(&mut [u8]) -> bool,
         mtu_sized_buffer: &mut [u8],
         data: &[u8],
     ) -> Result<(), SendError> {

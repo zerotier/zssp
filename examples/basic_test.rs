@@ -195,9 +195,8 @@ fn alice_main(
                                 assert!(!output_data.is_empty());
                                 //println!("[alice] received {}", data.len());
                             }
-                            NewSession => panic!(),
-                            Rejected => panic!(),
                             Control => (),
+                            _ => panic!(),
                         },
                         Err(e) => {
                             println!("[alice] ERROR {:?}", e);
@@ -206,8 +205,8 @@ fn alice_main(
                             }
                         }
                     }
-                //} else if OsRng.next_u32() | 1 > 0 {
-                //    let _ = recursive_out.send(pkt);
+                    //} else if OsRng.next_u32() | 1 > 0 {
+                    //    let _ = recursive_out.send(pkt);
                 }
             } else {
                 break;
@@ -278,7 +277,7 @@ fn bob_main(
                 ) {
                     Ok(Unassociated) => {}
                     Ok(Session(s, event)) => match event {
-                        NewSession => {
+                        NewSession | NewDowngradedSession => {
                             println!("[bob] new session, took {}s", current_time as f32 / 1000.0);
                             let _ = bob_session.replace(s);
                         }
@@ -295,9 +294,8 @@ fn bob_main(
                                 )
                                 .unwrap();
                         }
-                        Established => panic!(),
-                        Rejected => panic!(),
                         Control => (),
+                        _ => panic!(),
                     },
                     Err(e) => {
                         println!("[bob] ERROR {:?}", e);
@@ -306,8 +304,8 @@ fn bob_main(
                         }
                     }
                 }
-            //} else if OsRng.next_u32() | 1 > 0 {
-            //    let _ = recursive_out.try_send(pkt);
+                //} else if OsRng.next_u32() | 1 > 0 {
+                //    let _ = recursive_out.try_send(pkt);
             }
         }
 

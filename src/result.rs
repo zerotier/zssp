@@ -19,12 +19,14 @@ pub enum OpenError<IoError> {
 /// Depending on the error type trying again may not work.
 #[derive(Debug, PartialEq, Eq, Clone, Hash)]
 pub enum SendError {
-    /// An invalid parameter was supplied to the function.
-    InvalidParameter,
+    /// An invalid mtu was supplied to the function. The MTU can be no smaller than 128 bytes.
+    MtuTooSmall,
 
     /// The session has been marked as expired and refuses to send data.
     /// Several components of ZSSP can cause this to occur, but the most likely situation to be seen
     /// in practice is where rekeying repeatedly fails due to exceedingly bad network conditions.
+    ///
+    /// The user can also explicitly cause this to occur by manually calling `expire` on a session.
     ///
     /// The associated session will no longer send or receive data and must be immediately dropped.
     SessionExpired,
@@ -144,6 +146,7 @@ pub enum SessionEvent {
     /// If the session Arc returned is dropped, the session with this peer will be immediately
     /// terminated. Save the session Arc to some long lived datastructure to keep it alive.
     NewSession,
+    NewDowngradedSession,
     /// When Alice calls `Context::open`, a session will be created, but Bob will not yet have
     /// received this session. They will have to successfully complete a handshake first.
     ///
@@ -164,4 +167,5 @@ pub enum SessionEvent {
     Data,
     /// The received packet was some authentic protocol control packet. No action needs to be taken.
     Control,
+    DowngradedRatchetKey,
 }
