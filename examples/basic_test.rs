@@ -19,11 +19,11 @@ use rand_core::OsRng;
 use rand_core::RngCore;
 
 use zssp_proto::application::{
-    AcceptAction, ApplicationLayer, RatchetState, RatchetStates, RatchetUpdate, Settings, RATCHET_SIZE, CryptoLayer,
+    AcceptAction, ApplicationLayer, CryptoLayer, RatchetState, RatchetStates, RatchetUpdate, Settings, RATCHET_SIZE,
 };
 use zssp_proto::crypto::P384KeyPair;
 use zssp_proto::crypto_impl::{
-    Aes256Crate, AesGcmCrate, RustKyber1024PrivateKey, P384CrateKeyPair, P384CratePublicKey, Sha512Crate,
+    Aes256Crate, AesGcmCrate, Kyber1024CratePrivateKey, P384CrateKeyPair, P384CratePublicKey, Sha512Crate,
 };
 use zssp_proto::Session;
 
@@ -61,7 +61,7 @@ impl CryptoLayer for TestApplication {
     type Hash = Sha512Crate;
     type PublicKey = P384CratePublicKey;
     type KeyPair = P384CrateKeyPair;
-    type Kem = RustKyber1024PrivateKey;
+    type Kem = Kyber1024CratePrivateKey;
 
     type SessionData = u128;
 }
@@ -77,7 +77,11 @@ impl ApplicationLayer for &mut TestApplication {
         true
     }
 
-    fn check_accept_session(&mut self, remote_static_key: &P384CratePublicKey, identity: &[u8]) -> AcceptAction<TestApplication> {
+    fn check_accept_session(
+        &mut self,
+        remote_static_key: &P384CratePublicKey,
+        identity: &[u8],
+    ) -> AcceptAction<TestApplication> {
         AcceptAction {
             session_data: Some(1),
             responder_disallows_downgrade: true,
@@ -305,7 +309,8 @@ fn bob_main(
         }
 
         if current_time >= next_service {
-            next_service = current_time + context.service(&mut bob_app, |_| Some((|b| bob_out.send(b).is_ok(), TEST_MTU)));
+            next_service =
+                current_time + context.service(&mut bob_app, |_| Some((|b| bob_out.send(b).is_ok(), TEST_MTU)));
         }
     }
 }
@@ -321,11 +326,7 @@ fn core(time: u64, packet_success_rate: u32) {
     };
     let bob_keypair = P384CrateKeyPair::generate(&mut OsRng);
     let bob_pubkey = bob_keypair.public_key();
-    let bob_app = TestApplication {
-        time: Instant::now(),
-        name: "bob",
-        ratchets: Ratchets::new(),
-    };
+    let bob_app = TestApplication { time: Instant::now(), name: "bob", ratchets: Ratchets::new() };
 
     let (alice_out, bob_in) = mpsc::sync_channel::<Vec<u8>>(256);
     let (bob_out, alice_in) = mpsc::sync_channel::<Vec<u8>>(256);

@@ -183,7 +183,11 @@ pub trait ApplicationLayer: Sized {
     /// To prevent desync, if this function specifies that we should connect, no other open session
     /// with the same remote peer must exist. Drop or call expire on any pre-existing sessions
     /// before returning.
-    fn check_accept_session(&mut self, remote_static_key: &<Self::Crypto as CryptoLayer>::PublicKey, identity: &[u8]) -> AcceptAction<Self::Crypto>;
+    fn check_accept_session(
+        &mut self,
+        remote_static_key: &<Self::Crypto as CryptoLayer>::PublicKey,
+        identity: &[u8],
+    ) -> AcceptAction<Self::Crypto>;
 
     /// Lookup a specific ratchet state based on its ratchet fingerprint.
     /// This function will be called whenever Alice attempts to connect to us with a non-empty
@@ -241,7 +245,8 @@ pub trait ApplicationLayer: Sized {
     /// These are provided for debugging, logging or metrics purposes, and must be used for
     /// nothing else. Do not base protocol-level decisions upon the events passed to this function.
     #[cfg(feature = "logging")]
-    fn event_log(&mut self, event: LogEvent<'_, Self::Crypto>);
+    #[allow(unused)]
+    fn event_log(&mut self, event: LogEvent<'_, Self::Crypto>) {}
 }
 
 /// A collection of fields specifying how to complete the key exchange with a specific remote peer,

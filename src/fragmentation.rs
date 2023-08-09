@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use zeroize::Zeroizing;
 
-use crate::application::{CryptoLayer, ApplicationLayer};
+use crate::application::{ApplicationLayer, CryptoLayer};
 use crate::crypto::{Aes256Prp, AES_256_KEY_SIZE};
 use crate::proto::*;
 use crate::result::{byzantine_fault, ReceiveError};
