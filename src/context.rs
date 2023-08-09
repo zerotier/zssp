@@ -101,7 +101,10 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
         static_remote_key: Crypto::PublicKey,
         session_data: Crypto::SessionData,
         identity: Vec<u8>,
-    ) -> Result<Arc<Session<Crypto>>, OpenError<App::StorageError>> where App: ApplicationLayer<Crypto = Crypto>{
+    ) -> Result<Arc<Session<Crypto>>, OpenError<App::StorageError>>
+    where
+        App: ApplicationLayer<Crypto = Crypto>,
+    {
         mtu = mtu.max(MIN_TRANSPORT_MTU);
         if identity.len() > IDENTITY_MAX_SIZE {
             return Err(OpenError::IdentityTooLarge);
@@ -138,7 +141,10 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
         send_to: impl FnOnce(&Arc<Session<Crypto>>) -> Option<(SendFn, usize)>,
         remote_address: &impl Hash,
         raw_fragment: Vec<u8>,
-    ) -> Result<ReceiveOk<Crypto>, ReceiveError<App::StorageError>> where App: ApplicationLayer<Crypto = Crypto> {
+    ) -> Result<ReceiveOk<Crypto>, ReceiveError<App::StorageError>>
+    where
+        App: ApplicationLayer<Crypto = Crypto>,
+    {
         use crate::result::FaultType::*;
         send_unassociated_mtu = send_unassociated_mtu.max(MIN_TRANSPORT_MTU);
         let ctx = &self.0;
@@ -201,7 +207,12 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                     let (p, _) = from_nonce(&pn);
                     let ret = match p {
                         PACKET_TYPE_DATA => {
-                            received_payload_in_place::<App>(&mut zeta, kid_recv, to_aes_nonce(&pn), &mut assembled_packet)?;
+                            received_payload_in_place::<App>(
+                                &mut zeta,
+                                kid_recv,
+                                to_aes_nonce(&pn),
+                                &mut assembled_packet,
+                            )?;
                             SessionEvent::Data(assembled_packet)
                         }
                         PACKET_TYPE_HANDSHAKE_RESPONSE => {
@@ -334,11 +345,12 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                             },
                         )?;
                         log!(app, X3IsAuthSentKeyConfirm(&session));
-                        Ok(ReceiveOk::Session(session, if should_warn_missing_ratchet {
+                        let ret = if should_warn_missing_ratchet {
                             SessionEvent::NewDowngradedSession
                         } else {
                             SessionEvent::NewSession
-                        }))
+                        };
+                        Ok(ReceiveOk::Session(session, ret))
                     } else {
                         Ok(ReceiveOk::Unassociated)
                     }
@@ -478,7 +490,10 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
         &mut self,
         mut app: App,
         mut send_to: impl FnMut(&Arc<Session<Crypto>>) -> Option<(SendFn, usize)>,
-    ) -> i64 where App: ApplicationLayer<Crypto = Crypto> {
+    ) -> i64
+    where
+        App: ApplicationLayer<Crypto = Crypto>,
+    {
         let ctx = &self.0;
         let sessions = ctx.sessions.borrow_mut();
         let current_time = app.time();

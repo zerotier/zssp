@@ -7,7 +7,7 @@ use std::sync::{Arc, Weak};
 use rand_core::RngCore;
 use zeroize::Zeroizing;
 
-use crate::application::{ApplicationLayer, RatchetState, RatchetStates, RatchetUpdate, CryptoLayer};
+use crate::application::{ApplicationLayer, CryptoLayer, RatchetState, RatchetStates, RatchetUpdate};
 use crate::challenge::{gen_null_response, respond_to_challenge_in_place};
 use crate::context::{log, ContextInner, SessionMap};
 use crate::crypto::*;
@@ -700,8 +700,8 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
     if !noise.decrypt_and_hash_in_place(to_nonce(PACKET_TYPE_HANDSHAKE_COMPLETION, 1), &mut x3[i..j], tag) {
         return Err(byzantine_fault!(FailedAuth, true));
     }
-    let s_remote =
-        <App::Crypto as CryptoLayer>::PublicKey::from_bytes((&x3[i..j]).try_into().unwrap()).ok_or(byzantine_fault!(FailedAuth, true))?;
+    let s_remote = <App::Crypto as CryptoLayer>::PublicKey::from_bytes((&x3[i..j]).try_into().unwrap())
+        .ok_or(byzantine_fault!(FailedAuth, true))?;
     i = k;
     // Process message pattern 3 se token.
     noise
@@ -888,7 +888,10 @@ pub(crate) fn received_c1_trans<App: ApplicationLayer>(
             zeta.ratchet_state2 = None;
             zeta.key_index ^= true;
             let r = rng.borrow_mut().next_u64() % <App::Crypto as CryptoLayer>::SETTINGS.rekey_time_max_jitter;
-            zeta.timeout_timer = app.time() + <App::Crypto as CryptoLayer>::SETTINGS.rekey_after_time.saturating_sub(r) as i64;
+            zeta.timeout_timer = app.time()
+                + <App::Crypto as CryptoLayer>::SETTINGS
+                    .rekey_after_time
+                    .saturating_sub(r) as i64;
             zeta.resend_timer = i64::MAX;
             zeta.beta = ZetaAutomata::S2;
         }
@@ -925,7 +928,13 @@ pub(crate) fn received_c2_trans<App: ApplicationLayer>(
     }
 
     let tag = c2[..].try_into().unwrap();
-    if !<App::Crypto as CryptoLayer>::Aead::decrypt_in_place(zeta.key_ref(false).recv.kek.as_ref().unwrap(), &n, None, &mut [], tag) {
+    if !<App::Crypto as CryptoLayer>::Aead::decrypt_in_place(
+        zeta.key_ref(false).recv.kek.as_ref().unwrap(),
+        &n,
+        None,
+        &mut [],
+        tag,
+    ) {
         return Err(byzantine_fault!(FailedAuth, true));
     }
     let (_, c) = from_nonce(&n);
@@ -934,7 +943,10 @@ pub(crate) fn received_c2_trans<App: ApplicationLayer>(
     }
 
     let r = rng.borrow_mut().next_u64() % <App::Crypto as CryptoLayer>::SETTINGS.rekey_time_max_jitter;
-    zeta.timeout_timer = app.time() + <App::Crypto as CryptoLayer>::SETTINGS.rekey_after_time.saturating_sub(r) as i64;
+    zeta.timeout_timer = app.time()
+        + <App::Crypto as CryptoLayer>::SETTINGS
+            .rekey_after_time
+            .saturating_sub(r) as i64;
     zeta.resend_timer = i64::MAX;
     zeta.beta = ZetaAutomata::S2;
     Ok(())
@@ -957,7 +969,13 @@ pub(crate) fn received_d_trans<App: ApplicationLayer>(
     }
 
     let tag = d[..].try_into().unwrap();
-    if !<App::Crypto as CryptoLayer>::Aead::decrypt_in_place(zeta.key_ref(true).recv.kek.as_ref().unwrap(), &n, None, &mut [], tag) {
+    if !<App::Crypto as CryptoLayer>::Aead::decrypt_in_place(
+        zeta.key_ref(true).recv.kek.as_ref().unwrap(),
+        &n,
+        None,
+        &mut [],
+        tag,
+    ) {
         return Err(byzantine_fault!(FailedAuth, true));
     }
     let (_, c) = from_nonce(&n);
