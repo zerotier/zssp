@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use zeroize::Zeroizing;
 
-use crate::application::ApplicationLayer;
+use crate::application::{CryptoLayer, ApplicationLayer};
 use crate::crypto::{Aes256Prp, AES_256_KEY_SIZE};
 use crate::proto::*;
 use crate::result::{byzantine_fault, ReceiveError};
@@ -28,7 +28,7 @@ fn create_fragment_header(
 }
 
 /// Corresponds to the fragmentation algorithm described in Section 6.
-pub fn send_with_fragmentation<App: ApplicationLayer>(
+pub fn send_with_fragmentation<Crypto: CryptoLayer>(
     mut send: impl FnMut(Vec<u8>) -> bool,
     mtu: usize,
     identifier: u32,
@@ -52,7 +52,7 @@ pub fn send_with_fragmentation<App: ApplicationLayer>(
         fragment.extend(&packet[i..j]);
 
         if let Some(hk_send) = hk_send {
-            App::Prp::encrypt_in_place(
+            Crypto::Prp::encrypt_in_place(
                 hk_send,
                 (&mut fragment[HEADER_AUTH_START..HEADER_AUTH_END]).try_into().unwrap(),
             );
@@ -95,7 +95,7 @@ impl DefragBuffer {
         }
 
         if let Some(hk_recv) = self.hk_recv.as_ref() {
-            App::Prp::decrypt_in_place(
+            <App::Crypto as CryptoLayer>::Prp::decrypt_in_place(
                 hk_recv,
                 (&mut raw_fragment[HEADER_AUTH_START..HEADER_AUTH_END])
                     .try_into()
@@ -115,7 +115,7 @@ impl DefragBuffer {
             return Err(e);
         }
 
-        let expiration_time = current_time + App::SETTINGS.fragment_assembly_timeout as i64;
+        let expiration_time = current_time + App::Crypto::SETTINGS.fragment_assembly_timeout as i64;
         let mut map = self.fragment_map.borrow_mut();
         match map.entry(n) {
             Entry::Occupied(mut entry) => {
@@ -157,7 +157,7 @@ impl DefragBuffer {
         }
     }
 
-    pub fn service<App: ApplicationLayer>(&self, current_time: i64) {
+    pub fn service(&self, current_time: i64) {
         let mut map = self.fragment_map.borrow_mut();
         map.retain(|_, buffer| buffer.expiration_time < current_time);
     }

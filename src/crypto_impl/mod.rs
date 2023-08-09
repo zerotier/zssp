@@ -27,3 +27,38 @@ pub use p384;
 pub use pqc_kyber;
 #[cfg(feature = "sha2")]
 pub use sha2;
+
+/*
+TODO: wrangle the feature flags so we can provide the default set of crypto implementations below.
+use crate::application::{Settings, CryptoLayer};
+#[cfg(feature = "default")]
+pub trait CrateCryptoLayer {
+    /// These are constants that can be redefined from their defaults to change rekey
+    /// and negotiation timeout behavior. If two sides of a ZSSP session have different constants,
+    /// the protocol will tend to default to the smaller constants.
+    const SETTINGS: Settings = Settings::new_ms();
+
+    /// A user-defined error returned when the `ApplicationLayer` fails to access persistent storage
+    /// for a peer's ratchet states.
+    type StorageError: std::error::Error;
+
+    /// An arbitrary opaque object for use by the application that is attached to each session.
+    type SessionData;
+}
+
+use rand_core::OsRng;
+#[cfg(feature = "default")]
+impl<Crypto: CrateCryptoLayer> CryptoLayer for Crypto {
+    type Rng = OsRng;
+    type Prp = Aes256Crate;
+    type Aead = AesGcmCrate;
+    type Hash = Sha512Crate;
+    type PublicKey = P384CratePublicKey;
+    type KeyPair = P384CrateKeyPair;
+    type Kem = RustKyber1024PrivateKey;
+
+    type StorageError = Crypto::StorageError;
+
+    type SessionData = Crypto::SessionData;
+}
+ */

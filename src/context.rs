@@ -6,7 +6,7 @@ use std::hash::Hash;
 use std::num::NonZeroU32;
 use std::sync::{Arc, Weak};
 
-use crate::application::ApplicationLayer;
+use crate::application::{ApplicationLayer, CryptoLayer};
 use crate::challenge::ChallengeContext;
 use crate::crypto::{AES_256_KEY_SIZE, AES_GCM_NONCE_SIZE};
 use crate::fragmentation::{send_with_fragmentation, DefragBuffer};
@@ -31,21 +31,21 @@ pub(crate) use log;
 /// defragment incoming packets that are not yet associated with a session.
 ///
 /// Internally this is just a clonable Arc, so it can be safely shared with multiple threads.
-pub struct Context<App: ApplicationLayer>(Arc<ContextInner<App>>);
-impl<App: ApplicationLayer> Clone for Context<App> {
+pub struct Context<Crypto: CryptoLayer>(Arc<ContextInner<Crypto>>);
+impl<Crypto: CryptoLayer> Clone for Context<Crypto> {
     fn clone(&self) -> Self {
         Self(self.0.clone())
     }
 }
 
-pub(crate) type SessionMap<App> = RefCell<HashMap<NonZeroU32, Weak<Session<App>>>>;
+pub(crate) type SessionMap<Crypto> = RefCell<HashMap<NonZeroU32, Weak<Session<Crypto>>>>;
 
-pub(crate) struct ContextInner<App: ApplicationLayer> {
-    pub(crate) rng: RefCell<App::Rng>,
-    pub(crate) s_secret: App::KeyPair,
-    pub(crate) session_map: SessionMap<App>,
-    pub(crate) sessions: RefCell<HashMap<*const Session<App>, Weak<Session<App>>>>,
-    pub(crate) b2_map: RefCell<HashMap<NonZeroU32, StateB2<App>>>,
+pub(crate) struct ContextInner<Crypto: CryptoLayer> {
+    pub(crate) rng: RefCell<Crypto::Rng>,
+    pub(crate) s_secret: Crypto::KeyPair,
+    pub(crate) session_map: SessionMap<Crypto>,
+    pub(crate) sessions: RefCell<HashMap<*const Session<Crypto>, Weak<Session<Crypto>>>>,
+    pub(crate) b2_map: RefCell<HashMap<NonZeroU32, StateB2<Crypto>>>,
 
     hello_defrag: RefCell<DefragBuffer>,
     challenge: RefCell<ChallengeContext>,
@@ -62,9 +62,9 @@ fn to_packet_nonce(n: &[u8; AES_GCM_NONCE_SIZE]) -> &[u8; PACKET_NONCE_SIZE] {
     (&n[n.len() - PACKET_NONCE_SIZE..]).try_into().unwrap()
 }
 
-impl<App: ApplicationLayer> Context<App> {
+impl<Crypto: CryptoLayer> Context<Crypto> {
     /// Create a new session context.
-    pub fn new(static_secret_key: App::KeyPair, mut rng: App::Rng) -> Self {
+    pub fn new(static_secret_key: Crypto::KeyPair, mut rng: Crypto::Rng) -> Self {
         let challenge = ChallengeContext::new(&mut rng);
         Self(Arc::new(ContextInner {
             rng: RefCell::new(rng),
@@ -93,15 +93,15 @@ impl<App: ApplicationLayer> Context<App> {
     ///   object
     /// * `identity` - Payload to be sent to Bob that contains the information necessary
     ///   for the upper protocol to authenticate and approve of Alice's identity
-    pub fn open(
+    pub fn open<App: ApplicationLayer>(
         &mut self,
         app: App,
         send: impl FnMut(Vec<u8>) -> bool,
         mut mtu: usize,
-        static_remote_key: App::PublicKey,
-        session_data: App::SessionData,
+        static_remote_key: Crypto::PublicKey,
+        session_data: Crypto::SessionData,
         identity: Vec<u8>,
-    ) -> Result<Arc<Session<App>>, OpenError<App::StorageError>> {
+    ) -> Result<Arc<Session<Crypto>>, OpenError<App::StorageError>> where App: ApplicationLayer<Crypto = Crypto>{
         mtu = mtu.max(MIN_TRANSPORT_MTU);
         if identity.len() > IDENTITY_MAX_SIZE {
             return Err(OpenError::IdentityTooLarge);
@@ -111,13 +111,13 @@ impl<App: ApplicationLayer> Context<App> {
         // Process zeta layer.
         trans_to_a1(
             app,
-            &ctx,
+            ctx,
             static_remote_key,
             session_data,
             identity,
             |Packet(kid, nonce, payload): &Packet| {
                 // Process fragmentation layer.
-                send_with_fragmentation::<App>(send, mtu, *kid, to_packet_nonce(&nonce), payload, None);
+                send_with_fragmentation::<Crypto>(send, mtu, *kid, to_packet_nonce(&nonce), payload, None);
             },
         )
     }
@@ -130,15 +130,15 @@ impl<App: ApplicationLayer> Context<App> {
     /// * `send_to` - Function to get senders for existing sessions, permitting MTU and path lookup
     /// * `remote_address` - Whatever the remote address is, as long as you can Hash it
     /// * `raw_fragment` - Buffer containing incoming wire packet
-    pub fn receive<SendFn: FnMut(Vec<u8>) -> bool>(
+    pub fn receive<App, SendFn: FnMut(Vec<u8>) -> bool>(
         &mut self,
         mut app: App,
         send_unassociated_reply: impl FnMut(Vec<u8>) -> bool,
         mut send_unassociated_mtu: usize,
-        send_to: impl FnOnce(&Arc<Session<App>>) -> Option<(SendFn, usize)>,
+        send_to: impl FnOnce(&Arc<Session<Crypto>>) -> Option<(SendFn, usize)>,
         remote_address: &impl Hash,
         raw_fragment: Vec<u8>,
-    ) -> Result<ReceiveOk<App>, ReceiveError<App::StorageError>> {
+    ) -> Result<ReceiveOk<Crypto>, ReceiveError<App::StorageError>> where App: ApplicationLayer<Crypto = Crypto> {
         use crate::result::FaultType::*;
         send_unassociated_mtu = send_unassociated_mtu.max(MIN_TRANSPORT_MTU);
         let ctx = &self.0;
@@ -187,7 +187,7 @@ impl<App: ApplicationLayer> Context<App> {
                         |Packet(kid, nonce, payload): &Packet, hk: Option<&[u8; AES_256_KEY_SIZE]>| {
                             if let Some((send_fragment, mut mtu)) = send_to(&session) {
                                 mtu = mtu.max(MIN_TRANSPORT_MTU);
-                                send_with_fragmentation::<App>(
+                                send_with_fragmentation::<Crypto>(
                                     send_fragment,
                                     mtu,
                                     *kid,
@@ -201,7 +201,7 @@ impl<App: ApplicationLayer> Context<App> {
                     let (p, _) = from_nonce(&pn);
                     let ret = match p {
                         PACKET_TYPE_DATA => {
-                            received_payload_in_place(&mut zeta, kid_recv, to_aes_nonce(&pn), &mut assembled_packet)?;
+                            received_payload_in_place::<App>(&mut zeta, kid_recv, to_aes_nonce(&pn), &mut assembled_packet)?;
                             SessionEvent::Data(assembled_packet)
                         }
                         PACKET_TYPE_HANDSHAKE_RESPONSE => {
@@ -286,7 +286,7 @@ impl<App: ApplicationLayer> Context<App> {
                         }
                         PACKET_TYPE_SESSION_REJECTED => {
                             log!(app, ReceivedRawD);
-                            received_d_trans(&mut zeta, kid_recv, to_aes_nonce(&pn), assembled_packet)?;
+                            received_d_trans::<App>(&mut zeta, kid_recv, to_aes_nonce(&pn), assembled_packet)?;
                             log!(app, DIsAuthClosedSession(&session));
                             SessionEvent::Rejected
                         }
@@ -323,7 +323,7 @@ impl<App: ApplicationLayer> Context<App> {
                             kid_recv,
                             assembled_packet,
                             |Packet(kid, nonce, payload), hk| {
-                                send_with_fragmentation::<App>(
+                                send_with_fragmentation::<Crypto>(
                                     send_unassociated_reply,
                                     send_unassociated_mtu,
                                     *kid,
@@ -369,7 +369,7 @@ impl<App: ApplicationLayer> Context<App> {
                     log!(app, ReceivedRawX1);
                     // Process recv challenge layer.
                     let challenge_start = assembled_packet.len() - CHALLENGE_SIZE;
-                    let result = ctx.challenge.borrow_mut().process_hello::<App::Hash>(
+                    let result = ctx.challenge.borrow_mut().process_hello::<Crypto::Hash>(
                         remote_address,
                         (&assembled_packet[challenge_start..]).try_into().unwrap(),
                     );
@@ -379,7 +379,7 @@ impl<App: ApplicationLayer> Context<App> {
                         challenge_packet.extend(&assembled_packet[..KID_SIZE]);
                         challenge_packet.extend(&challenge);
                         let nonce = to_nonce(PACKET_TYPE_CHALLENGE, ctx.rng.borrow_mut().next_u64());
-                        send_with_fragmentation::<App>(
+                        send_with_fragmentation::<Crypto>(
                             send_unassociated_reply,
                             send_unassociated_mtu,
                             0,
@@ -401,7 +401,7 @@ impl<App: ApplicationLayer> Context<App> {
                         to_aes_nonce(&n),
                         assembled_packet,
                         |Packet(kid, nonce, payload), hk| {
-                            send_with_fragmentation::<App>(
+                            send_with_fragmentation::<Crypto>(
                                 send_unassociated_reply,
                                 send_unassociated_mtu,
                                 *kid,
@@ -424,7 +424,7 @@ impl<App: ApplicationLayer> Context<App> {
                     {
                         if let Some(Some(session)) = ctx.session_map.borrow_mut().get(&kid_recv).map(|r| r.upgrade()) {
                             let mut zeta = session.0.borrow_mut();
-                            respond_to_challenge(
+                            respond_to_challenge::<App>(
                                 &mut zeta,
                                 &ctx.rng,
                                 &assembled_packet[KID_SIZE..].try_into().unwrap(),
@@ -454,7 +454,7 @@ impl<App: ApplicationLayer> Context<App> {
     /// * `payload` - Data to send
     pub fn send(
         &mut self,
-        session: &Arc<Session<App>>,
+        session: &Arc<Session<Crypto>>,
         send: impl FnMut(Vec<u8>) -> bool,
         mut mtu: usize,
         payload: Vec<u8>,
@@ -462,8 +462,8 @@ impl<App: ApplicationLayer> Context<App> {
         debug_assert_eq!(session.0.borrow().ctx.as_ptr(), Arc::as_ptr(&self.0));
         mtu = mtu.max(MIN_TRANSPORT_MTU);
         let mut zeta = session.0.borrow_mut();
-        send_payload(&mut zeta, payload, |Packet(kid, nonce, payload), hk| {
-            send_with_fragmentation::<App>(send, mtu, *kid, to_packet_nonce(nonce), &payload, hk);
+        send_payload::<Crypto>(&mut zeta, payload, |Packet(kid, nonce, payload), hk| {
+            send_with_fragmentation::<Crypto>(send, mtu, *kid, to_packet_nonce(nonce), &payload, hk);
         })
     }
 
@@ -474,11 +474,11 @@ impl<App: ApplicationLayer> Context<App> {
     /// a problem. It is completely fine to call this function more often than the returned interval.
     ///
     /// * `send_to` - Function to get a sender and an MTU to send something over an active session
-    pub fn service<SendFn: FnMut(Vec<u8>) -> bool>(
+    pub fn service<App, SendFn: FnMut(Vec<u8>) -> bool>(
         &mut self,
         mut app: App,
-        mut send_to: impl FnMut(&Arc<Session<App>>) -> Option<(SendFn, usize)>,
-    ) -> i64 {
+        mut send_to: impl FnMut(&Arc<Session<Crypto>>) -> Option<(SendFn, usize)>,
+    ) -> i64 where App: ApplicationLayer<Crypto = Crypto> {
         let ctx = &self.0;
         let sessions = ctx.sessions.borrow_mut();
         let current_time = app.time();
@@ -495,7 +495,7 @@ impl<App: ApplicationLayer> Context<App> {
                     |Packet(kid, nonce, payload): &Packet, hk| {
                         if let Some((send_fragment, mut mtu)) = send_to(&session) {
                             mtu = mtu.max(MIN_TRANSPORT_MTU);
-                            send_with_fragmentation::<App>(
+                            send_with_fragmentation::<Crypto>(
                                 send_fragment,
                                 mtu,
                                 *kid,
@@ -507,10 +507,10 @@ impl<App: ApplicationLayer> Context<App> {
                     },
                 );
                 next_timer = next_timer.min(zeta.next_timer());
-                zeta.defrag.service::<App>(current_time);
+                zeta.defrag.service(current_time);
             }
         }
-        ctx.hello_defrag.borrow_mut().service::<App>(current_time);
-        (App::SETTINGS.resend_time as i64).min(next_timer - current_time)
+        ctx.hello_defrag.borrow_mut().service(current_time);
+        (Crypto::SETTINGS.resend_time as i64).min(next_timer - current_time)
     }
 }

@@ -7,7 +7,7 @@ use std::sync::{Arc, Weak};
 use rand_core::RngCore;
 use zeroize::Zeroizing;
 
-use crate::application::{ApplicationLayer, RatchetState, RatchetStates, RatchetUpdate};
+use crate::application::{ApplicationLayer, RatchetState, RatchetStates, RatchetUpdate, CryptoLayer};
 use crate::challenge::{gen_null_response, respond_to_challenge_in_place};
 use crate::context::{log, ContextInner, SessionMap};
 use crate::crypto::*;
@@ -19,14 +19,14 @@ use crate::symmetric_state::SymmetricState;
 use crate::LogEvent::*;
 
 /// Corresponds to the Zeta State Machine found in Section 4.1.
-pub(crate) struct Zeta<App: ApplicationLayer> {
-    pub ctx: Weak<ContextInner<App>>,
+pub(crate) struct Zeta<Crypto: CryptoLayer> {
+    pub ctx: Weak<ContextInner<Crypto>>,
     /// An arbitrary application defined object associated with each session.
-    pub session_data: App::SessionData,
+    pub session_data: Crypto::SessionData,
     /// Is true if the local peer acted as Bob, the responder in the initial key exchange.
     pub was_bob: bool,
 
-    s_remote: App::PublicKey,
+    s_remote: Crypto::PublicKey,
     send_counter: u64,
     key_creation_counter: u64,
 
@@ -38,7 +38,7 @@ pub(crate) struct Zeta<App: ApplicationLayer> {
 
     resend_timer: i64,
     timeout_timer: i64,
-    pub beta: ZetaAutomata<App>,
+    pub beta: ZetaAutomata<Crypto>,
 
     pub counter_antireplay_window: [u64; COUNTER_WINDOW_MAX_OOO],
     pub defrag: DefragBuffer,
@@ -46,16 +46,16 @@ pub(crate) struct Zeta<App: ApplicationLayer> {
 /// ZeroTier Secure Session Protocol (ZSSP) Session.
 ///
 /// A FIPS/NIST compliant variant of Noise_XK with hybrid Kyber1024 PQ data forward secrecy.
-pub struct Session<App: ApplicationLayer>(pub(crate) RefCell<Zeta<App>>);
+pub struct Session<Crypto: CryptoLayer>(pub(crate) RefCell<Zeta<Crypto>>);
 
 /// Corresponds to State B_2 of the Zeta State Machine found in Section 4.1 - Definition 3.
-pub(crate) struct StateB2<App: ApplicationLayer> {
+pub(crate) struct StateB2<Crypto: CryptoLayer> {
     ratchet_state: RatchetState,
     kid_send: NonZeroU32,
     pub kid_recv: NonZeroU32,
     pub hk_send: Zeroizing<[u8; AES_256_KEY_SIZE]>,
-    e_secret: App::KeyPair,
-    noise: SymmetricState<App>,
+    e_secret: Crypto::KeyPair,
+    noise: SymmetricState<Crypto>,
     pub defrag: DefragBuffer,
 }
 
@@ -78,18 +78,18 @@ pub(crate) struct Packet(pub u32, pub [u8; AES_GCM_NONCE_SIZE], pub Vec<u8>);
 
 /// Corresponds to State A_1 of the Zeta State Machine found in Section 4.1.
 #[derive(Clone)]
-pub(crate) struct StateA1<App: ApplicationLayer> {
-    noise: SymmetricState<App>,
-    e_secret: App::KeyPair,
-    e1_secret: App::Kem,
+pub(crate) struct StateA1<Crypto: CryptoLayer> {
+    noise: SymmetricState<Crypto>,
+    e_secret: Crypto::KeyPair,
+    e1_secret: Crypto::Kem,
     identity: Vec<u8>,
     packet: Packet,
 }
 
 /// Corresponds to the ZKE Automata found in Section 4.1 - Definition 2.
-pub(crate) enum ZetaAutomata<App: ApplicationLayer> {
+pub(crate) enum ZetaAutomata<Crypto: CryptoLayer> {
     Null,
-    A1(StateA1<App>),
+    A1(StateA1<Crypto>),
     A3 {
         identity: Vec<u8>,
         packet: Packet,
@@ -97,8 +97,8 @@ pub(crate) enum ZetaAutomata<App: ApplicationLayer> {
     S1,
     S2,
     R1 {
-        noise: SymmetricState<App>,
-        e_secret: App::KeyPair,
+        noise: SymmetricState<Crypto>,
+        e_secret: Crypto::KeyPair,
         k1: Vec<u8>,
     },
     R2 {
@@ -106,24 +106,24 @@ pub(crate) enum ZetaAutomata<App: ApplicationLayer> {
     },
 }
 
-impl<App: ApplicationLayer> SymmetricState<App> {
-    fn write_e(&mut self, rng: &RefCell<App::Rng>, packet: &mut Vec<u8>) -> App::KeyPair {
-        let e_secret = App::KeyPair::generate(rng.borrow_mut().deref_mut());
+impl<Crypto: CryptoLayer> SymmetricState<Crypto> {
+    fn write_e(&mut self, rng: &RefCell<Crypto::Rng>, packet: &mut Vec<u8>) -> Crypto::KeyPair {
+        let e_secret = Crypto::KeyPair::generate(rng.borrow_mut().deref_mut());
         let pub_key = e_secret.public_key_bytes();
         packet.extend(&pub_key);
         self.mix_hash(&pub_key);
         self.mix_key(&pub_key);
         e_secret
     }
-    fn read_e(&mut self, i: &mut usize, packet: &Vec<u8>) -> Option<App::PublicKey> {
+    fn read_e(&mut self, i: &mut usize, packet: &Vec<u8>) -> Option<Crypto::PublicKey> {
         let j = *i + P384_PUBLIC_KEY_SIZE;
         let pub_key = &packet[*i..j];
         self.mix_hash(pub_key);
         self.mix_key(pub_key);
         *i = j;
-        App::PublicKey::from_bytes((pub_key).try_into().unwrap())
+        Crypto::PublicKey::from_bytes((pub_key).try_into().unwrap())
     }
-    fn mix_dh(&mut self, secret: &App::KeyPair, remote: &App::PublicKey) -> Option<()> {
+    fn mix_dh(&mut self, secret: &Crypto::KeyPair, remote: &Crypto::PublicKey) -> Option<()> {
         if let Some(ecdh) = secret.agree(&remote).map(Zeroizing::new) {
             self.mix_key(ecdh.as_ref());
             Some(())
@@ -165,11 +165,11 @@ fn gen_kid<T>(session_map: &HashMap<NonZeroU32, T>, rng: &mut impl RngCore) -> N
         }
     }
 }
-fn remap<App: ApplicationLayer>(
-    session: &Arc<Session<App>>,
-    zeta: &Zeta<App>,
-    rng: &RefCell<App::Rng>,
-    session_map: &SessionMap<App>,
+fn remap<Crypto: CryptoLayer>(
+    session: &Arc<Session<Crypto>>,
+    zeta: &Zeta<Crypto>,
+    rng: &RefCell<Crypto::Rng>,
+    session_map: &SessionMap<Crypto>,
 ) -> NonZeroU32 {
     let mut session_map = session_map.borrow_mut();
     let weak = if let Some(Some(weak)) = zeta.key_ref(true).recv.kid.as_ref().map(|kid| session_map.remove(kid)) {
@@ -182,7 +182,7 @@ fn remap<App: ApplicationLayer>(
     new_kid_recv
 }
 
-impl<App: ApplicationLayer> Zeta<App> {
+impl<Crypto: CryptoLayer> Zeta<Crypto> {
     pub(crate) fn check_counter_window(&self, c: u64) -> bool {
         let slot = &self.counter_antireplay_window[c as usize % self.counter_antireplay_window.len()];
         let adj_counter = c.saturating_add(1);
@@ -235,23 +235,23 @@ impl<App: ApplicationLayer> Zeta<App> {
             c,
             c >= self
                 .key_creation_counter
-                .saturating_add(App::SETTINGS.rekey_after_key_uses),
+                .saturating_add(Crypto::SETTINGS.rekey_after_key_uses),
         ))
     }
 }
 
 fn create_a1_state<App: ApplicationLayer>(
-    rng: &RefCell<App::Rng>,
-    s_remote: &App::PublicKey,
+    rng: &RefCell<<App::Crypto as CryptoLayer>::Rng>,
+    s_remote: &<App::Crypto as CryptoLayer>::PublicKey,
     kid_recv: NonZeroU32,
     ratchet_state1: &RatchetState,
     ratchet_state2: Option<&RatchetState>,
     identity: Vec<u8>,
-) -> Option<StateA1<App>> {
+) -> Option<StateA1<App::Crypto>> {
     //    <- s
     //    ...
     //    -> e, es, e1
-    let mut noise = SymmetricState::<App>::initialize(PROTOCOL_NAME_NOISE_XK);
+    let mut noise = SymmetricState::<App::Crypto>::initialize(PROTOCOL_NAME_NOISE_XK);
     let mut x1 = Vec::new();
     // Noise process prologue.
     let kid = kid_recv.get().to_be_bytes();
@@ -264,7 +264,7 @@ fn create_a1_state<App: ApplicationLayer>(
     noise.mix_dh(&e_secret, s_remote)?;
     // Process message pattern 1 e1 token.
     let i = x1.len();
-    let (e1_secret, e1_public) = App::Kem::generate(rng.borrow_mut().deref_mut());
+    let (e1_secret, e1_public) = <App::Crypto as CryptoLayer>::Kem::generate(rng.borrow_mut().deref_mut());
     x1.extend(&e1_public);
     noise.encrypt_and_hash_in_place(to_nonce(PACKET_TYPE_HANDSHAKE_HELLO, 0), i, &mut x1);
     // Process message pattern 1 payload.
@@ -291,12 +291,12 @@ fn create_a1_state<App: ApplicationLayer>(
 /// Corresponds to Transition Algorithm 1 found in Section 4.3.
 pub(crate) fn trans_to_a1<App: ApplicationLayer>(
     mut app: App,
-    ctx: &Arc<ContextInner<App>>,
-    s_remote: App::PublicKey,
-    session_data: App::SessionData,
+    ctx: &Arc<ContextInner<App::Crypto>>,
+    s_remote: <App::Crypto as CryptoLayer>::PublicKey,
+    session_data: <App::Crypto as CryptoLayer>::SessionData,
     identity: Vec<u8>,
     send: impl FnOnce(&Packet),
-) -> Result<Arc<Session<App>>, OpenError<App::StorageError>> {
+) -> Result<Arc<Session<App::Crypto>>, OpenError<App::StorageError>> {
     let ratchet_states = app
         .restore_by_identity(&s_remote, &session_data)
         .map_err(|e| OpenError::StorageError(e))?;
@@ -305,7 +305,7 @@ pub(crate) fn trans_to_a1<App: ApplicationLayer>(
     let mut session_map = ctx.session_map.borrow_mut();
     let kid_recv = gen_kid(session_map.deref(), ctx.rng.borrow_mut().deref_mut());
 
-    let a1 = create_a1_state(&ctx.rng, &s_remote, kid_recv, &state1, state2.as_ref(), identity)
+    let a1 = create_a1_state::<App>(&ctx.rng, &s_remote, kid_recv, &state1, state2.as_ref(), identity)
         .ok_or(OpenError::InvalidPublicKey)?;
     let packet = a1.packet.clone();
 
@@ -326,8 +326,8 @@ pub(crate) fn trans_to_a1<App: ApplicationLayer>(
         ratchet_state1: state1,
         ratchet_state2: state2,
         hk_send,
-        resend_timer: current_time + App::SETTINGS.resend_time as i64,
-        timeout_timer: current_time + App::SETTINGS.initial_offer_timeout as i64,
+        resend_timer: current_time + <App::Crypto as CryptoLayer>::SETTINGS.resend_time as i64,
+        timeout_timer: current_time + <App::Crypto as CryptoLayer>::SETTINGS.initial_offer_timeout as i64,
         beta: ZetaAutomata::A1(a1),
     };
     zeta.key_mut(true).recv.kid = Some(kid_recv);
@@ -344,13 +344,13 @@ pub(crate) fn trans_to_a1<App: ApplicationLayer>(
 }
 /// Corresponds to Algorithm 13 found in Section 5.
 pub(crate) fn respond_to_challenge<App: ApplicationLayer>(
-    zeta: &mut Zeta<App>,
-    rng: &RefCell<App::Rng>,
+    zeta: &mut Zeta<App::Crypto>,
+    rng: &RefCell<<App::Crypto as CryptoLayer>::Rng>,
     challenge: &[u8; CHALLENGE_SIZE],
 ) {
     if let ZetaAutomata::A1(StateA1 { packet: Packet(_, _, x1), .. }) = &mut zeta.beta {
         let response_start = x1.len() - CHALLENGE_SIZE;
-        respond_to_challenge_in_place::<App::Rng, App::Hash>(
+        respond_to_challenge_in_place::<<App::Crypto as CryptoLayer>::Rng, <App::Crypto as CryptoLayer>::Hash>(
             rng.borrow_mut().deref_mut(),
             challenge,
             (&mut x1[response_start..]).try_into().unwrap(),
@@ -360,7 +360,7 @@ pub(crate) fn respond_to_challenge<App: ApplicationLayer>(
 /// Corresponds to Transition Algorithm 2 found in Section 4.3.
 pub(crate) fn received_x1_trans<App: ApplicationLayer>(
     app: &mut App,
-    ctx: &ContextInner<App>,
+    ctx: &ContextInner<App::Crypto>,
     n: [u8; AES_GCM_NONCE_SIZE],
     mut x1: Vec<u8>,
     send: impl FnOnce(&Packet, &[u8; AES_256_KEY_SIZE]),
@@ -376,7 +376,7 @@ pub(crate) fn received_x1_trans<App: ApplicationLayer>(
     if &n[AES_GCM_NONCE_SIZE - 8..] != &x1[x1.len() - 8..] {
         return Err(byzantine_fault!(FailedAuth, true));
     }
-    let mut noise = SymmetricState::<App>::initialize(PROTOCOL_NAME_NOISE_XK);
+    let mut noise = SymmetricState::<App::Crypto>::initialize(PROTOCOL_NAME_NOISE_XK);
     let mut i = 0;
     // Noise process prologue.
     let j = i + KID_SIZE;
@@ -441,7 +441,7 @@ pub(crate) fn received_x1_trans<App: ApplicationLayer>(
         .ok_or(byzantine_fault!(FailedAuth, true))?;
     // Process message pattern 2 ekem1 token.
     let i = x2.len();
-    let (ekem1, ekem1_secret) = App::Kem::encapsulate(
+    let (ekem1, ekem1_secret) = <App::Crypto as CryptoLayer>::Kem::encapsulate(
         ctx.rng.borrow_mut().deref_mut(),
         (&x1[e1_start..e1_end]).try_into().unwrap(),
     )
@@ -489,10 +489,10 @@ pub(crate) fn received_x1_trans<App: ApplicationLayer>(
 }
 /// Corresponds to Transition Algorithm 3 found in Section 4.3.
 pub(crate) fn received_x2_trans<App: ApplicationLayer>(
-    zeta: &mut Zeta<App>,
-    session: &Arc<Session<App>>,
+    zeta: &mut Zeta<App::Crypto>,
+    session: &Arc<Session<App::Crypto>>,
     app: &mut App,
-    ctx: &Arc<ContextInner<App>>,
+    ctx: &Arc<ContextInner<App::Crypto>>,
     kid: NonZeroU32,
     n: [u8; AES_GCM_NONCE_SIZE],
     mut x2: Vec<u8>,
@@ -547,7 +547,7 @@ pub(crate) fn received_x2_trans<App: ApplicationLayer>(
             let payload: [u8; KID_SIZE] = x2[i..j].try_into().unwrap();
             let tag = x2[j..k].try_into().unwrap();
             // Check for which ratchet key Bob wants to use.
-            let test_ratchet_key = |ratchet_key| -> Option<(NonZeroU32, SymmetricState<App>)> {
+            let test_ratchet_key = |ratchet_key| -> Option<(NonZeroU32, SymmetricState<App::Crypto>)> {
                 let mut noise = noise.clone();
                 let mut payload = payload.clone();
                 // Process message pattern 2 psk token.
@@ -632,8 +632,8 @@ pub(crate) fn received_x2_trans<App: ApplicationLayer>(
             zeta.ratchet_state1 = new_ratchet_state;
             let current_time = app.time();
             zeta.key_creation_counter = zeta.send_counter;
-            zeta.resend_timer = current_time + App::SETTINGS.resend_time as i64;
-            zeta.timeout_timer = current_time + App::SETTINGS.initial_offer_timeout as i64;
+            zeta.resend_timer = current_time + <App::Crypto as CryptoLayer>::SETTINGS.resend_time as i64;
+            zeta.timeout_timer = current_time + <App::Crypto as CryptoLayer>::SETTINGS.initial_offer_timeout as i64;
             let packet = Packet(kid_send.get(), n, x3);
             zeta.beta = ZetaAutomata::A3 { identity, packet: packet.clone() };
 
@@ -653,7 +653,7 @@ pub(crate) fn received_x2_trans<App: ApplicationLayer>(
     result.map(|_| should_warn_missing_ratchet)
 }
 fn send_control<App: ApplicationLayer>(
-    zeta: &mut Zeta<App>,
+    zeta: &mut Zeta<App::Crypto>,
     packet_type: u8,
     mut payload: Vec<u8>,
     send: impl FnOnce(&Packet, Option<&[u8; AES_256_KEY_SIZE]>),
@@ -661,7 +661,7 @@ fn send_control<App: ApplicationLayer>(
     if let Some((c, _)) = zeta.get_counter() {
         if let (Some(kek), Some(kid)) = (zeta.key_ref(false).send.kek.as_ref(), zeta.key_ref(false).send.kid) {
             let nonce = to_nonce(packet_type, c);
-            let tag = App::Aead::encrypt_in_place(kek, &nonce, None, &mut payload);
+            let tag = <App::Crypto as CryptoLayer>::Aead::encrypt_in_place(kek, &nonce, None, &mut payload);
             payload.extend(tag);
 
             send(&Packet(kid.get(), nonce, payload), Some(&zeta.hk_send));
@@ -675,13 +675,13 @@ fn send_control<App: ApplicationLayer>(
 }
 /// Corresponds to Transition Algorithm 4 found in Section 4.3.
 pub(crate) fn received_x3_trans<App: ApplicationLayer>(
-    zeta: StateB2<App>,
+    zeta: StateB2<App::Crypto>,
     app: &mut App,
-    ctx: &Arc<ContextInner<App>>,
+    ctx: &Arc<ContextInner<App::Crypto>>,
     kid: NonZeroU32,
     mut x3: Vec<u8>,
     send: impl FnOnce(&Packet, Option<&[u8; AES_256_KEY_SIZE]>),
-) -> Result<(Arc<Session<App>>, bool), ReceiveError<App::StorageError>> {
+) -> Result<(Arc<Session<App::Crypto>>, bool), ReceiveError<App::StorageError>> {
     use FaultType::*;
     //    -> s, se
     if !(HANDSHAKE_COMPLETION_MIN_SIZE..=HANDSHAKE_COMPLETION_MAX_SIZE).contains(&x3.len()) {
@@ -701,7 +701,7 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
         return Err(byzantine_fault!(FailedAuth, true));
     }
     let s_remote =
-        App::PublicKey::from_bytes((&x3[i..j]).try_into().unwrap()).ok_or(byzantine_fault!(FailedAuth, true))?;
+        <App::Crypto as CryptoLayer>::PublicKey::from_bytes((&x3[i..j]).try_into().unwrap()).ok_or(byzantine_fault!(FailedAuth, true))?;
     i = k;
     // Process message pattern 3 se token.
     noise
@@ -727,7 +727,7 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
     let create_reject = || {
         let mut d = Vec::<u8>::new();
         let n = to_nonce(PACKET_TYPE_SESSION_REJECTED, c);
-        let tag = App::Aead::encrypt_in_place(&kek_send, &n, None, &mut []);
+        let tag = <App::Crypto as CryptoLayer>::Aead::encrypt_in_place(&kek_send, &n, None, &mut []);
         d.extend(&tag);
         // We just used a counter with this key, but we are not storing
         // the fact we used it in memory. This is currently ok because the
@@ -772,7 +772,7 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
 
                 let mut c1 = Vec::new();
                 let n = to_nonce(PACKET_TYPE_KEY_CONFIRM, c);
-                let tag = App::Aead::encrypt_in_place(&kek_send, &n, None, &mut []);
+                let tag = <App::Crypto as CryptoLayer>::Aead::encrypt_in_place(&kek_send, &n, None, &mut []);
                 c1.extend(&tag);
 
                 let (nk1, nk2) = noise.split();
@@ -802,8 +802,8 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
                     ratchet_state1: new_ratchet_state,
                     ratchet_state2: None,
                     hk_send: zeta.hk_send.clone(),
-                    resend_timer: current_time + App::SETTINGS.resend_time as i64,
-                    timeout_timer: current_time + App::SETTINGS.rekey_timeout as i64,
+                    resend_timer: current_time + <App::Crypto as CryptoLayer>::SETTINGS.resend_time as i64,
+                    timeout_timer: current_time + <App::Crypto as CryptoLayer>::SETTINGS.rekey_timeout as i64,
                     beta: ZetaAutomata::S1,
                     counter_antireplay_window: std::array::from_fn(|_| 0),
                     defrag: zeta.defrag,
@@ -827,9 +827,9 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
 }
 /// Corresponds to Transition Algorithm 5 found in Section 4.3.
 pub(crate) fn received_c1_trans<App: ApplicationLayer>(
-    zeta: &mut Zeta<App>,
+    zeta: &mut Zeta<App::Crypto>,
     app: &mut App,
-    rng: &RefCell<App::Rng>,
+    rng: &RefCell<<App::Crypto as CryptoLayer>::Rng>,
     kid: NonZeroU32,
     n: [u8; AES_GCM_NONCE_SIZE],
     c1: Vec<u8>,
@@ -857,7 +857,7 @@ pub(crate) fn received_c1_trans<App: ApplicationLayer>(
         .as_ref()
         .ok_or(byzantine_fault!(OutOfSequence, true))?;
     let tag = c1[..].try_into().unwrap();
-    if !App::Aead::decrypt_in_place(specified_key, &n, None, &mut [], tag) {
+    if !<App::Crypto as CryptoLayer>::Aead::decrypt_in_place(specified_key, &n, None, &mut [], tag) {
         return Err(byzantine_fault!(FailedAuth, true));
     }
     let (_, c) = from_nonce(&n);
@@ -887,14 +887,14 @@ pub(crate) fn received_c1_trans<App: ApplicationLayer>(
 
             zeta.ratchet_state2 = None;
             zeta.key_index ^= true;
-            let r = rng.borrow_mut().next_u64() % App::SETTINGS.rekey_time_max_jitter;
-            zeta.timeout_timer = app.time() + App::SETTINGS.rekey_after_time.saturating_sub(r) as i64;
+            let r = rng.borrow_mut().next_u64() % <App::Crypto as CryptoLayer>::SETTINGS.rekey_time_max_jitter;
+            zeta.timeout_timer = app.time() + <App::Crypto as CryptoLayer>::SETTINGS.rekey_after_time.saturating_sub(r) as i64;
             zeta.resend_timer = i64::MAX;
             zeta.beta = ZetaAutomata::S2;
         }
     }
     let c2 = Vec::new();
-    if !send_control(zeta, PACKET_TYPE_ACK, c2, send) {
+    if !send_control::<App>(zeta, PACKET_TYPE_ACK, c2, send) {
         return Err(byzantine_fault!(OutOfSequence, true));
     }
 
@@ -903,9 +903,9 @@ pub(crate) fn received_c1_trans<App: ApplicationLayer>(
 /// Corresponds to the trivial Transition Algorithm described for processing C_2 packets found in
 /// Section 4.3.
 pub(crate) fn received_c2_trans<App: ApplicationLayer>(
-    zeta: &mut Zeta<App>,
+    zeta: &mut Zeta<App::Crypto>,
     app: &mut App,
-    rng: &RefCell<App::Rng>,
+    rng: &RefCell<<App::Crypto as CryptoLayer>::Rng>,
     kid: NonZeroU32,
     n: [u8; AES_GCM_NONCE_SIZE],
     c2: Vec<u8>,
@@ -925,7 +925,7 @@ pub(crate) fn received_c2_trans<App: ApplicationLayer>(
     }
 
     let tag = c2[..].try_into().unwrap();
-    if !App::Aead::decrypt_in_place(zeta.key_ref(false).recv.kek.as_ref().unwrap(), &n, None, &mut [], tag) {
+    if !<App::Crypto as CryptoLayer>::Aead::decrypt_in_place(zeta.key_ref(false).recv.kek.as_ref().unwrap(), &n, None, &mut [], tag) {
         return Err(byzantine_fault!(FailedAuth, true));
     }
     let (_, c) = from_nonce(&n);
@@ -933,8 +933,8 @@ pub(crate) fn received_c2_trans<App: ApplicationLayer>(
         return Err(byzantine_fault!(ExpiredCounter, true));
     }
 
-    let r = rng.borrow_mut().next_u64() % App::SETTINGS.rekey_time_max_jitter;
-    zeta.timeout_timer = app.time() + App::SETTINGS.rekey_after_time.saturating_sub(r) as i64;
+    let r = rng.borrow_mut().next_u64() % <App::Crypto as CryptoLayer>::SETTINGS.rekey_time_max_jitter;
+    zeta.timeout_timer = app.time() + <App::Crypto as CryptoLayer>::SETTINGS.rekey_after_time.saturating_sub(r) as i64;
     zeta.resend_timer = i64::MAX;
     zeta.beta = ZetaAutomata::S2;
     Ok(())
@@ -942,7 +942,7 @@ pub(crate) fn received_c2_trans<App: ApplicationLayer>(
 /// Corresponds to the trivial Transition Algorithm described for processing D packets found in
 /// Section 4.3.
 pub(crate) fn received_d_trans<App: ApplicationLayer>(
-    zeta: &mut Zeta<App>,
+    zeta: &mut Zeta<App::Crypto>,
     kid: NonZeroU32,
     n: [u8; AES_GCM_NONCE_SIZE],
     d: Vec<u8>,
@@ -957,7 +957,7 @@ pub(crate) fn received_d_trans<App: ApplicationLayer>(
     }
 
     let tag = d[..].try_into().unwrap();
-    if !App::Aead::decrypt_in_place(zeta.key_ref(true).recv.kek.as_ref().unwrap(), &n, None, &mut [], tag) {
+    if !<App::Crypto as CryptoLayer>::Aead::decrypt_in_place(zeta.key_ref(true).recv.kek.as_ref().unwrap(), &n, None, &mut [], tag) {
         return Err(byzantine_fault!(FailedAuth, true));
     }
     let (_, c) = from_nonce(&n);
@@ -970,9 +970,9 @@ pub(crate) fn received_d_trans<App: ApplicationLayer>(
 }
 /// Corresponds to the timer rules of the Zeta State Machine found in Section 4.1 - Definition 3.
 pub(crate) fn service<App: ApplicationLayer>(
-    zeta: &mut Zeta<App>,
-    session: &Arc<Session<App>>,
-    ctx: &Arc<ContextInner<App>>,
+    zeta: &mut Zeta<App::Crypto>,
+    session: &Arc<Session<App::Crypto>>,
+    ctx: &Arc<ContextInner<App::Crypto>>,
     app: &mut App,
     current_time: i64,
     send: impl FnOnce(&Packet, Option<&[u8; AES_256_KEY_SIZE]>),
@@ -981,7 +981,7 @@ pub(crate) fn service<App: ApplicationLayer>(
         timeout_trans(zeta, session, app, ctx, current_time, send);
     } else if zeta.resend_timer <= current_time {
         // Corresponds to the resend timer rules found in Section 4.1 - Definition 3.
-        zeta.resend_timer = current_time + App::SETTINGS.resend_time as i64;
+        zeta.resend_timer = current_time + <App::Crypto as CryptoLayer>::SETTINGS.resend_time as i64;
 
         let (p, control_payload) = match &zeta.beta {
             ZetaAutomata::Null => return,
@@ -1008,15 +1008,15 @@ pub(crate) fn service<App: ApplicationLayer>(
             }
         };
 
-        send_control(zeta, p, control_payload, send);
+        send_control::<App>(zeta, p, control_payload, send);
     }
 }
 /// Corresponds to the timeout timer Transition Algorithm described in Section 4.1 - Definition 3.
 fn timeout_trans<App: ApplicationLayer>(
-    zeta: &mut Zeta<App>,
-    session: &Arc<Session<App>>,
+    zeta: &mut Zeta<App::Crypto>,
+    session: &Arc<Session<App::Crypto>>,
     app: &mut App,
-    ctx: &Arc<ContextInner<App>>,
+    ctx: &Arc<ContextInner<App::Crypto>>,
     current_time: i64,
     send: impl FnOnce(&Packet, Option<&[u8; AES_256_KEY_SIZE]>),
 ) {
@@ -1030,7 +1030,7 @@ fn timeout_trans<App: ApplicationLayer>(
             }
             let new_kid_recv = remap(session, &zeta, &ctx.rng, &ctx.session_map);
 
-            if let Some(a1) = create_a1_state(
+            if let Some(a1) = create_a1_state::<App>(
                 &ctx.rng,
                 &zeta.s_remote,
                 new_kid_recv,
@@ -1044,8 +1044,8 @@ fn timeout_trans<App: ApplicationLayer>(
                 zeta.hk_send = hk_send;
                 *zeta.key_mut(true) = DuplexKey::default();
                 zeta.key_mut(true).recv.kid = Some(new_kid_recv);
-                zeta.resend_timer = current_time + App::SETTINGS.resend_time as i64;
-                zeta.timeout_timer = current_time + App::SETTINGS.initial_offer_timeout as i64;
+                zeta.resend_timer = current_time + <App::Crypto as CryptoLayer>::SETTINGS.resend_time as i64;
+                zeta.timeout_timer = current_time + <App::Crypto as CryptoLayer>::SETTINGS.initial_offer_timeout as i64;
                 zeta.beta = ZetaAutomata::A1(a1);
                 zeta.defrag = DefragBuffer::new(Some(hk_recv));
 
@@ -1087,11 +1087,11 @@ fn timeout_trans<App: ApplicationLayer>(
             noise.encrypt_and_hash_in_place(to_nonce(PACKET_TYPE_REKEY_INIT, 0), i, &mut k1);
 
             zeta.key_mut(true).recv.kid = Some(new_kid_recv);
-            zeta.timeout_timer = current_time + App::SETTINGS.rekey_timeout as i64;
-            zeta.resend_timer = current_time + App::SETTINGS.resend_time as i64;
+            zeta.timeout_timer = current_time + <App::Crypto as CryptoLayer>::SETTINGS.rekey_timeout as i64;
+            zeta.resend_timer = current_time + <App::Crypto as CryptoLayer>::SETTINGS.resend_time as i64;
             zeta.beta = ZetaAutomata::R1 { noise, e_secret, k1: k1.clone() };
 
-            send_control(zeta, PACKET_TYPE_REKEY_INIT, k1, send);
+            send_control::<App>(zeta, PACKET_TYPE_REKEY_INIT, k1, send);
         }
         ZetaAutomata::S1 { .. } => {
             log!(app, TimeoutKeyConfirm(session));
@@ -1109,12 +1109,12 @@ fn timeout_trans<App: ApplicationLayer>(
 }
 /// Corresponds to Transition Algorithm 7 found in Section 4.3.
 pub(crate) fn received_k1_trans<App: ApplicationLayer>(
-    zeta: &mut Zeta<App>,
-    session: &Arc<Session<App>>,
+    zeta: &mut Zeta<App::Crypto>,
+    session: &Arc<Session<App::Crypto>>,
     app: &mut App,
-    rng: &RefCell<App::Rng>,
-    session_map: &SessionMap<App>,
-    s_secret: &App::KeyPair,
+    rng: &RefCell<<App::Crypto as CryptoLayer>::Rng>,
+    session_map: &SessionMap<App::Crypto>,
+    s_secret: &<App::Crypto as CryptoLayer>::KeyPair,
     kid: NonZeroU32,
     n: [u8; AES_GCM_NONCE_SIZE],
     mut k1: Vec<u8>,
@@ -1145,7 +1145,7 @@ pub(crate) fn received_k1_trans<App: ApplicationLayer>(
 
     let i = k1.len() - AES_GCM_TAG_SIZE;
     let tag = k1[i..].try_into().unwrap();
-    if !App::Aead::decrypt_in_place(
+    if !<App::Crypto as CryptoLayer>::Aead::decrypt_in_place(
         zeta.key_ref(false).recv.kek.as_ref().unwrap(),
         &n,
         None,
@@ -1162,7 +1162,7 @@ pub(crate) fn received_k1_trans<App: ApplicationLayer>(
 
     let result = (|| {
         let mut i = 0;
-        let mut noise = SymmetricState::<App>::initialize(PROTOCOL_NAME_NOISE_KK);
+        let mut noise = SymmetricState::<App::Crypto>::initialize(PROTOCOL_NAME_NOISE_KK);
         // Noise process prologue.
         noise.mix_hash(&zeta.s_remote.to_bytes());
         noise.mix_hash(&s_secret.public_key_bytes());
@@ -1234,11 +1234,11 @@ pub(crate) fn received_k1_trans<App: ApplicationLayer>(
         zeta.ratchet_state1 = new_ratchet_state;
         let current_time = app.time();
         zeta.key_creation_counter = zeta.send_counter;
-        zeta.timeout_timer = current_time + App::SETTINGS.rekey_timeout as i64;
-        zeta.resend_timer = current_time + App::SETTINGS.resend_time as i64;
+        zeta.timeout_timer = current_time + <App::Crypto as CryptoLayer>::SETTINGS.rekey_timeout as i64;
+        zeta.resend_timer = current_time + <App::Crypto as CryptoLayer>::SETTINGS.resend_time as i64;
         zeta.beta = ZetaAutomata::R2 { k2: k2.clone() };
 
-        send_control(zeta, PACKET_TYPE_REKEY_COMPLETE, k2, send);
+        send_control::<App>(zeta, PACKET_TYPE_REKEY_COMPLETE, k2, send);
         Ok(())
     })();
     if matches!(result, Err(ReceiveError::ByzantineFault { .. })) {
@@ -1248,7 +1248,7 @@ pub(crate) fn received_k1_trans<App: ApplicationLayer>(
 }
 /// Corresponds to Transition Algorithm 8 found in Section 4.3.
 pub(crate) fn received_k2_trans<App: ApplicationLayer>(
-    zeta: &mut Zeta<App>,
+    zeta: &mut Zeta<App::Crypto>,
     app: &mut App,
     kid: NonZeroU32,
     n: [u8; AES_GCM_NONCE_SIZE],
@@ -1271,7 +1271,7 @@ pub(crate) fn received_k2_trans<App: ApplicationLayer>(
 
     let i = k2.len() - AES_GCM_TAG_SIZE;
     let tag = k2[i..].try_into().unwrap();
-    if !App::Aead::decrypt_in_place(
+    if !<App::Crypto as CryptoLayer>::Aead::decrypt_in_place(
         zeta.key_ref(false).recv.kek.as_ref().unwrap(),
         &n,
         None,
@@ -1337,12 +1337,12 @@ pub(crate) fn received_k2_trans<App: ApplicationLayer>(
             zeta.key_index ^= true;
             let current_time = app.time();
             zeta.key_creation_counter = zeta.send_counter;
-            zeta.timeout_timer = current_time + App::SETTINGS.rekey_timeout as i64;
-            zeta.resend_timer = current_time + App::SETTINGS.resend_time as i64;
+            zeta.timeout_timer = current_time + <App::Crypto as CryptoLayer>::SETTINGS.rekey_timeout as i64;
+            zeta.resend_timer = current_time + <App::Crypto as CryptoLayer>::SETTINGS.resend_time as i64;
             zeta.beta = ZetaAutomata::S1;
 
             let c1 = Vec::new();
-            send_control(zeta, PACKET_TYPE_KEY_CONFIRM, c1, send);
+            send_control::<App>(zeta, PACKET_TYPE_KEY_CONFIRM, c1, send);
             Ok(())
         } else {
             unreachable!()
@@ -1354,8 +1354,8 @@ pub(crate) fn received_k2_trans<App: ApplicationLayer>(
     result
 }
 /// Corresponds to Algorithm 9 found in Section 4.3.
-pub(crate) fn send_payload<App: ApplicationLayer>(
-    zeta: &mut Zeta<App>,
+pub(crate) fn send_payload<Crypto: CryptoLayer>(
+    zeta: &mut Zeta<Crypto>,
     mut payload: Vec<u8>,
     send: impl FnOnce(&Packet, Option<&[u8; AES_256_KEY_SIZE]>),
 ) -> Result<(), SendError> {
@@ -1377,7 +1377,7 @@ pub(crate) fn send_payload<App: ApplicationLayer>(
         }
 
         let n = to_nonce(PACKET_TYPE_DATA, c);
-        let tag = App::Aead::encrypt_in_place(zeta.key_ref(false).send.nk.as_ref().unwrap(), &n, None, &mut payload);
+        let tag = Crypto::Aead::encrypt_in_place(zeta.key_ref(false).send.nk.as_ref().unwrap(), &n, None, &mut payload);
         payload.extend(&tag);
 
         send(
@@ -1392,7 +1392,7 @@ pub(crate) fn send_payload<App: ApplicationLayer>(
 }
 /// Corresponds to Algorithm 10 found in Section 4.3.
 pub(crate) fn received_payload_in_place<App: ApplicationLayer>(
-    zeta: &mut Zeta<App>,
+    zeta: &mut Zeta<App::Crypto>,
     kid: NonZeroU32,
     n: [u8; AES_GCM_NONCE_SIZE],
     payload: &mut Vec<u8>,
@@ -1416,7 +1416,7 @@ pub(crate) fn received_payload_in_place<App: ApplicationLayer>(
     let specified_key = zeta.key_ref(is_other).recv.nk.as_ref();
     let specified_key = specified_key.ok_or(byzantine_fault!(OutOfSequence, true))?;
     let tag = payload[i..].try_into().unwrap();
-    if !App::Aead::decrypt_in_place(specified_key, &n, None, &mut payload[..i], &tag) {
+    if !<App::Crypto as CryptoLayer>::Aead::decrypt_in_place(specified_key, &n, None, &mut payload[..i], &tag) {
         return Err(byzantine_fault!(FailedAuth, true));
     }
     let (_, c) = from_nonce(&n);
@@ -1430,7 +1430,7 @@ pub(crate) fn received_payload_in_place<App: ApplicationLayer>(
     Ok(())
 }
 
-impl<App: ApplicationLayer> Session<App> {
+impl<Crypto: CryptoLayer> Session<Crypto> {
     /// Mark a session as expired. This will make it impossible for this session to successfully
     /// receive or send data or control packets. It is recommended to simply `drop` the session
     /// instead, but this can provide some reassurance in complex shared ownership situations.
@@ -1439,7 +1439,7 @@ impl<App: ApplicationLayer> Session<App> {
     }
 }
 
-impl<App: ApplicationLayer> Drop for Session<App> {
+impl<Crypto: CryptoLayer> Drop for Session<Crypto> {
     fn drop(&mut self) {
         self.expire();
     }

@@ -2,19 +2,19 @@ use std::marker::PhantomData;
 
 use zeroize::Zeroizing;
 
-use crate::application::ApplicationLayer;
+use crate::application::CryptoLayer;
 use crate::crypto::*;
 use crate::proto::*;
 
-pub struct SymmetricState<App: ApplicationLayer> {
+pub struct SymmetricState<Crypto: CryptoLayer> {
     k: Zeroizing<[u8; AES_256_KEY_SIZE]>,
     ck: Zeroizing<[u8; HASHLEN]>,
     h: [u8; HASHLEN],
-    /// If anyone knows a better way to get rid of the "parameter `App` is never used" error please
-    /// let me know.
-    _app: PhantomData<fn() -> App::SessionData>,
+    /// If anyone knows a better way to get rid of the "parameter `Crypto` is never used" error
+    /// please let me know.
+    _app: PhantomData<fn() -> Crypto::SessionData>,
 }
-impl<App: ApplicationLayer> Clone for SymmetricState<App> {
+impl<Crypto: CryptoLayer> Clone for SymmetricState<Crypto> {
     fn clone(&self) -> Self {
         Self {
             k: self.k.clone(),
@@ -25,7 +25,7 @@ impl<App: ApplicationLayer> Clone for SymmetricState<App> {
     }
 }
 
-impl<App: ApplicationLayer> SymmetricState<App> {
+impl<Crypto: CryptoLayer> SymmetricState<Crypto> {
     /// HMAC-SHA512 key derivation based on KBKDF Counter Mode:
     /// https://csrc.nist.gov/publications/detail/sp/800-108/rev-1/final.
     /// Cryptographically this isn't meaningfully different from
@@ -55,18 +55,18 @@ impl<App: ApplicationLayer> SymmetricState<App> {
         buffer.extend(&(num_outputs * 8 * HASHLEN as u16).to_be_bytes());
 
         debug_assert!(num_outputs >= 1);
-        *output1 = App::Hash::hmac(input_key_material, &buffer);
+        *output1 = Crypto::Hash::hmac(input_key_material, &buffer);
 
         if let Some(output2) = output2 {
             debug_assert!(num_outputs >= 2);
             buffer[0] = 2;
-            *output2 = App::Hash::hmac(input_key_material, &buffer);
+            *output2 = Crypto::Hash::hmac(input_key_material, &buffer);
         }
 
         if let Some(output3) = output3 {
             debug_assert!(num_outputs >= 3);
             buffer[0] = 3;
-            *output3 = App::Hash::hmac(input_key_material, &buffer);
+            *output3 = Crypto::Hash::hmac(input_key_material, &buffer);
         }
     }
 
@@ -98,7 +98,7 @@ impl<App: ApplicationLayer> SymmetricState<App> {
     }
     /// Corresponds to Noise `MixHash`.
     pub fn mix_hash(&mut self, data: &[u8]) {
-        let mut hash = App::Hash::new();
+        let mut hash = Crypto::Hash::new();
         hash.update(&self.h);
         hash.update(data);
         self.h = hash.finish();
@@ -129,7 +129,7 @@ impl<App: ApplicationLayer> SymmetricState<App> {
         plaintext_start: usize,
         buffer: &mut Vec<u8>,
     ) {
-        let tag = App::Aead::encrypt_in_place(&self.k, &iv, Some(&self.h), &mut buffer[plaintext_start..]);
+        let tag = Crypto::Aead::encrypt_in_place(&self.k, &iv, Some(&self.h), &mut buffer[plaintext_start..]);
         buffer.extend(&tag);
         self.mix_hash(&buffer[plaintext_start..]);
     }
@@ -141,11 +141,11 @@ impl<App: ApplicationLayer> SymmetricState<App> {
         buffer: &mut [u8],
         tag: [u8; AES_GCM_TAG_SIZE],
     ) -> bool {
-        let mut hash = App::Hash::new();
+        let mut hash = Crypto::Hash::new();
         hash.update(&self.h);
         hash.update(buffer);
         hash.update(&tag);
-        let ret = App::Aead::decrypt_in_place(&self.k, &iv, Some(&self.h), buffer, &tag);
+        let ret = Crypto::Aead::decrypt_in_place(&self.k, &iv, Some(&self.h), buffer, &tag);
         self.h = hash.finish();
         ret
     }

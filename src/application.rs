@@ -83,11 +83,11 @@ impl Default for Settings {
     }
 }
 
-/// Trait to implement to integrate the session into an application.
+/// Trait to implement to integrate ZSSP into an application.
 ///
-/// Templating the session on this trait lets the code here be almost entirely transport, OS,
-/// and use case independent.
-pub trait ApplicationLayer: Sized {
+/// This is a container trait for all of the cryptographic algorithms ZSSP will use, and all of the
+/// generic types that ZSSP will attach to sessions.
+pub trait CryptoLayer: Sized {
     /// These are constants that can be redefined from their defaults to change rekey
     /// and negotiation timeout behavior. If two sides of a ZSSP session have different constants,
     /// the protocol will tend to default to the smaller constants.
@@ -131,12 +131,19 @@ pub trait ApplicationLayer: Sized {
     /// for ZSSP to achieve FIPS compliance.
     type Kem: Kyber1024PrivateKey<Self::Rng>;
 
+    /// An arbitrary opaque object for use by the application that is attached to each session.
+    type SessionData;
+}
+/// Trait to implement to integrate ZSSP into an application.
+///
+/// Templating ZSSP on this trait lets the code here be almost entirely transport, OS,
+/// and use case independent.
+pub trait ApplicationLayer: Sized {
+    /// Specifies which concrete set of cryptography types will be used by this application.
+    type Crypto: CryptoLayer;
     /// A user-defined error returned when the `ApplicationLayer` fails to access persistent storage
     /// for a peer's ratchet states.
     type StorageError: std::error::Error;
-
-    /// An arbitrary opaque object for use by the application that is attached to each session.
-    type SessionData;
 
     /// Should return the current time in milliseconds. Does not have to be monotonic, nor synced
     /// with remote peers (although both of these properties would help reliability slightly).
@@ -169,14 +176,14 @@ pub trait ApplicationLayer: Sized {
     /// least one party is misconfigured and got their ratchet keys corrupted or lost, or Bob has
     /// been compromised and is being impersonated. An attacker must at least have Bob's private
     /// static key to be able to ask Alice to downgrade.
-    fn initiator_disallows_downgrade(&mut self, session: &Arc<Session<Self>>) -> bool;
+    fn initiator_disallows_downgrade(&mut self, session: &Arc<Session<Self::Crypto>>) -> bool;
     /// Function to accept sessions after final negotiation.
     /// The second argument is the identity that the remote peer sent us. The application
     /// must verify this identity is associated with the remote peer's static key.
     /// To prevent desync, if this function specifies that we should connect, no other open session
     /// with the same remote peer must exist. Drop or call expire on any pre-existing sessions
     /// before returning.
-    fn check_accept_session(&mut self, remote_static_key: &Self::PublicKey, identity: &[u8]) -> AcceptAction<Self>;
+    fn check_accept_session(&mut self, remote_static_key: &<Self::Crypto as CryptoLayer>::PublicKey, identity: &[u8]) -> AcceptAction<Self::Crypto>;
 
     /// Lookup a specific ratchet state based on its ratchet fingerprint.
     /// This function will be called whenever Alice attempts to connect to us with a non-empty
@@ -204,8 +211,8 @@ pub trait ApplicationLayer: Sized {
     /// function `ApplicationLayer::check_accept_session`.
     fn restore_by_identity(
         &mut self,
-        remote_static_key: &Self::PublicKey,
-        session_data: &Self::SessionData,
+        remote_static_key: &<Self::Crypto as CryptoLayer>::PublicKey,
+        session_data: &<Self::Crypto as CryptoLayer>::SessionData,
     ) -> Result<Option<RatchetStates>, Self::StorageError>;
     /// Atomically commit the update specified by `update_data` to storage, or return an error if
     /// the update could not be made.
@@ -225,8 +232,8 @@ pub trait ApplicationLayer: Sized {
     /// Otherwise, when we restart, we will not be allowed to reconnect.
     fn save_ratchet_state(
         &mut self,
-        remote_static_key: &Self::PublicKey,
-        session_data: &Self::SessionData,
+        remote_static_key: &<Self::Crypto as CryptoLayer>::PublicKey,
+        session_data: &<Self::Crypto as CryptoLayer>::SessionData,
         update_data: RatchetUpdate<'_>,
     ) -> Result<(), Self::StorageError>;
 
@@ -234,17 +241,17 @@ pub trait ApplicationLayer: Sized {
     /// These are provided for debugging, logging or metrics purposes, and must be used for
     /// nothing else. Do not base protocol-level decisions upon the events passed to this function.
     #[cfg(feature = "logging")]
-    fn event_log(&mut self, event: LogEvent<'_, Self>);
+    fn event_log(&mut self, event: LogEvent<'_, Self::Crypto>);
 }
 
 /// A collection of fields specifying how to complete the key exchange with a specific remote peer,
 /// used by Bob, the responder, at the very last stage of the key exchange.
 ///
 /// Corresponds to the *Accept* callback of Transition Algorithm 4.
-pub struct AcceptAction<App: ApplicationLayer> {
+pub struct AcceptAction<Crypto: CryptoLayer> {
     /// The data object to be attached to the session if we successfully connect.
     /// If this field is None then we will not connect to this remote peer.
-    pub session_data: Option<App::SessionData>,
+    pub session_data: Option<Crypto::SessionData>,
     /// Whether or not we will accept a connection with the remote peer when they do not have a
     /// ratchet key that we think they should have.
     pub responder_disallows_downgrade: bool,

@@ -7,10 +7,11 @@
  */
 
 use std::collections::HashMap;
+use std::convert::Infallible;
 use std::iter::ExactSizeIterator;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -18,7 +19,7 @@ use rand_core::OsRng;
 use rand_core::RngCore;
 
 use zssp_proto::application::{
-    AcceptAction, ApplicationLayer, RatchetState, RatchetStates, RatchetUpdate, Settings, RATCHET_SIZE,
+    AcceptAction, ApplicationLayer, RatchetState, RatchetStates, RatchetUpdate, Settings, RATCHET_SIZE, CryptoLayer,
 };
 use zssp_proto::crypto::P384KeyPair;
 use zssp_proto::crypto_impl::{
@@ -31,7 +32,7 @@ const TEST_MTU: usize = 1500;
 struct TestApplication {
     time: Instant,
     name: &'static str,
-    ratchets: Mutex<Ratchets>,
+    ratchets: Ratchets,
 }
 
 struct Ratchets {
@@ -44,8 +45,7 @@ impl Ratchets {
     }
 }
 
-#[allow(unused)]
-impl ApplicationLayer for &TestApplication {
+impl CryptoLayer for TestApplication {
     const SETTINGS: Settings = Settings {
         initial_offer_timeout: Settings::INITIAL_OFFER_TIMEOUT_MS,
         rekey_timeout: 60 * 1000,
@@ -63,18 +63,21 @@ impl ApplicationLayer for &TestApplication {
     type KeyPair = P384CrateKeyPair;
     type Kem = RustKyber1024PrivateKey;
 
-    type StorageError = std::convert::Infallible;
     type SessionData = u128;
-
-    fn hello_requires_recognized_ratchet(&self) -> bool {
+}
+#[allow(unused)]
+impl ApplicationLayer for &mut TestApplication {
+    type Crypto = TestApplication;
+    type StorageError = Infallible;
+    fn hello_requires_recognized_ratchet(&mut self) -> bool {
         false
     }
 
-    fn initiator_disallows_downgrade(&self, session: &Arc<Session<Self>>) -> bool {
+    fn initiator_disallows_downgrade(&mut self, session: &Arc<Session<TestApplication>>) -> bool {
         true
     }
 
-    fn check_accept_session(&self, remote_static_key: &Self::PublicKey, identity: &[u8]) -> AcceptAction<Self> {
+    fn check_accept_session(&mut self, remote_static_key: &P384CratePublicKey, identity: &[u8]) -> AcceptAction<TestApplication> {
         AcceptAction {
             session_data: Some(1),
             responder_disallows_downgrade: true,
@@ -83,49 +86,46 @@ impl ApplicationLayer for &TestApplication {
     }
 
     fn restore_by_fingerprint(
-        &self,
+        &mut self,
         ratchet_fingerprint: &[u8; RATCHET_SIZE],
-    ) -> Result<Option<RatchetState>, Self::StorageError> {
-        let ratchets = self.ratchets.lock().unwrap();
-        Ok(ratchets.rf_map.get(ratchet_fingerprint).cloned())
+    ) -> Result<Option<RatchetState>, Infallible> {
+        Ok(self.ratchets.rf_map.get(ratchet_fingerprint).cloned())
     }
 
     fn restore_by_identity(
-        &self,
-        remote_static_key: &Self::PublicKey,
-        session_data: &Self::SessionData,
-    ) -> Result<Option<RatchetStates>, Self::StorageError> {
-        let ratchets = self.ratchets.lock().unwrap();
-        Ok(ratchets.peer_map.get(session_data).cloned())
+        &mut self,
+        remote_static_key: &P384CratePublicKey,
+        session_data: &u128,
+    ) -> Result<Option<RatchetStates>, Infallible> {
+        Ok(self.ratchets.peer_map.get(session_data).cloned())
     }
 
     fn save_ratchet_state(
-        &self,
-        remote_static_key: &Self::PublicKey,
-        session_data: &Self::SessionData,
+        &mut self,
+        remote_static_key: &P384CratePublicKey,
+        session_data: &u128,
         update_data: RatchetUpdate<'_>,
-    ) -> Result<(), Self::StorageError> {
-        let mut ratchets = self.ratchets.lock().unwrap();
-        ratchets.peer_map.insert(*session_data, update_data.to_states());
+    ) -> Result<(), Infallible> {
+        self.ratchets.peer_map.insert(*session_data, update_data.to_states());
 
         if let Some(rf) = update_data.added_fingerprint() {
-            ratchets.rf_map.insert(*rf, update_data.state1.clone());
+            self.ratchets.rf_map.insert(*rf, update_data.state1.clone());
             println!("[{}] new ratchet #{}", self.name, update_data.state1.chain_len());
         }
         if let Some(rf) = update_data.deleted_fingerprint1() {
-            ratchets.rf_map.remove(rf);
+            self.ratchets.rf_map.remove(rf);
         }
         if let Some(rf) = update_data.deleted_fingerprint2() {
-            ratchets.rf_map.remove(rf);
+            self.ratchets.rf_map.remove(rf);
         }
         Ok(())
     }
 
-    fn time(&self) -> i64 {
+    fn time(&mut self) -> i64 {
         self.time.elapsed().as_millis() as i64
     }
 
-    fn event_log(&self, event: zssp_proto::LogEvent<Self>) {
+    fn event_log(&mut self, event: zssp_proto::LogEvent<TestApplication>) {
         println!(">[{}] {:?}", self.name, event);
     }
 }
@@ -133,7 +133,7 @@ impl ApplicationLayer for &TestApplication {
 fn alice_main(
     run: &AtomicBool,
     packet_success_rate: u32,
-    alice_app: &TestApplication,
+    mut alice_app: TestApplication,
     alice_out: mpsc::SyncSender<Vec<u8>>,
     alice_in: mpsc::Receiver<Vec<u8>>,
     recursive_out: mpsc::SyncSender<Vec<u8>>,
@@ -141,7 +141,7 @@ fn alice_main(
     bob_pubkey: P384CratePublicKey,
 ) {
     let startup_time = std::time::Instant::now();
-    let mut context = zssp_proto::Context::<&TestApplication>::new(alice_keypair, OsRng);
+    let mut context = zssp_proto::Context::<TestApplication>::new(alice_keypair, OsRng);
     let mut next_service = startup_time.elapsed().as_millis() as i64 + 500;
     let test_data = [1u8; TEST_MTU * 10];
     let mut up = false;
@@ -153,7 +153,7 @@ fn alice_main(
             alice_session = Some(
                 context
                     .open(
-                        alice_app,
+                        &mut alice_app,
                         |b| alice_out.send(b).is_ok(),
                         TEST_MTU,
                         bob_pubkey.clone(),
@@ -173,7 +173,7 @@ fn alice_main(
                     use zssp_proto::result::ReceiveOk::*;
                     use zssp_proto::result::SessionEvent::*;
                     match context.receive(
-                        alice_app,
+                        &mut alice_app,
                         |b| alice_out.send(b).is_ok(),
                         TEST_MTU,
                         |_| Some((|b| alice_out.send(b).is_ok(), TEST_MTU)),
@@ -228,7 +228,7 @@ fn alice_main(
 
         if current_time >= next_service {
             next_service =
-                current_time + context.service(alice_app, |_| Some((|b| alice_out.send(b).is_ok(), TEST_MTU)));
+                current_time + context.service(&mut alice_app, |_| Some((|b| alice_out.send(b).is_ok(), TEST_MTU)));
         }
     }
 }
@@ -236,14 +236,14 @@ fn alice_main(
 fn bob_main(
     run: &AtomicBool,
     packet_success_rate: u32,
-    bob_app: &TestApplication,
+    mut bob_app: TestApplication,
     bob_out: mpsc::SyncSender<Vec<u8>>,
     bob_in: mpsc::Receiver<Vec<u8>>,
     recursive_out: mpsc::SyncSender<Vec<u8>>,
     bob_keypair: P384CrateKeyPair,
 ) {
     let startup_time = std::time::Instant::now();
-    let mut context = zssp_proto::Context::<&TestApplication>::new(bob_keypair, OsRng);
+    let mut context = zssp_proto::Context::<TestApplication>::new(bob_keypair, OsRng);
     let mut last_speed_metric = startup_time.elapsed().as_millis() as i64;
     let mut next_service = last_speed_metric + 500;
     let mut transferred = 0u64;
@@ -260,7 +260,7 @@ fn bob_main(
                 use zssp_proto::result::ReceiveOk::*;
                 use zssp_proto::result::SessionEvent::*;
                 match context.receive(
-                    bob_app,
+                    &mut bob_app,
                     |b| bob_out.send(b).is_ok(),
                     TEST_MTU,
                     |_| Some((|b| bob_out.send(b).is_ok(), TEST_MTU)),
@@ -305,7 +305,7 @@ fn bob_main(
         }
 
         if current_time >= next_service {
-            next_service = current_time + context.service(bob_app, |_| Some((|b| bob_out.send(b).is_ok(), TEST_MTU)));
+            next_service = current_time + context.service(&mut bob_app, |_| Some((|b| bob_out.send(b).is_ok(), TEST_MTU)));
         }
     }
 }
@@ -317,14 +317,14 @@ fn core(time: u64, packet_success_rate: u32) {
     let alice_app = TestApplication {
         time: Instant::now(),
         name: "alice",
-        ratchets: Mutex::new(Ratchets::new()),
+        ratchets: Ratchets::new(),
     };
     let bob_keypair = P384CrateKeyPair::generate(&mut OsRng);
     let bob_pubkey = bob_keypair.public_key();
     let bob_app = TestApplication {
         time: Instant::now(),
         name: "bob",
-        ratchets: Mutex::new(Ratchets::new()),
+        ratchets: Ratchets::new(),
     };
 
     let (alice_out, bob_in) = mpsc::sync_channel::<Vec<u8>>(256);
@@ -338,7 +338,7 @@ fn core(time: u64, packet_success_rate: u32) {
                 alice_main(
                     run,
                     packet_success_rate,
-                    &alice_app,
+                    alice_app,
                     alice_out,
                     alice_in,
                     bob_out,
@@ -351,7 +351,7 @@ fn core(time: u64, packet_success_rate: u32) {
             bob_main(
                 run,
                 packet_success_rate,
-                &bob_app,
+                bob_app,
                 bob_out,
                 bob_in,
                 alice_out,
