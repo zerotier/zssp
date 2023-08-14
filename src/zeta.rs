@@ -17,7 +17,7 @@ use crate::fragged::Fragged;
 use crate::indexed_heap::BinaryHeapIndex;
 use crate::proto::*;
 use crate::ratchet_state::{RatchetState, RatchetStates};
-use crate::result::{byzantine_fault, FaultType, OpenError, ReceiveError, SendError};
+use crate::result::{fault, FaultType, OpenError, ReceiveError, SendError};
 use crate::symmetric_state::SymmetricState;
 use crate::zssp::{log, ContextInner, SessionQueue};
 #[cfg(feature = "logging")]
@@ -125,19 +125,17 @@ impl<Crypto: CryptoLayer> Default for DuplexKey<Crypto> {
 }
 impl<Crypto: CryptoLayer> DuplexKey<Crypto> {
     fn replace_nk(&mut self, nk_send: &[u8; HASHLEN], nk_recv: &[u8; HASHLEN]) {
-        self.nk = Some(Crypto::AeadPool::new(
-            (&nk_send[..AES_256_KEY_SIZE]).try_into().unwrap(),
-            (&nk_recv[..AES_256_KEY_SIZE]).try_into().unwrap(),
-        ))
+        let nk_send = (&nk_send[..AES_256_KEY_SIZE]).try_into().unwrap();
+        let nk_recv = (&nk_recv[..AES_256_KEY_SIZE]).try_into().unwrap();
+        self.nk = Some(Crypto::AeadPool::new(nk_send, nk_recv))
     }
 }
 impl Keys {
     fn replace_kek(&mut self, kek: &[u8; HASHLEN]) {
         // We want to give rust the best chance of implementing this in a way that does
         // not leak the key on the stack.
-        self.kek
-            .get_or_insert(Zeroizing::new([0u8; AES_256_KEY_SIZE]))
-            .copy_from_slice(&kek[..AES_256_KEY_SIZE]);
+        let old_kek = self.kek.get_or_insert(Zeroizing::new([0u8; AES_256_KEY_SIZE]));
+        old_kek.copy_from_slice(&kek[..AES_256_KEY_SIZE]);
     }
 }
 
@@ -151,6 +149,7 @@ impl<Crypto: CryptoLayer> MutableState<Crypto> {
 }
 
 impl<Crypto: CryptoLayer> SymmetricState<Crypto> {
+    #[must_use]
     fn write_e_no_init<const CAP: usize>(
         &mut self,
         hash: &mut Crypto::Hash,
@@ -165,6 +164,7 @@ impl<Crypto: CryptoLayer> SymmetricState<Crypto> {
         self.mix_key_no_init(hmac, &pub_key);
         e_secret
     }
+    #[must_use]
     fn read_e_no_init(
         &mut self,
         hash: &mut Crypto::Hash,
@@ -179,6 +179,7 @@ impl<Crypto: CryptoLayer> SymmetricState<Crypto> {
         *i = j;
         Crypto::PublicKey::from_bytes((pub_key).try_into().unwrap())
     }
+    #[must_use]
     fn mix_dh(&mut self, hmac: &mut Crypto::Hmac, secret: &Crypto::KeyPair, remote: &Crypto::PublicKey) -> Option<()> {
         let mut ecdh_secret = Zeroizing::new([0u8; P384_ECDH_SHARED_SECRET_SIZE]);
         if secret.agree(&remote, &mut ecdh_secret) {
@@ -188,6 +189,7 @@ impl<Crypto: CryptoLayer> SymmetricState<Crypto> {
             None
         }
     }
+    #[must_use]
     fn mix_dh_no_init(
         &mut self,
         hmac: &mut Crypto::Hmac,
@@ -451,11 +453,11 @@ pub(crate) fn received_x1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     //    -> e, es, e1
     //    <- e, ee, ekem1, psk
     if !(HANDSHAKE_HELLO_MIN_SIZE..=HANDSHAKE_HELLO_MAX_SIZE).contains(&x1.len()) {
-        return Err(byzantine_fault!(InvalidPacket, true));
+        return Err(fault!(InvalidPacket, true));
     }
 
     if &n[AES_GCM_NONCE_SIZE - 8..] != &x1[x1.len() - 8..] {
-        return Err(byzantine_fault!(FailedAuth, true));
+        return Err(fault!(FailedAuth, true));
     }
     let hmac = &mut Crypto::Hmac::new();
     let mut noise = SymmetricState::<Crypto>::initialize(PROTOCOL_NAME_NOISE_XK);
@@ -463,24 +465,24 @@ pub(crate) fn received_x1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     // Noise process prologue.
     let j = i + KID_SIZE;
     noise.mix_hash(hash, &x1[i..j]);
-    let kid_send = NonZeroU32::new(u32::from_ne_bytes(x1[i..j].try_into().unwrap()))
-        .ok_or(byzantine_fault!(InvalidPacket, true))?;
+    let kid_send =
+        NonZeroU32::new(u32::from_ne_bytes(x1[i..j].try_into().unwrap())).ok_or(fault!(InvalidPacket, true))?;
     noise.mix_hash(hash, &ctx.s_secret.public_key_bytes());
     i = j;
     // Process message pattern 1 e token.
     let e_remote = noise
         .read_e_no_init(hash, hmac, &mut i, &x1)
-        .ok_or(byzantine_fault!(FailedAuth, true))?;
+        .ok_or(fault!(FailedAuth, true))?;
     // Process message pattern 1 es token.
     noise
         .mix_dh(hmac, &ctx.s_secret, &e_remote)
-        .ok_or(byzantine_fault!(FailedAuth, true))?;
+        .ok_or(fault!(FailedAuth, true))?;
     // Process message pattern 1 e1 token.
     let j = i + KYBER_PUBLIC_KEY_SIZE;
     let k = j + AES_GCM_TAG_SIZE;
     let tag = x1[j..k].try_into().unwrap();
     if !noise.decrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_HANDSHAKE_HELLO, 0), &mut x1[i..j], tag) {
-        return Err(byzantine_fault!(FailedAuth, true));
+        return Err(fault!(FailedAuth, true));
     }
     let e1_start = i;
     let e1_end = j;
@@ -490,7 +492,7 @@ pub(crate) fn received_x1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     let j = k - AES_GCM_TAG_SIZE;
     let tag = x1[j..k].try_into().unwrap();
     if !noise.decrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_HANDSHAKE_HELLO, 1), &mut x1[i..j], tag) {
-        return Err(byzantine_fault!(FailedAuth, true));
+        return Err(fault!(FailedAuth, true));
     }
 
     let mut ratchet_state = None;
@@ -509,7 +511,7 @@ pub(crate) fn received_x1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
         rs
     } else {
         if app.hello_requires_recognized_ratchet() {
-            return Err(byzantine_fault!(FailedAuth, true));
+            return Err(fault!(FailedAuth, true));
         }
         RatchetState::empty()
     };
@@ -525,7 +527,7 @@ pub(crate) fn received_x1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     // Process message pattern 2 ee token.
     noise
         .mix_dh(hmac, &e_secret, &e_remote)
-        .ok_or(byzantine_fault!(FailedAuth, true))?;
+        .ok_or(fault!(FailedAuth, true))?;
     // Process message pattern 2 ekem1 token.
     {
         let i = x2.len();
@@ -535,7 +537,7 @@ pub(crate) fn received_x1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
             (&x1[e1_start..e1_end]).try_into().unwrap(),
             &mut ekem1_secret,
         )
-        .ok_or(byzantine_fault!(FailedAuth, true))?;
+        .ok_or(fault!(FailedAuth, true))?;
         x2.extend(ekem1);
         let tag = noise.encrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_HANDSHAKE_RESPONSE, 0), &mut x2[i..]);
         x2.extend(tag);
@@ -598,7 +600,7 @@ pub(crate) fn received_x2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     //    <- e, ee, ekem1, psk
     //    -> s, se
     if HANDSHAKE_RESPONSE_SIZE != x2.len() {
-        return Err(byzantine_fault!(InvalidPacket, true));
+        return Err(fault!(InvalidPacket, true));
     }
 
     let kex_lock = session.state_machine_lock.lock().unwrap();
@@ -607,42 +609,42 @@ pub(crate) fn received_x2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     let hmac = &mut Crypto::Hmac::new();
 
     if Some(kid) != state.key_ref(true).recv.kid {
-        return Err(byzantine_fault!(UnknownLocalKeyId, true));
+        return Err(fault!(UnknownLocalKeyId, true));
     }
     let (_, c) = from_nonce(n);
     if c >= COUNTER_WINDOW_MAX_SKIP_AHEAD || &n[AES_GCM_NONCE_SIZE - 3..] != &x2[x2.len() - 3..] {
-        return Err(byzantine_fault!(FailedAuth, true));
+        return Err(fault!(FailedAuth, true));
     }
     let mut should_warn_missing_ratchet = false;
     let mut result = (|| {
         let a1 = if let ZetaAutomata::A1(a1) = &state.beta {
             a1
         } else {
-            return Err(byzantine_fault!(FailedAuth, true));
+            return Err(fault!(FailedAuth, true));
         };
         let mut noise = a1.noise.clone();
         let mut i = 0;
         // Process message pattern 2 e token.
         let e_remote = noise
             .read_e_no_init(hash, hmac, &mut i, &x2)
-            .ok_or(byzantine_fault!(FailedAuth, true))?;
+            .ok_or(fault!(FailedAuth, true))?;
         // Process message pattern 2 ee token.
         noise
             .mix_dh(hmac, &a1.e_secret, &e_remote)
-            .ok_or(byzantine_fault!(FailedAuth, true))?;
+            .ok_or(fault!(FailedAuth, true))?;
         // Process message pattern 2 ekem1 token.
         let j = i + KYBER_CIPHERTEXT_SIZE;
         let k = j + AES_GCM_TAG_SIZE;
         let tag = x2[j..k].try_into().unwrap();
         if !noise.decrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_HANDSHAKE_RESPONSE, 0), &mut x2[i..j], tag) {
-            return Err(byzantine_fault!(FailedAuth, true));
+            return Err(fault!(FailedAuth, true));
         }
         let mut ekem1_secret = Zeroizing::new([0u8; KYBER_PLAINTEXT_SIZE]);
         if !a1
             .e1_secret
             .decapsulate((&x2[i..j]).try_into().unwrap(), &mut ekem1_secret)
         {
-            return Err(byzantine_fault!(FailedAuth, true));
+            return Err(fault!(FailedAuth, true));
         }
         noise.mix_key_no_init(hmac, ekem1_secret.as_ref());
         drop(ekem1_secret);
@@ -690,7 +692,7 @@ pub(crate) fn received_x2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
             }
         }
 
-        let (kid_send, mut noise) = result.ok_or(byzantine_fault!(FailedAuth, true))?;
+        let (kid_send, mut noise) = result.ok_or(fault!(FailedAuth, true))?;
 
         let mut x3 = ArrayVec::<u8, HEADERED_HANDSHAKE_COMPLETION_MAX_SIZE>::new();
         x3.extend([0u8; HEADER_SIZE]);
@@ -702,7 +704,7 @@ pub(crate) fn received_x2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
         // Process message pattern 3 se token.
         noise
             .mix_dh(hmac, &ctx.s_secret, &e_remote)
-            .ok_or(byzantine_fault!(FailedAuth, true))?;
+            .ok_or(fault!(FailedAuth, true))?;
         // Process message pattern 3 payload.
         let i = x3.len();
         x3.try_extend_from_slice(&a1.identity).unwrap();
@@ -757,7 +759,7 @@ pub(crate) fn received_x2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
                 a1
             } else {
                 // This return is unreachable.
-                return Err(byzantine_fault!(FailedAuth, true));
+                return Err(fault!(FailedAuth, true));
             };
             state.beta = ZetaAutomata::A3(Box::new(StateA3 { identity: a1.identity.clone(), x3: x3.clone() }));
             resend_timer
@@ -817,10 +819,10 @@ pub(crate) fn received_x3_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     use FaultType::*;
     //    -> s, se
     if x3.len() < HANDSHAKE_COMPLETION_MIN_SIZE {
-        return Err(byzantine_fault!(InvalidPacket, true));
+        return Err(fault!(InvalidPacket, true));
     }
     if kid != zeta.kid_recv {
-        return Err(byzantine_fault!(UnknownLocalKeyId, true));
+        return Err(fault!(UnknownLocalKeyId, true));
     }
     let hash = &mut Crypto::Hash::new();
     let hmac = &mut Crypto::Hmac::new();
@@ -832,21 +834,20 @@ pub(crate) fn received_x3_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     let k = j + AES_GCM_TAG_SIZE;
     let tag = x3[j..k].try_into().unwrap();
     if !noise.decrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_HANDSHAKE_COMPLETION, 1), &mut x3[i..j], tag) {
-        return Err(byzantine_fault!(FailedAuth, true));
+        return Err(fault!(FailedAuth, true));
     }
-    let s_remote =
-        Crypto::PublicKey::from_bytes((&x3[i..j]).try_into().unwrap()).ok_or(byzantine_fault!(FailedAuth, true))?;
+    let s_remote = Crypto::PublicKey::from_bytes((&x3[i..j]).try_into().unwrap()).ok_or(fault!(FailedAuth, true))?;
     i = k;
     // Process message pattern 3 se token.
     noise
         .mix_dh(hmac, &zeta.e_secret, &s_remote)
-        .ok_or(byzantine_fault!(FailedAuth, true))?;
+        .ok_or(fault!(FailedAuth, true))?;
     // Process message pattern 3 payload.
     let k = x3.len();
     let j = k - AES_GCM_TAG_SIZE;
     let tag = x3[j..k].try_into().unwrap();
     if !noise.decrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_HANDSHAKE_COMPLETION, 0), &mut x3[i..j], tag) {
-        return Err(byzantine_fault!(FailedAuth, true));
+        return Err(fault!(FailedAuth, true));
     }
     let identity_start = i;
     let identity_end = j;
@@ -886,13 +887,13 @@ pub(crate) fn received_x3_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
                         if !responder_silently_rejects {
                             send(&mut create_reject(), Some(&Crypto::PrpEnc::new(&zeta.hk_send)))
                         }
-                        return Err(byzantine_fault!(FailedAuth, true));
+                        return Err(fault!(FailedAuth, true));
                     }
                 }
 
                 let mut noise_kk_ss = Zeroizing::new([0u8; P384_ECDH_SHARED_SECRET_SIZE]);
                 if !ctx.s_secret.agree(&s_remote, &mut noise_kk_ss) {
-                    return Err(byzantine_fault!(FailedAuth, true));
+                    return Err(fault!(FailedAuth, true));
                 }
 
                 let new_ratchet_state = create_ratchet_state(hmac, &mut noise, zeta.ratchet_state.chain_len);
@@ -920,7 +921,7 @@ pub(crate) fn received_x3_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
                     let entry = match session_map.entry(zeta.kid_recv) {
                         // We could have issued the kid that we initially offered Alice to someone else
                         // before Alice was able to respond. It is unlikely but possible.
-                        Occupied(_) => return Err(byzantine_fault!(OutOfSequence, false)),
+                        Occupied(_) => return Err(fault!(OutOfSequence, false)),
                         Vacant(entry) => entry,
                     };
                     let mut session_queue = ctx.session_queue.lock().unwrap();
@@ -996,7 +997,7 @@ pub(crate) fn received_c1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     use FaultType::*;
 
     if c1.len() != KEY_CONFIRMATION_SIZE {
-        return Err(byzantine_fault!(InvalidPacket, true));
+        return Err(fault!(InvalidPacket, true));
     }
 
     let kex_lock = session.state_machine_lock.lock().unwrap();
@@ -1009,18 +1010,18 @@ pub(crate) fn received_c1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     } else {
         // Some key confirmation may have arrived extremely delayed.
         // It is unlikely but possible.
-        return Err(byzantine_fault!(OutOfSequence, false));
+        return Err(fault!(OutOfSequence, false));
     };
 
     let specified_key = state.key_ref(is_other).recv.kek.as_ref();
-    let specified_key = specified_key.ok_or(byzantine_fault!(OutOfSequence, true))?;
+    let specified_key = specified_key.ok_or(fault!(OutOfSequence, true))?;
     let tag = c1[..].try_into().unwrap();
     if !Crypto::Aead::decrypt_in_place(specified_key, n, &[], &mut [], tag) {
-        return Err(byzantine_fault!(FailedAuth, true));
+        return Err(fault!(FailedAuth, true));
     }
     let (_, c) = from_nonce(n);
     if !session.window.update(c) {
-        return Err(byzantine_fault!(ExpiredCounter, true));
+        return Err(fault!(ExpiredCounter, true));
     }
 
     let just_establised = is_other && matches!(&state.beta, ZetaAutomata::A3 { .. });
@@ -1063,7 +1064,7 @@ pub(crate) fn received_c1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     let mut c2 = ArrayVec::<u8, HEADERED_ACKNOWLEDGEMENT_SIZE>::new();
     c2.extend([0u8; HEADER_SIZE]);
     if !send_control(session, &state, PACKET_TYPE_ACK, c2, send) {
-        return Err(byzantine_fault!(OutOfSequence, true));
+        return Err(fault!(OutOfSequence, true));
     }
 
     Ok(just_establised)
@@ -1081,7 +1082,7 @@ pub(crate) fn received_c2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     use FaultType::*;
 
     if c2.len() != ACKNOWLEDGEMENT_SIZE {
-        return Err(byzantine_fault!(InvalidPacket, true));
+        return Err(fault!(InvalidPacket, true));
     }
 
     let kex_lock = session.state_machine_lock.lock().unwrap();
@@ -1089,20 +1090,20 @@ pub(crate) fn received_c2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
 
     if Some(kid) != state.key_ref(false).recv.kid {
         // Some acknowledgement may have arrived extremely delayed.
-        return Err(byzantine_fault!(UnknownLocalKeyId, false));
+        return Err(fault!(UnknownLocalKeyId, false));
     }
     if !matches!(&state.beta, ZetaAutomata::S1) {
         // Some acknowledgement may have arrived extremely delayed.
-        return Err(byzantine_fault!(OutOfSequence, false));
+        return Err(fault!(OutOfSequence, false));
     }
 
     let tag = c2[..].try_into().unwrap();
     if !Crypto::Aead::decrypt_in_place(state.key_ref(false).recv.kek.as_ref().unwrap(), n, &[], &mut [], tag) {
-        return Err(byzantine_fault!(FailedAuth, true));
+        return Err(fault!(FailedAuth, true));
     }
     let (_, c) = from_nonce(n);
     if !session.window.update(c) {
-        return Err(byzantine_fault!(ExpiredCounter, true));
+        return Err(fault!(ExpiredCounter, true));
     }
     drop(state);
     let timeout_timer = {
@@ -1131,23 +1132,23 @@ pub(crate) fn received_d_trans<Crypto: CryptoLayer>(
     use FaultType::*;
 
     if d.len() != SESSION_REJECTED_SIZE {
-        return Err(byzantine_fault!(InvalidPacket, true));
+        return Err(fault!(InvalidPacket, true));
     }
 
     let kex_lock = session.state_machine_lock.lock().unwrap();
     let state = session.state.read().unwrap();
 
     if Some(kid) != state.key_ref(true).recv.kid || !matches!(&state.beta, ZetaAutomata::A3 { .. }) {
-        return Err(byzantine_fault!(OutOfSequence, true));
+        return Err(fault!(OutOfSequence, true));
     }
 
     let tag = d[..].try_into().unwrap();
     if !Crypto::Aead::decrypt_in_place(state.key_ref(true).recv.kek.as_ref().unwrap(), n, &[], &mut [], tag) {
-        return Err(byzantine_fault!(FailedAuth, true));
+        return Err(fault!(FailedAuth, true));
     }
     let (_, c) = from_nonce(n);
     if !session.window.update(c) {
-        return Err(byzantine_fault!(ExpiredCounter, true));
+        return Err(fault!(ExpiredCounter, true));
     }
 
     drop(state);
@@ -1352,7 +1353,7 @@ pub(crate) fn received_k1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     //    -> psk, e, es, ss
     //    <- e, ee, se
     if k1.len() != REKEY_SIZE {
-        return Err(byzantine_fault!(InvalidPacket, true));
+        return Err(fault!(InvalidPacket, true));
     }
 
     let kex_lock = session.state_machine_lock.lock().unwrap();
@@ -1360,7 +1361,7 @@ pub(crate) fn received_k1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
 
     if Some(kid) != state.key_ref(false).recv.kid {
         // Some rekey packet may have arrived extremely delayed.
-        return Err(byzantine_fault!(UnknownLocalKeyId, false));
+        return Err(fault!(UnknownLocalKeyId, false));
     }
     let should_rekey_as_bob = match &state.beta {
         ZetaAutomata::S2 { .. } => true,
@@ -1369,7 +1370,7 @@ pub(crate) fn received_k1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     };
     if !should_rekey_as_bob {
         // Some rekey packet may have arrived extremely delayed.
-        return Err(byzantine_fault!(OutOfSequence, false));
+        return Err(fault!(OutOfSequence, false));
     }
 
     let i = k1.len() - AES_GCM_TAG_SIZE;
@@ -1381,11 +1382,11 @@ pub(crate) fn received_k1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
         &mut k1[..i],
         &tag,
     ) {
-        return Err(byzantine_fault!(FailedAuth, true));
+        return Err(fault!(FailedAuth, true));
     }
     let (_, c) = from_nonce(n);
     if !session.window.update(c) {
-        return Err(byzantine_fault!(ExpiredCounter, true));
+        return Err(fault!(ExpiredCounter, true));
     }
 
     let result = (|| {
@@ -1401,11 +1402,11 @@ pub(crate) fn received_k1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
         // Process message pattern 1 e token.
         let e_remote = noise
             .read_e_no_init(hash, hmac, &mut i, &k1)
-            .ok_or(byzantine_fault!(FailedAuth, true))?;
+            .ok_or(fault!(FailedAuth, true))?;
         // Process message pattern 1 es token.
         noise
             .mix_dh_no_init(hmac, &ctx.s_secret, &e_remote)
-            .ok_or(byzantine_fault!(FailedAuth, true))?;
+            .ok_or(fault!(FailedAuth, true))?;
         // Process message pattern 1 ss token.
         noise.mix_key(hmac, session.noise_kk_ss.as_ref());
         // Process message pattern 1 payload.
@@ -1413,10 +1414,10 @@ pub(crate) fn received_k1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
         let k = j + AES_GCM_TAG_SIZE;
         let tag = k1[j..k].try_into().unwrap();
         if !noise.decrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_REKEY_INIT, 0), &mut k1[i..j], tag) {
-            return Err(byzantine_fault!(FailedAuth, true));
+            return Err(fault!(FailedAuth, true));
         }
-        let kid_send = NonZeroU32::new(u32::from_ne_bytes(k1[i..j].try_into().unwrap()))
-            .ok_or(byzantine_fault!(FailedAuth, true))?;
+        let kid_send =
+            NonZeroU32::new(u32::from_ne_bytes(k1[i..j].try_into().unwrap())).ok_or(fault!(FailedAuth, true))?;
 
         let mut k2 = ArrayVec::<u8, HEADERED_REKEY_SIZE>::new();
         k2.extend([0u8; HEADER_SIZE]);
@@ -1425,11 +1426,11 @@ pub(crate) fn received_k1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
         // Process message pattern 2 ee token.
         noise
             .mix_dh_no_init(hmac, &e_secret, &e_remote)
-            .ok_or(byzantine_fault!(FailedAuth, true))?;
+            .ok_or(fault!(FailedAuth, true))?;
         // Process message pattern 2 se token.
         noise
             .mix_dh(hmac, &ctx.s_secret, &e_remote)
-            .ok_or(byzantine_fault!(FailedAuth, true))?;
+            .ok_or(fault!(FailedAuth, true))?;
         // Process message pattern 2 payload.
         let i = k2.len();
         let new_kid_recv = remap(ctx, session, &state);
@@ -1484,7 +1485,7 @@ pub(crate) fn received_k1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
         let state = session.state.read().unwrap();
 
         if !send_control(session, &state, PACKET_TYPE_REKEY_COMPLETE, k2, send) {
-            return Err(byzantine_fault!(OutOfSequence, true));
+            return Err(fault!(OutOfSequence, true));
         }
 
         Ok(())
@@ -1508,7 +1509,7 @@ pub(crate) fn received_k2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     use FaultType::*;
     //    <- e, ee, se
     if k2.len() != REKEY_SIZE {
-        return Err(byzantine_fault!(InvalidPacket, true));
+        return Err(fault!(InvalidPacket, true));
     }
 
     let kex_lock = session.state_machine_lock.lock().unwrap();
@@ -1516,11 +1517,11 @@ pub(crate) fn received_k2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
 
     if Some(kid) != state.key_ref(false).recv.kid {
         // Some rekey packet may have arrived extremely delayed.
-        return Err(byzantine_fault!(UnknownLocalKeyId, false));
+        return Err(fault!(UnknownLocalKeyId, false));
     }
     if !matches!(&state.beta, ZetaAutomata::R1 { .. }) {
         // Some rekey packet may have arrived extremely delayed.
-        return Err(byzantine_fault!(OutOfSequence, false));
+        return Err(fault!(OutOfSequence, false));
     }
 
     let i = k2.len() - AES_GCM_TAG_SIZE;
@@ -1532,11 +1533,11 @@ pub(crate) fn received_k2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
         &mut k2[..i],
         &tag,
     ) {
-        return Err(byzantine_fault!(FailedAuth, true));
+        return Err(fault!(FailedAuth, true));
     }
     let (_, c) = from_nonce(n);
     if !session.window.update(c) {
-        return Err(byzantine_fault!(ExpiredCounter, true));
+        return Err(fault!(ExpiredCounter, true));
     }
     let result = (|| {
         if let ZetaAutomata::R1 { noise, e_secret, .. } = &state.beta {
@@ -1547,24 +1548,24 @@ pub(crate) fn received_k2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
             // Process message pattern 2 e token.
             let e_remote = noise
                 .read_e_no_init(hash, hmac, &mut i, &k2)
-                .ok_or(byzantine_fault!(FailedAuth, true))?;
+                .ok_or(fault!(FailedAuth, true))?;
             // Process message pattern 2 ee token.
             noise
                 .mix_dh_no_init(hmac, e_secret, &e_remote)
-                .ok_or(byzantine_fault!(FailedAuth, true))?;
+                .ok_or(fault!(FailedAuth, true))?;
             // Process message pattern 2 se token.
             noise
                 .mix_dh(hmac, e_secret, &session.s_remote)
-                .ok_or(byzantine_fault!(FailedAuth, true))?;
+                .ok_or(fault!(FailedAuth, true))?;
             // Process message pattern 2 payload.
             let j = i + KID_SIZE;
             let k = j + AES_GCM_TAG_SIZE;
             let tag = k2[j..k].try_into().unwrap();
             if !noise.decrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_REKEY_COMPLETE, 0), &mut k2[i..j], tag) {
-                return Err(byzantine_fault!(FailedAuth, true));
+                return Err(fault!(FailedAuth, true));
             }
-            let kid_send = NonZeroU32::new(u32::from_ne_bytes(k2[i..j].try_into().unwrap()))
-                .ok_or(byzantine_fault!(InvalidPacket, true))?;
+            let kid_send =
+                NonZeroU32::new(u32::from_ne_bytes(k2[i..j].try_into().unwrap())).ok_or(fault!(InvalidPacket, true))?;
 
             let new_ratchet_state = create_ratchet_state(hmac, &noise, state.ratchet_state1.chain_len);
             app.save_ratchet_state(
@@ -1614,7 +1615,7 @@ pub(crate) fn received_k2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
             let mut c1 = ArrayVec::<u8, HEADERED_KEY_CONFIRMATION_SIZE>::new();
             c1.extend([0u8; HEADER_SIZE]);
             if !send_control(&session, &state, PACKET_TYPE_KEY_CONFIRM, c1, send) {
-                return Err(byzantine_fault!(OutOfSequence, true));
+                return Err(fault!(OutOfSequence, true));
             }
 
             Ok(())
@@ -1744,12 +1745,10 @@ pub(crate) fn receive_payload_in_place<Crypto: CryptoLayer>(
         state.keys[1].nk.as_ref()
     } else {
         // Should be unreachable unless we are leaking kids somewhere.
-        return Err(byzantine_fault!(UnknownLocalKeyId, true));
+        return Err(fault!(UnknownLocalKeyId, true));
     };
 
-    let mut cipher = specified_key
-        .ok_or(byzantine_fault!(OutOfSequence, true))?
-        .start_dec(nonce);
+    let mut cipher = specified_key.ok_or(fault!(OutOfSequence, true))?.start_dec(nonce);
     let (_, c) = from_nonce(nonce);
 
     // NOTE: This only works because we check the size of every received fragment in the receive
@@ -1765,13 +1764,13 @@ pub(crate) fn receive_payload_in_place<Crypto: CryptoLayer>(
     cipher.decrypt_in_place(&mut fragment[..tag_idx]);
 
     if !cipher.finish((&fragment[tag_idx..]).try_into().unwrap()) {
-        return Err(byzantine_fault!(FailedAuth, true));
+        return Err(fault!(FailedAuth, true));
     }
 
     if !session.window.update(c) {
         // This error is marked as not happening naturally, but it could occur if something about
         // the transport protocol is duplicating packets.
-        return Err(byzantine_fault!(ExpiredCounter, true));
+        return Err(fault!(ExpiredCounter, true));
     }
 
     for fragment in fragments {

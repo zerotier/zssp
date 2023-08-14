@@ -18,7 +18,7 @@ use crate::fragged::Assembled;
 use crate::handshake_cache::UnassociatedHandshakeCache;
 use crate::indexed_heap::IndexedBinaryHeap;
 use crate::proto::*;
-use crate::result::{byzantine_fault, FaultType, OpenError, ReceiveError, ReceiveOk, SendError, SessionEvent};
+use crate::result::{fault, FaultType, OpenError, ReceiveError, ReceiveOk, SendError, SessionEvent};
 #[cfg(feature = "logging")]
 use crate::LogEvent::*;
 
@@ -63,7 +63,7 @@ fn parse_fragment_header(incoming_fragment: &[u8]) -> Result<(usize, usize, [u8;
     let fragment_no = incoming_fragment[FRAGMENT_NO_IDX] as usize;
     let fragment_count = incoming_fragment[FRAGMENT_COUNT_IDX] as usize;
     if fragment_no >= fragment_count || fragment_count > MAX_FRAGMENTS {
-        return Err(byzantine_fault!(FaultType::InvalidPacket, true));
+        return Err(fault!(FaultType::InvalidPacket, true));
     }
     let mut nonce = [0u8; AES_GCM_NONCE_SIZE];
     nonce[2..].copy_from_slice(&incoming_fragment[PACKET_NONCE_START..HEADER_SIZE]);
@@ -211,7 +211,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
         send_unassociated_mtu = send_unassociated_mtu.max(MIN_TRANSPORT_MTU);
         let incoming_fragment: &mut [u8] = incoming_fragment_buf.as_mut();
         if incoming_fragment.len() < MIN_PACKET_SIZE {
-            return Err(byzantine_fault!(FaultType::InvalidPacket, false));
+            return Err(fault!(FaultType::InvalidPacket, false));
         }
 
         let mut fragment_buffer = Assembled::new();
@@ -239,10 +239,10 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                         if !matches!(&state.beta, ZetaAutomata::A1(_)) {
                             // A resent handshake response from Bob may have arrived out of order,
                             // after we already received one.
-                            return Err(byzantine_fault!(OutOfSequence, false));
+                            return Err(fault!(OutOfSequence, false));
                         }
                         if incoming_counter >= COUNTER_WINDOW_MAX_SKIP_AHEAD {
-                            return Err(byzantine_fault!(ExpiredCounter, true));
+                            return Err(fault!(ExpiredCounter, true));
                         }
                     } else if PACKET_TYPE_USES_COUNTER_RANGE.contains(&packet_type) {
                         // For DOS resistant reply-protection we need to check that the given counter is
@@ -258,14 +258,14 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                             // received the first session key and is reject all of Alice's resends.
                             // This can also occur if a session was manually expired, but not
                             // dropped, and the remote party is still sending us data.
-                            return Err(byzantine_fault!(ExpiredCounter, false));
+                            return Err(fault!(ExpiredCounter, false));
                         }
                     } else if packet_type == PACKET_TYPE_HANDSHAKE_COMPLETION {
                         // This can be triggered if Bob successfully received a session key and
                         // needs to reject all of Alice's resends of PACKET_TYPE_NOISE_XK_PATTERN_3.
-                        return Err(byzantine_fault!(InvalidPacket, false));
+                        return Err(fault!(InvalidPacket, false));
                     } else {
-                        return Err(byzantine_fault!(InvalidPacket, true));
+                        return Err(fault!(InvalidPacket, true));
                     }
                 }
 
@@ -312,7 +312,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                             for fragment in fragment_buffer.as_ref() {
                                 buffer
                                     .try_extend_from_slice(&fragment.as_ref()[HEADER_SIZE..])
-                                    .map_err(|_| byzantine_fault!(InvalidPacket, true))?;
+                                    .map_err(|_| fault!(InvalidPacket, true))?;
                             }
                             // We have not yet authenticated the sender so we do not report
                             // receiving a packet from them.
@@ -405,7 +405,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                             log!(app, DIsAuthClosedSession(&session));
                             SessionEvent::Rejected
                         }
-                        _ => return Err(byzantine_fault!(InvalidPacket, true)), // This is unreachable.
+                        _ => return Err(fault!(InvalidPacket, true)), // This is unreachable.
                     }
                 };
                 Ok(ReceiveOk::Session(session, ret))
@@ -429,7 +429,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                     {
                         //vrfy
                         if packet_type != PACKET_TYPE_HANDSHAKE_COMPLETION || incoming_counter != 0 {
-                            return Err(byzantine_fault!(InvalidPacket, true));
+                            return Err(fault!(InvalidPacket, true));
                         }
                     }
 
@@ -448,7 +448,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                             for fragment in fragment_buffer.as_ref() {
                                 buffer
                                     .try_extend_from_slice(&fragment.as_ref()[HEADER_SIZE..])
-                                    .map_err(|_| byzantine_fault!(InvalidPacket, true))?;
+                                    .map_err(|_| fault!(InvalidPacket, true))?;
                             }
                             buffer.as_mut()
                         }
@@ -479,7 +479,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                     // This can occur naturally because either Bob's incoming_sessions cache got
                     // full so Alice's incoming session was dropped, or the session this packet
                     // was for was dropped by the application.
-                    return Err(byzantine_fault!(UnknownLocalKeyId, false));
+                    return Err(fault!(UnknownLocalKeyId, false));
                 }
             }
         } else {
@@ -490,7 +490,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
             {
                 //vrfy
                 if packet_type != PACKET_TYPE_HANDSHAKE_HELLO && packet_type != PACKET_TYPE_CHALLENGE {
-                    return Err(byzantine_fault!(InvalidPacket, true));
+                    return Err(fault!(InvalidPacket, true));
                 }
             }
 
@@ -513,7 +513,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                     for fragment in fragment_buffer.as_ref() {
                         buffer
                             .try_extend_from_slice(&fragment.as_ref()[HEADER_SIZE..])
-                            .map_err(|_| byzantine_fault!(InvalidPacket, true))?;
+                            .map_err(|_| fault!(InvalidPacket, true))?;
                     }
                     buffer.as_mut()
                 }
@@ -527,7 +527,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                 if !(HANDSHAKE_HELLO_CHALLENGE_MIN_SIZE..=HANDSHAKE_HELLO_CHALLENGE_MAX_SIZE)
                     .contains(&assembled_packet.len())
                 {
-                    return Err(byzantine_fault!(InvalidPacket, true));
+                    return Err(fault!(InvalidPacket, true));
                 }
                 // Process recv challenge layer.
                 let challenge_start = assembled_packet.len() - CHALLENGE_SIZE;
@@ -554,7 +554,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
 
                             send_unassociated_reply(&mut challenge_packet);
                             // If we issue a challenge the first hello packet will always fail.
-                            return Err(byzantine_fault!(FailedAuth, false));
+                            return Err(fault!(FailedAuth, false));
                         } else {
                             log!(app, X1SucceededChallenge);
                         }
@@ -580,7 +580,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                 log!(app, ReceivedRawChallenge);
                 // Process recv challenge layer.
                 if assembled_packet.len() != KID_SIZE + CHALLENGE_SIZE {
-                    return Err(byzantine_fault!(InvalidPacket, true));
+                    return Err(fault!(InvalidPacket, true));
                 }
                 if let Some(kid_recv) =
                     NonZeroU32::new(u32::from_ne_bytes(assembled_packet[..KID_SIZE].try_into().unwrap()))
@@ -591,9 +591,9 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                         return Ok(ReceiveOk::Unassociated);
                     }
                 }
-                Err(byzantine_fault!(UnknownLocalKeyId, true))
+                Err(fault!(UnknownLocalKeyId, true))
             } else {
-                Err(byzantine_fault!(InvalidPacket, true))
+                Err(fault!(InvalidPacket, true))
             }
         }
     }
