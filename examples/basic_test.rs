@@ -10,8 +10,8 @@ use rand_core::OsRng;
 use rand_core::RngCore;
 
 use zssp::application::{
-    AcceptAction, CryptoLayer, IncomingSessionAction, RatchetState, RatchetStates, RatchetUpdate, Settings,
-    RATCHET_SIZE, ApplicationLayer,
+    AcceptAction, ApplicationLayer, CryptoLayer, IncomingSessionAction, RatchetState, RatchetStates, RatchetUpdate,
+    Settings, RATCHET_SIZE,
 };
 use zssp::crypto::P384KeyPair;
 use zssp::crypto_impl::*;
@@ -79,7 +79,11 @@ impl ApplicationLayer for &TestApplication {
         true
     }
 
-    fn check_accept_session(&mut self, remote_static_key: &P384CratePublicKey, identity: &[u8]) -> AcceptAction<TestApplication> {
+    fn check_accept_session(
+        &mut self,
+        remote_static_key: &P384CratePublicKey,
+        identity: &[u8],
+    ) -> AcceptAction<TestApplication> {
         AcceptAction {
             session_data: Some(1),
             responder_disallows_downgrade: true,
@@ -87,10 +91,7 @@ impl ApplicationLayer for &TestApplication {
         }
     }
 
-    fn restore_by_fingerprint(
-        &mut self,
-        ratchet_fingerprint: &[u8; RATCHET_SIZE],
-    ) -> Result<Option<RatchetState>, ()> {
+    fn restore_by_fingerprint(&mut self, ratchet_fingerprint: &[u8; RATCHET_SIZE]) -> Result<Option<RatchetState>, ()> {
         let ratchets = self.ratchets.lock().unwrap();
         Ok(ratchets.rf_map.get(ratchet_fingerprint).cloned())
     }

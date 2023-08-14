@@ -59,9 +59,7 @@ pub struct ContextInner<Crypto: CryptoLayer> {
     pub(crate) challenge: ChallengeContext,
 }
 
-fn parse_fragment_header(
-    incoming_fragment: &[u8],
-) -> Result<(usize, usize, [u8; AES_GCM_NONCE_SIZE]), ReceiveError> {
+fn parse_fragment_header(incoming_fragment: &[u8]) -> Result<(usize, usize, [u8; AES_GCM_NONCE_SIZE]), ReceiveError> {
     let fragment_no = incoming_fragment[FRAGMENT_NO_IDX] as usize;
     let fragment_count = incoming_fragment[FRAGMENT_COUNT_IDX] as usize;
     if fragment_no >= fragment_count || fragment_count > MAX_FRAGMENTS {
@@ -223,11 +221,8 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
             let session = ctx.session_map.read().unwrap().get(&kid_recv).map(|r| r.upgrade());
             if let Some(Some(session)) = session {
                 let state = session.state.read().unwrap();
-                state.hk_recv.decrypt_in_place(
-                    (&mut incoming_fragment[HEADER_AUTH_START..HEADER_AUTH_END])
-                        .try_into()
-                        .unwrap(),
-                );
+                let header_auth = &mut incoming_fragment[HEADER_AUTH_START..HEADER_AUTH_END];
+                state.hk_recv.decrypt_in_place(header_auth.try_into().unwrap());
 
                 let (fragment_no, fragment_count, nonce) = parse_fragment_header(incoming_fragment)?;
                 let (packet_type, incoming_counter) = from_nonce(&nonce);

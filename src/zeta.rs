@@ -188,7 +188,12 @@ impl<Crypto: CryptoLayer> SymmetricState<Crypto> {
             None
         }
     }
-    fn mix_dh_no_init(&mut self, hmac: &mut Crypto::Hmac, secret: &Crypto::KeyPair, remote: &Crypto::PublicKey) -> Option<()> {
+    fn mix_dh_no_init(
+        &mut self,
+        hmac: &mut Crypto::Hmac,
+        secret: &Crypto::KeyPair,
+        remote: &Crypto::PublicKey,
+    ) -> Option<()> {
         let mut ecdh_secret = Zeroizing::new([0u8; P384_ECDH_SHARED_SECRET_SIZE]);
         if secret.agree(&remote, &mut ecdh_secret) {
             self.mix_key_no_init(hmac, ecdh_secret.as_ref());
@@ -251,7 +256,8 @@ fn get_counter<Crypto: CryptoLayer>(session: &Session<Crypto>, state: &MutableSt
             session.session_has_expired.store(true, Ordering::SeqCst);
             return None;
         }
-        Some((c, c > state.key_creation_counter + Crypto::SETTINGS.rekey_after_key_uses))
+        let rekey_at = state.key_creation_counter + Crypto::SETTINGS.rekey_after_key_uses;
+        Some((c, c > rekey_at))
     }
 }
 
@@ -330,13 +336,8 @@ fn create_a1_state<Crypto: CryptoLayer>(
 
     set_header(&mut x1, 0, &to_nonce(PACKET_TYPE_HANDSHAKE_HELLO, c));
 
-    Some(Box::new(StateA1 {
-        noise,
-        e_secret,
-        e1_secret,
-        identity: identity.try_into().unwrap(),
-        x1,
-    }))
+    let identity = identity.try_into().unwrap();
+    Some(Box::new(StateA1 { noise, e_secret, e1_secret, identity, x1 }))
 }
 /// Corresponds to Transition Algorithm 1 found in Section 4.3.
 pub(crate) fn trans_to_a1<Crypto: CryptoLayer, App: ApplicationLayer<Crypto = Crypto>>(
@@ -430,12 +431,9 @@ pub(crate) fn respond_to_challenge<Crypto: CryptoLayer>(
     let mut state = session.state.write().unwrap();
     if let ZetaAutomata::A1(a1) = &mut state.beta {
         let response_start = a1.x1.len() - CHALLENGE_SIZE;
-        respond_to_challenge_in_place(
-            ctx.rng.lock().unwrap().deref_mut(),
-            &mut Crypto::Hash::new(),
-            challenge,
-            (&mut a1.x1[response_start..]).try_into().unwrap(),
-        );
+        let mut rng = ctx.rng.lock().unwrap();
+        let response = (&mut a1.x1[response_start..]).try_into().unwrap();
+        respond_to_challenge_in_place(rng.deref_mut(), &mut Crypto::Hash::new(), challenge, response);
     }
 }
 /// Corresponds to Transition Algorithm 2 found in Section 4.3.
@@ -718,7 +716,7 @@ pub(crate) fn received_x2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
         } else {
             (state.ratchet_state2.as_ref(), Some(&state.ratchet_state1))
         };
-        let result = app.save_ratchet_state(
+        app.save_ratchet_state(
             &session.s_remote,
             &session.session_data,
             RatchetUpdate {
@@ -728,10 +726,8 @@ pub(crate) fn received_x2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
                 deleted_state1: ratchet_to_delete,
                 deleted_state2: None,
             },
-        );
-        if let Err(()) = result {
-            return Err(ReceiveError::RatchetStorageError);
-        }
+        )
+        .map_err(|_| ReceiveError::RatchetStorageError)?;
 
         let mut kek_recv = Zeroizing::new([0u8; HASHLEN]);
         let mut kek_send = Zeroizing::new([0u8; HASHLEN]);
@@ -871,12 +867,8 @@ pub(crate) fn received_x3_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
         let mut d = ArrayVec::<u8, HEADERED_SESSION_REJECTED_SIZE>::new();
         d.extend([0u8; HEADER_SIZE]);
         let nonce = to_nonce(PACKET_TYPE_SESSION_REJECTED, c);
-        d.extend(Crypto::Aead::encrypt_in_place(
-            (&kek_send[..AES_256_KEY_SIZE]).try_into().unwrap(),
-            &nonce,
-            &[],
-            &mut [],
-        ));
+        let kek_send = (&kek_send[..AES_256_KEY_SIZE]).try_into().unwrap();
+        d.extend(Crypto::Aead::encrypt_in_place(kek_send, &nonce, &[], &mut []));
         set_header(&mut d, zeta.kid_send.get(), &nonce);
         d
     };
@@ -909,7 +901,7 @@ pub(crate) fn received_x3_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
                 noise.split(hmac, &mut nk_send, &mut nk_recv);
 
                 // We must make sure the ratchet key is saved before we transition.
-                let result = app.save_ratchet_state(
+                app.save_ratchet_state(
                     &s_remote,
                     &session_data,
                     RatchetUpdate {
@@ -919,10 +911,8 @@ pub(crate) fn received_x3_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
                         deleted_state1: Some(&state1),
                         deleted_state2: state2.as_ref(),
                     },
-                );
-                if let Err(()) = result {
-                    return Err(ReceiveError::RatchetStorageError);
-                }
+                )
+                .map_err(|_| ReceiveError::RatchetStorageError)?;
 
                 let session = {
                     let mut session_map = ctx.session_map.write().unwrap();
@@ -1037,7 +1027,7 @@ pub(crate) fn received_c1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     if is_other {
         if let ZetaAutomata::A3 { .. } | ZetaAutomata::R2 { .. } = &state.beta {
             if state.ratchet_state2.is_some() {
-                let result = app.save_ratchet_state(
+                app.save_ratchet_state(
                     &session.s_remote,
                     &session.session_data,
                     RatchetUpdate {
@@ -1047,21 +1037,16 @@ pub(crate) fn received_c1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
                         deleted_state1: state.ratchet_state2.as_ref(),
                         deleted_state2: None,
                     },
-                );
-                if let Err(()) = result {
-                    return Err(ReceiveError::RatchetStorageError);
-                }
+                )
+                .map_err(|_| ReceiveError::RatchetStorageError)?;
             }
             drop(state);
             let timeout_timer = {
                 let mut state = session.state.write().unwrap();
                 state.ratchet_state2 = None;
                 state.key_index ^= true;
-                state.timeout_timer = app.time()
-                    + Crypto::SETTINGS
-                        .rekey_after_time
-                        .saturating_sub(ctx.rng.lock().unwrap().next_u64() % Crypto::SETTINGS.rekey_time_max_jitter)
-                        as i64;
+                let jitter = ctx.rng.lock().unwrap().next_u64() % Crypto::SETTINGS.rekey_time_max_jitter;
+                state.timeout_timer = app.time() + Crypto::SETTINGS.rekey_after_time.saturating_sub(jitter) as i64;
                 state.resend_timer = AtomicI64::new(i64::MAX);
                 state.beta = ZetaAutomata::S2;
                 state.timeout_timer
@@ -1122,11 +1107,8 @@ pub(crate) fn received_c2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     drop(state);
     let timeout_timer = {
         let mut state = session.state.write().unwrap();
-        state.timeout_timer = app.time()
-            + Crypto::SETTINGS
-                .rekey_after_time
-                .saturating_sub(ctx.rng.lock().unwrap().next_u64() % Crypto::SETTINGS.rekey_time_max_jitter)
-                as i64;
+        let jitter = ctx.rng.lock().unwrap().next_u64() % Crypto::SETTINGS.rekey_time_max_jitter;
+        state.timeout_timer = app.time() + Crypto::SETTINGS.rekey_after_time.saturating_sub(jitter) as i64;
         state.resend_timer = AtomicI64::new(i64::MAX);
         state.beta = ZetaAutomata::S2;
         state.timeout_timer
@@ -1456,7 +1438,7 @@ pub(crate) fn received_k1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
         k2.extend(tag);
 
         let new_ratchet_state = create_ratchet_state(hmac, &noise, state.ratchet_state1.chain_len);
-        let result = app.save_ratchet_state(
+        app.save_ratchet_state(
             &session.s_remote,
             &session.session_data,
             RatchetUpdate {
@@ -1466,10 +1448,8 @@ pub(crate) fn received_k1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
                 deleted_state1: state.ratchet_state2.as_ref(),
                 deleted_state2: None,
             },
-        );
-        if let Err(()) = result {
-            return Err(ReceiveError::RatchetStorageError);
-        }
+        )
+        .map_err(|_| ReceiveError::RatchetStorageError)?;
 
         let mut kek_recv = Zeroizing::new([0u8; HASHLEN]);
         let mut kek_send = Zeroizing::new([0u8; HASHLEN]);
@@ -1587,7 +1567,7 @@ pub(crate) fn received_k2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
                 .ok_or(byzantine_fault!(InvalidPacket, true))?;
 
             let new_ratchet_state = create_ratchet_state(hmac, &noise, state.ratchet_state1.chain_len);
-            let result = app.save_ratchet_state(
+            app.save_ratchet_state(
                 &session.s_remote,
                 &session.session_data,
                 RatchetUpdate {
@@ -1597,10 +1577,9 @@ pub(crate) fn received_k2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
                     deleted_state1: Some(&state.ratchet_state1),
                     deleted_state2: state.ratchet_state2.as_ref(),
                 },
-            );
-            if let Err(()) = result {
-                return Err(ReceiveError::RatchetStorageError);
-            }
+            )
+            .map_err(|_| ReceiveError::RatchetStorageError)?;
+
             let mut kek_recv = Zeroizing::new([0u8; HASHLEN]);
             let mut kek_send = Zeroizing::new([0u8; HASHLEN]);
             let mut nk_recv = Zeroizing::new([0u8; HASHLEN]);

@@ -138,7 +138,12 @@ impl<Crypto: CryptoLayer> SymmetricState<Crypto> {
         self.k.clone_from_slice(&temp_k[..AES_256_KEY_SIZE]);
     }
     /// Corresponds to Noise `MixKeyAndHash`.
-    pub fn mix_key_and_hash_no_init(&mut self, hash: &mut Crypto::Hash, hmac: &mut Crypto::Hmac, input_key_material: &[u8]) {
+    pub fn mix_key_and_hash_no_init(
+        &mut self,
+        hash: &mut Crypto::Hash,
+        hmac: &mut Crypto::Hmac,
+        input_key_material: &[u8],
+    ) {
         let mut next_ck = Zeroizing::new([0u8; HASHLEN]);
         let mut temp_h = [0u8; HASHLEN];
 
@@ -194,7 +199,13 @@ impl<Crypto: CryptoLayer> SymmetricState<Crypto> {
     /// is forward secrect and is cryptographically independent from all other produced keys.
     /// Based on Noise's unstable ASK mechanism, using KBKDF instead of HKDF.
     /// https://github.com/noiseprotocol/noise_wiki/wiki/Additional-Symmetric-Keys.
-    pub fn get_ask(&self, hmac: &mut Crypto::Hmac, label: &[u8; 4], key1: &mut [u8; HASHLEN], key2: &mut [u8; HASHLEN]) {
+    pub fn get_ask(
+        &self,
+        hmac: &mut Crypto::Hmac,
+        label: &[u8; 4],
+        key1: &mut [u8; HASHLEN],
+        key2: &mut [u8; HASHLEN],
+    ) {
         self.kbkdf(hmac, &self.h, label, 2, key1, Some(key2), None);
     }
     /// Used for internally debugging a key exchange.

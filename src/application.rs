@@ -129,7 +129,6 @@ pub trait CryptoLayer: Sized {
     /// for ZSSP to achieve FIPS compliance.
     type Kem: Kyber1024PrivateKey<Self::Rng>;
 
-
     /// Type for arbitrary opaque object for use by the application that is attached to
     /// each session.
     type SessionData;
@@ -185,7 +184,11 @@ pub trait ApplicationLayer: Sized {
     /// To prevent desync, if this function specifies that we should connect, no other open session
     /// with the same remote peer must exist. Drop or call expire on any pre-existing sessions
     /// before returning.
-    fn check_accept_session(&mut self, remote_static_key: &<Self::Crypto as CryptoLayer>::PublicKey, identity: &[u8]) -> AcceptAction<Self::Crypto>;
+    fn check_accept_session(
+        &mut self,
+        remote_static_key: &<Self::Crypto as CryptoLayer>::PublicKey,
+        identity: &[u8],
+    ) -> AcceptAction<Self::Crypto>;
 
     /// Lookup a specific ratchet state based on its ratchet fingerprint.
     /// This function will be called whenever Alice attempts to connect to us with a non-empty
@@ -193,10 +196,7 @@ pub trait ApplicationLayer: Sized {
     ///
     /// If a ratchet state with a matching fingerprint could not be found, this function should
     /// return `Ok(None)`.
-    fn restore_by_fingerprint(
-        &mut self,
-        ratchet_fingerprint: &[u8; RATCHET_SIZE],
-    ) -> Result<Option<RatchetState>, ()>;
+    fn restore_by_fingerprint(&mut self, ratchet_fingerprint: &[u8; RATCHET_SIZE]) -> Result<Option<RatchetState>, ()>;
     /// Lookup the specific ratchet states based on the identity of the peer being communicated with.
     /// This function will be called whenever Alice attempts to open a session, or Bob attempts
     /// to verify Alice's identity.
