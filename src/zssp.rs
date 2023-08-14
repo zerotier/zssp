@@ -11,7 +11,6 @@ use rand_core::RngCore;
 use crate::challenge::ChallengeContext;
 use crate::crypto::*;
 use crate::zeta::*;
-
 use crate::application::*;
 use crate::frag_cache::UnassociatedFragCache;
 use crate::fragged::Assembled;

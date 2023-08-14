@@ -1,5 +1,3 @@
-use arrayvec::ArrayVec;
-use rand_core::RngCore;
 use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::io::Write;
@@ -7,6 +5,9 @@ use std::num::NonZeroU32;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, Weak};
+
+use arrayvec::ArrayVec;
+use rand_core::RngCore;
 use zeroize::Zeroizing;
 
 use crate::antireplay::Window;
