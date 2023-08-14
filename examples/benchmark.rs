@@ -107,6 +107,7 @@ fn alice_main(
     let mut next_service = startup_time.elapsed().as_millis() as i64 + 500;
     let test_data = [1u8; TEST_MTU * 10];
     let mut up = false;
+    let mut output_data = ArrayVec::<u8, 15000>::new();
 
     let alice_session = Some(
         context
@@ -128,7 +129,7 @@ fn alice_main(
             if let Ok(pkt) = pkt {
                 use zssp::result::ReceiveOk::*;
                 use zssp::result::SessionEvent::*;
-                let mut output_data = Vec::new();
+                output_data.clear();
                 match context.receive(
                     alice_app,
                     |b| alice_out.send(b.to_vec()).is_ok(),
@@ -210,6 +211,7 @@ fn bob_main(
         if let Ok(pkt) = pkt {
             use zssp::result::ReceiveOk::*;
             use zssp::result::SessionEvent::*;
+            output_data.clear();
             match context.receive(
                 bob_app,
                 |b| bob_out.send(b.to_vec()).is_ok(),
