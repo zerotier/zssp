@@ -549,7 +549,8 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                             challenge_packet.extend(challenge);
                             let nonce = to_nonce(PACKET_TYPE_CHALLENGE, ctx.rng.lock().unwrap().next_u64());
                             challenge_packet[FRAGMENT_COUNT_IDX] = 1;
-                            challenge_packet[PACKET_NONCE_START..HEADER_SIZE].copy_from_slice(&nonce[..PACKET_NONCE_SIZE]);
+                            challenge_packet[PACKET_NONCE_START..HEADER_SIZE]
+                                .copy_from_slice(&nonce[..PACKET_NONCE_SIZE]);
                             set_header(&mut challenge_packet, 0, &nonce);
 
                             send_unassociated_reply(&mut challenge_packet);

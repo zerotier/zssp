@@ -1705,11 +1705,8 @@ pub(crate) fn send_payload<Crypto: CryptoLayer>(
     );
     mtu_sized_buffer[HEADER_SIZE + payload_rem..HEADER_SIZE + fragment_len].copy_from_slice(&cipher.finish());
 
-    state.hk_send.encrypt_in_place(
-        (&mut mtu_sized_buffer[HEADER_AUTH_START..HEADER_AUTH_END])
-            .try_into()
-            .unwrap(),
-    );
+    let header_auth = &mut mtu_sized_buffer[HEADER_AUTH_START..HEADER_AUTH_END];
+    state.hk_send.encrypt_in_place(header_auth.try_into().unwrap());
 
     if !send(&mut mtu_sized_buffer[..HEADER_SIZE + fragment_len]) {
         return Ok(());

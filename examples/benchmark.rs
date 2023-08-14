@@ -275,7 +275,7 @@ fn core(time: u64) {
     let run = &AtomicBool::new(true);
 
     let alice_keypair = P384CrateKeyPair::generate(&mut OsRng);
-    let alice_app = TestApplication { time: Instant::now()};
+    let alice_app = TestApplication { time: Instant::now() };
     let bob_keypair = P384CrateKeyPair::generate(&mut OsRng);
     let bob_pubkey = bob_keypair.public_key();
     let bob_app = TestApplication { time: Instant::now() };
@@ -286,16 +286,7 @@ fn core(time: u64) {
     thread::scope(|ts| {
         {
             let alice_out = alice_out.clone();
-            ts.spawn(move || {
-                alice_main(
-                    run,
-                    &alice_app,
-                    alice_out,
-                    alice_in,
-                    alice_keypair,
-                    bob_pubkey,
-                )
-            });
+            ts.spawn(move || alice_main(run, &alice_app, alice_out, alice_in, alice_keypair, bob_pubkey));
         }
         ts.spawn(move || bob_main(run, &bob_app, bob_out, bob_in, bob_keypair));
 
