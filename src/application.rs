@@ -90,7 +90,7 @@ impl Default for Settings {
 /// and negotiation timeout behavior. Both sides of a ZSSP session **must** have these constants
 /// set to the same values. Changing these constants is generally discouraged unless you know
 /// what you are doing.
-pub trait ApplicationLayer: Sized {
+pub trait CryptoLayer: Sized {
     /// These are constants that can be redefined from their defaults to change rekey
     /// and negotiation timeout behavior. If two sides of a ZSSP session have different constants,
     /// the protocol will tend to default to the smaller constants.
@@ -129,9 +129,6 @@ pub trait ApplicationLayer: Sized {
     /// for ZSSP to achieve FIPS compliance.
     type Kem: Kyber1024PrivateKey<Self::Rng>;
 
-    /// A user-defined error returned when the `ApplicationLayer` fails to access persistent storage
-    /// for a peer's ratchet states.
-    type StorageError: std::error::Error;
 
     /// Type for arbitrary opaque object for use by the application that is attached to
     /// each session.
@@ -144,14 +141,18 @@ pub trait ApplicationLayer: Sized {
     /// hold these for a short period of time when assembling fragmented packets on the receive
     /// path.
     type IncomingPacketBuffer: AsRef<[u8]> + AsMut<[u8]>;
+}
+
+pub trait ApplicationLayer: Sized {
+    type Crypto: CryptoLayer;
 
     /// Should return the current time in milliseconds. Does not have to be monotonic, nor synced
     /// with remote peers (although both of these properties would help reliability slightly).
     /// Used to determine if any current handshakes should be resent or timed-out, or if a session
     /// should rekey.
-    fn time(&self) -> i64;
+    fn time(&mut self) -> i64;
 
-    fn incoming_session(&self) -> IncomingSessionAction;
+    fn incoming_session(&mut self) -> IncomingSessionAction;
     /// This function will be called whenever Alice's initial Hello packet contains the empty ratchet
     /// fingerprint. Brand new peers will always connect to Bob with the empty ratchet, but from
     /// then on they should be using non-empty ratchet states.
@@ -161,7 +162,7 @@ pub trait ApplicationLayer: Sized {
     /// If this function is configured to always return true, it means peers will not be able to
     /// connect to us unless they had a prior-established ratchet key with us. This is the best way
     /// for the paranoid to enforce a manual allow-list.
-    fn hello_requires_recognized_ratchet(&self) -> bool;
+    fn hello_requires_recognized_ratchet(&mut self) -> bool;
     /// This function is called if we, as Alice, attempted to open a session with Bob using a
     /// non-empty ratchet key, but Bob does not have this ratchet key and wants to downgrade
     /// to the zero ratchet key.
@@ -177,14 +178,14 @@ pub trait ApplicationLayer: Sized {
     /// least one party is misconfigured and got their ratchet keys corrupted or lost, or Bob has
     /// been compromised and is being impersonated. An attacker must at least have Bob's private
     /// static key to be able to ask Alice to downgrade.
-    fn initiator_disallows_downgrade(&self, session: &Arc<Session<Self>>) -> bool;
+    fn initiator_disallows_downgrade(&mut self, session: &Arc<Session<Self::Crypto>>) -> bool;
     /// Function to accept sessions after final negotiation.
     /// The second argument is the identity that the remote peer sent us. The application
     /// must verify this identity is associated with the remote peer's static key.
     /// To prevent desync, if this function specifies that we should connect, no other open session
     /// with the same remote peer must exist. Drop or call expire on any pre-existing sessions
     /// before returning.
-    fn check_accept_session(&self, remote_static_key: &Self::PublicKey, identity: &[u8]) -> AcceptAction<Self>;
+    fn check_accept_session(&mut self, remote_static_key: &<Self::Crypto as CryptoLayer>::PublicKey, identity: &[u8]) -> AcceptAction<Self::Crypto>;
 
     /// Lookup a specific ratchet state based on its ratchet fingerprint.
     /// This function will be called whenever Alice attempts to connect to us with a non-empty
@@ -193,9 +194,9 @@ pub trait ApplicationLayer: Sized {
     /// If a ratchet state with a matching fingerprint could not be found, this function should
     /// return `Ok(None)`.
     fn restore_by_fingerprint(
-        &self,
+        &mut self,
         ratchet_fingerprint: &[u8; RATCHET_SIZE],
-    ) -> Result<Option<RatchetState>, Self::StorageError>;
+    ) -> Result<Option<RatchetState>, ()>;
     /// Lookup the specific ratchet states based on the identity of the peer being communicated with.
     /// This function will be called whenever Alice attempts to open a session, or Bob attempts
     /// to verify Alice's identity.
@@ -211,10 +212,10 @@ pub trait ApplicationLayer: Sized {
     /// Filtering peers should be done by the caller to `Context::open` as well as by the
     /// function `ApplicationLayer::check_accept_session`.
     fn restore_by_identity(
-        &self,
-        remote_static_key: &Self::PublicKey,
-        session_data: &Self::SessionData,
-    ) -> Result<Option<RatchetStates>, Self::StorageError>;
+        &mut self,
+        remote_static_key: &<Self::Crypto as CryptoLayer>::PublicKey,
+        session_data: &<Self::Crypto as CryptoLayer>::SessionData,
+    ) -> Result<Option<RatchetStates>, ()>;
     /// Atomically commit the update specified by `update_data` to storage, or return an error if
     /// the update could not be made.
     /// The implementor is free to choose how to apply these updates to storage.
@@ -232,17 +233,17 @@ pub trait ApplicationLayer: Sized {
     /// to us will have to allow downgrade across the board.
     /// Otherwise, when we restart, we will not be allowed to reconnect.
     fn save_ratchet_state(
-        &self,
-        remote_static_key: &Self::PublicKey,
-        session_data: &Self::SessionData,
+        &mut self,
+        remote_static_key: &<Self::Crypto as CryptoLayer>::PublicKey,
+        session_data: &<Self::Crypto as CryptoLayer>::SessionData,
         update_data: RatchetUpdate<'_>,
-    ) -> Result<(), Self::StorageError>;
+    ) -> Result<(), ()>;
 
     /// Receives a stream of events that occur during an execution of ZSSP.
     /// These are provided for debugging, logging or metrics purposes, and must be used for
     /// nothing else. Do not base protocol-level decisions upon the events passed to this function.
     #[cfg(feature = "logging")]
-    fn event_log(&self, event: crate::LogEvent<'_, Self>);
+    fn event_log(&mut self, event: crate::LogEvent<'_, Self::Crypto>);
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -256,10 +257,10 @@ pub enum IncomingSessionAction {
 /// used by Bob, the responder, at the very last stage of the key exchange.
 ///
 /// Corresponds to the *Accept* callback of Transition Algorithm 4.
-pub struct AcceptAction<App: ApplicationLayer> {
+pub struct AcceptAction<Crypto: CryptoLayer> {
     /// The data object to be attached to the session if we successfully connect.
     /// If this field is None then we will not connect to this remote peer.
-    pub session_data: Option<App::SessionData>,
+    pub session_data: Option<Crypto::SessionData>,
     /// Whether or not we will accept a connection with the remote peer when they do not have a
     /// ratchet key that we think they should have.
     pub responder_disallows_downgrade: bool,

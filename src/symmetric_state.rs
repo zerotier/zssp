@@ -2,19 +2,19 @@ use std::marker::PhantomData;
 
 use zeroize::Zeroizing;
 
-use crate::application::ApplicationLayer;
+use crate::application::CryptoLayer;
 use crate::crypto::*;
 use crate::proto::*;
 
-pub struct SymmetricState<App: ApplicationLayer> {
+pub struct SymmetricState<Crypto: CryptoLayer> {
     k: Zeroizing<[u8; AES_256_KEY_SIZE]>,
     ck: Zeroizing<[u8; HASHLEN]>,
     h: [u8; HASHLEN],
     /// If anyone knows a better way to get rid of the "parameter `App` is never used" error please
     /// let me know.
-    _app: PhantomData<fn() -> App::SessionData>,
+    _app: PhantomData<fn() -> Crypto::SessionData>,
 }
-impl<App: ApplicationLayer> Clone for SymmetricState<App> {
+impl<Crypto: CryptoLayer> Clone for SymmetricState<Crypto> {
     fn clone(&self) -> Self {
         Self {
             k: self.k.clone(),
@@ -25,7 +25,7 @@ impl<App: ApplicationLayer> Clone for SymmetricState<App> {
     }
 }
 
-impl<App: ApplicationLayer> SymmetricState<App> {
+impl<Crypto: CryptoLayer> SymmetricState<Crypto> {
     /// HMAC-SHA512 key derivation based on KBKDF Counter Mode:
     /// https://csrc.nist.gov/publications/detail/sp/800-108/rev-1/final.
     /// Cryptographically this isn't meaningfully different from
@@ -40,7 +40,7 @@ impl<App: ApplicationLayer> SymmetricState<App> {
     /// Corresponds to Noise `HKDF`.
     fn kbkdf(
         &self,
-        hmac: &mut App::Hmac,
+        hmac: &mut Crypto::Hmac,
         input_key_material: &[u8],
         label: &[u8; 4],
         num_outputs: u16,
@@ -86,7 +86,7 @@ impl<App: ApplicationLayer> SymmetricState<App> {
         }
     }
     /// Corresponds to Noise `MixKey`.
-    pub fn mix_key(&mut self, hmac: &mut App::Hmac, input_key_material: &[u8]) {
+    pub fn mix_key(&mut self, hmac: &mut Crypto::Hmac, input_key_material: &[u8]) {
         let mut next_ck = Zeroizing::new([0u8; HASHLEN]);
         let mut temp_k = Zeroizing::new([0u8; HASHLEN]);
 
@@ -104,7 +104,7 @@ impl<App: ApplicationLayer> SymmetricState<App> {
         self.k.clone_from_slice(&temp_k[..AES_256_KEY_SIZE]);
     }
     /// Corresponds to Noise `MixKey`.
-    pub fn mix_key_no_init(&mut self, hmac: &mut App::Hmac, input_key_material: &[u8]) {
+    pub fn mix_key_no_init(&mut self, hmac: &mut Crypto::Hmac, input_key_material: &[u8]) {
         let mut next_ck = Zeroizing::new([0u8; HASHLEN]);
 
         self.kbkdf(hmac, input_key_material, LABEL_KBKDF_CHAIN, 2, &mut next_ck, None, None);
@@ -112,13 +112,13 @@ impl<App: ApplicationLayer> SymmetricState<App> {
         *self.ck = *next_ck;
     }
     /// Corresponds to Noise `MixHash`.
-    pub fn mix_hash(&mut self, hash: &mut App::Hash, data: &[u8]) {
+    pub fn mix_hash(&mut self, hash: &mut Crypto::Hash, data: &[u8]) {
         hash.update(&self.h);
         hash.update(data);
         hash.finish_and_reset(&mut self.h);
     }
     /// Corresponds to Noise `MixKeyAndHash`.
-    pub fn mix_key_and_hash(&mut self, hash: &mut App::Hash, hmac: &mut App::Hmac, input_key_material: &[u8]) {
+    pub fn mix_key_and_hash(&mut self, hash: &mut Crypto::Hash, hmac: &mut Crypto::Hmac, input_key_material: &[u8]) {
         let mut next_ck = Zeroizing::new([0u8; HASHLEN]);
         let mut temp_h = [0u8; HASHLEN];
         let mut temp_k = Zeroizing::new([0u8; HASHLEN]);
@@ -138,7 +138,7 @@ impl<App: ApplicationLayer> SymmetricState<App> {
         self.k.clone_from_slice(&temp_k[..AES_256_KEY_SIZE]);
     }
     /// Corresponds to Noise `MixKeyAndHash`.
-    pub fn mix_key_and_hash_no_init(&mut self, hash: &mut App::Hash, hmac: &mut App::Hmac, input_key_material: &[u8]) {
+    pub fn mix_key_and_hash_no_init(&mut self, hash: &mut Crypto::Hash, hmac: &mut Crypto::Hmac, input_key_material: &[u8]) {
         let mut next_ck = Zeroizing::new([0u8; HASHLEN]);
         let mut temp_h = [0u8; HASHLEN];
 
@@ -159,11 +159,11 @@ impl<App: ApplicationLayer> SymmetricState<App> {
     #[must_use]
     pub fn encrypt_and_hash_in_place(
         &mut self,
-        hash: &mut App::Hash,
+        hash: &mut Crypto::Hash,
         iv: [u8; AES_GCM_NONCE_SIZE],
         data: &mut [u8],
     ) -> [u8; AES_GCM_TAG_SIZE] {
-        let tag = App::Aead::encrypt_in_place(&self.k, &iv, &self.h, data);
+        let tag = Crypto::Aead::encrypt_in_place(&self.k, &iv, &self.h, data);
         hash.update(&self.h);
         hash.update(data);
         hash.update(&tag);
@@ -174,7 +174,7 @@ impl<App: ApplicationLayer> SymmetricState<App> {
     #[must_use]
     pub fn decrypt_and_hash_in_place(
         &mut self,
-        hash: &mut App::Hash,
+        hash: &mut Crypto::Hash,
         iv: [u8; AES_GCM_NONCE_SIZE],
         data: &mut [u8],
         tag: [u8; AES_GCM_TAG_SIZE],
@@ -182,19 +182,19 @@ impl<App: ApplicationLayer> SymmetricState<App> {
         hash.update(&self.h);
         hash.update(data);
         hash.update(&tag);
-        let is_auth = App::Aead::decrypt_in_place(&self.k, &iv, &self.h, data, tag.as_ref().try_into().unwrap());
+        let is_auth = Crypto::Aead::decrypt_in_place(&self.k, &iv, &self.h, data, tag.as_ref().try_into().unwrap());
         hash.finish_and_reset(&mut self.h);
         is_auth
     }
     /// Corresponds to Noise `Split`.
-    pub fn split(self, hmac: &mut App::Hmac, key1: &mut [u8; HASHLEN], key2: &mut [u8; HASHLEN]) {
+    pub fn split(self, hmac: &mut Crypto::Hmac, key1: &mut [u8; HASHLEN], key2: &mut [u8; HASHLEN]) {
         self.kbkdf(hmac, &[], LABEL_KBKDF_CHAIN, 2, key1, Some(key2), None);
     }
     /// Get an additional symmetric key (ASK) that is a collision resistant hash of the transcript,
     /// is forward secrect and is cryptographically independent from all other produced keys.
     /// Based on Noise's unstable ASK mechanism, using KBKDF instead of HKDF.
     /// https://github.com/noiseprotocol/noise_wiki/wiki/Additional-Symmetric-Keys.
-    pub fn get_ask(&self, hmac: &mut App::Hmac, label: &[u8; 4], key1: &mut [u8; HASHLEN], key2: &mut [u8; HASHLEN]) {
+    pub fn get_ask(&self, hmac: &mut Crypto::Hmac, label: &[u8; 4], key1: &mut [u8; HASHLEN], key2: &mut [u8; HASHLEN]) {
         self.kbkdf(hmac, &self.h, label, 2, key1, Some(key2), None);
     }
     /// Used for internally debugging a key exchange.

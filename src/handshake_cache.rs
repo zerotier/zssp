@@ -3,23 +3,23 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
 use crate::zeta::StateB2;
-use crate::{application::ApplicationLayer, proto::MAX_UNASSOCIATED_HANDSHAKE_STATES};
+use crate::{application::CryptoLayer, proto::MAX_UNASSOCIATED_HANDSHAKE_STATES};
 
-pub(crate) struct UnassociatedHandshakeCache<Application: ApplicationLayer> {
+pub(crate) struct UnassociatedHandshakeCache<Application: CryptoLayer> {
     has_pending: AtomicBool, // Allowed to be falsely positive
     cache: RwLock<CacheInner<Application>>,
 }
 /// SoA format
-struct CacheInner<App: ApplicationLayer> {
+struct CacheInner<Crypto: CryptoLayer> {
     local_ids: [Option<NonZeroU32>; MAX_UNASSOCIATED_HANDSHAKE_STATES],
     timeouts: [i64; MAX_UNASSOCIATED_HANDSHAKE_STATES],
-    handshakes: [Option<Arc<StateB2<App>>>; MAX_UNASSOCIATED_HANDSHAKE_STATES],
+    handshakes: [Option<Arc<StateB2<Crypto>>>; MAX_UNASSOCIATED_HANDSHAKE_STATES],
 }
 
 /// Linear-search cache for capping the memory consumption of handshake data.
 /// Designed specifically to have short and simple code that clearly bounds above
 /// memory consumption.
-impl<Application: ApplicationLayer> UnassociatedHandshakeCache<Application> {
+impl<Application: CryptoLayer> UnassociatedHandshakeCache<Application> {
     pub(crate) fn new() -> Self {
         Self {
             has_pending: AtomicBool::new(false),

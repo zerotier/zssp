@@ -1,22 +1,22 @@
 use std::sync::Arc;
 
-use crate::application::ApplicationLayer;
+use crate::application::CryptoLayer;
 use crate::zeta::Session;
 
 /// ZSSP events that might be interesting to log or aggregate into metrics.
-pub enum LogEvent<'a, App: ApplicationLayer> {
-    ResentX1(&'a Arc<Session<App>>),
-    TimeoutX1(&'a Arc<Session<App>>),
+pub enum LogEvent<'a, Crypto: CryptoLayer> {
+    ResentX1(&'a Arc<Session<Crypto>>),
+    TimeoutX1(&'a Arc<Session<Crypto>>),
     TimeoutX2,
-    ResentX3(&'a Arc<Session<App>>),
-    TimeoutX3(&'a Arc<Session<App>>),
-    ResentKeyConfirm(&'a Arc<Session<App>>),
-    TimeoutKeyConfirm(&'a Arc<Session<App>>),
-    StartedRekeyingSentK1(&'a Arc<Session<App>>),
-    ResentK1(&'a Arc<Session<App>>),
-    TimeoutK1(&'a Arc<Session<App>>),
-    ResentK2(&'a Arc<Session<App>>),
-    TimeoutK2(&'a Arc<Session<App>>),
+    ResentX3(&'a Arc<Session<Crypto>>),
+    TimeoutX3(&'a Arc<Session<Crypto>>),
+    ResentKeyConfirm(&'a Arc<Session<Crypto>>),
+    TimeoutKeyConfirm(&'a Arc<Session<Crypto>>),
+    StartedRekeyingSentK1(&'a Arc<Session<Crypto>>),
+    ResentK1(&'a Arc<Session<Crypto>>),
+    TimeoutK1(&'a Arc<Session<Crypto>>),
+    ResentK2(&'a Arc<Session<Crypto>>),
+    TimeoutK2(&'a Arc<Session<Crypto>>),
     /// `(packet_type, packet_counter, fragment_no, fragment_count)`
     ReceivedRawFragment(u8, u64, usize, usize),
     ReceivedRawX1,
@@ -24,24 +24,24 @@ pub enum LogEvent<'a, App: ApplicationLayer> {
     X1SucceededChallenge,
     X1IsAuthSentX2,
     ReceivedRawChallenge,
-    ChallengeIsAuth(&'a Arc<Session<App>>),
+    ChallengeIsAuth(&'a Arc<Session<Crypto>>),
     ReceivedRawX2,
-    X2IsAuthSentX3(&'a Arc<Session<App>>),
+    X2IsAuthSentX3(&'a Arc<Session<Crypto>>),
     ReceivedRawX3,
-    X3IsAuthSentKeyConfirm(&'a Arc<Session<App>>),
+    X3IsAuthSentKeyConfirm(&'a Arc<Session<Crypto>>),
     ReceivedRawKeyConfirm,
-    KeyConfirmIsAuthSentAck(&'a Arc<Session<App>>),
+    KeyConfirmIsAuthSentAck(&'a Arc<Session<Crypto>>),
     ReceivedRawAck,
-    AckIsAuth(&'a Arc<Session<App>>),
+    AckIsAuth(&'a Arc<Session<Crypto>>),
     ReceivedRawK1,
-    K1IsAuthSentK2(&'a Arc<Session<App>>),
+    K1IsAuthSentK2(&'a Arc<Session<Crypto>>),
     ReceivedRawK2,
-    K2IsAuthSentKeyConfirm(&'a Arc<Session<App>>),
+    K2IsAuthSentKeyConfirm(&'a Arc<Session<Crypto>>),
     ReceivedRawD,
-    DIsAuthClosedSession(&'a Arc<Session<App>>),
+    DIsAuthClosedSession(&'a Arc<Session<Crypto>>),
 }
 
-impl<'a, App: ApplicationLayer> std::fmt::Debug for LogEvent<'a, App> {
+impl<'a, Crypto: CryptoLayer> std::fmt::Debug for LogEvent<'a, Crypto> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::ResentX1(_) => f.debug_tuple("ResentX1").finish(),

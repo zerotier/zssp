@@ -10,8 +10,8 @@ use rand_core::OsRng;
 use rand_core::RngCore;
 
 use zssp::application::{
-    AcceptAction, ApplicationLayer, IncomingSessionAction, RatchetState, RatchetStates, RatchetUpdate, Settings,
-    RATCHET_SIZE,
+    AcceptAction, CryptoLayer, IncomingSessionAction, RatchetState, RatchetStates, RatchetUpdate, Settings,
+    RATCHET_SIZE, ApplicationLayer,
 };
 use zssp::crypto::P384KeyPair;
 use zssp::crypto_impl::*;
@@ -37,7 +37,7 @@ impl Ratchets {
 }
 
 #[allow(unused)]
-impl ApplicationLayer for &TestApplication {
+impl CryptoLayer for TestApplication {
     const SETTINGS: Settings = Settings {
         initial_offer_timeout: Settings::INITIAL_OFFER_TIMEOUT_MS,
         rekey_timeout: 60 * 1000,
@@ -59,24 +59,27 @@ impl ApplicationLayer for &TestApplication {
     type KeyPair = P384CrateKeyPair;
     type Kem = RustKyber1024PrivateKey;
 
-    type StorageError = std::convert::Infallible;
     type SessionData = u128;
 
     type IncomingPacketBuffer = Vec<u8>;
+}
+#[allow(unused)]
+impl ApplicationLayer for &TestApplication {
+    type Crypto = TestApplication;
 
-    fn incoming_session(&self) -> IncomingSessionAction {
+    fn incoming_session(&mut self) -> IncomingSessionAction {
         IncomingSessionAction::Allow
     }
 
-    fn hello_requires_recognized_ratchet(&self) -> bool {
+    fn hello_requires_recognized_ratchet(&mut self) -> bool {
         false
     }
 
-    fn initiator_disallows_downgrade(&self, session: &Arc<Session<Self>>) -> bool {
+    fn initiator_disallows_downgrade(&mut self, session: &Arc<Session<TestApplication>>) -> bool {
         true
     }
 
-    fn check_accept_session(&self, remote_static_key: &Self::PublicKey, identity: &[u8]) -> AcceptAction<Self> {
+    fn check_accept_session(&mut self, remote_static_key: &P384CratePublicKey, identity: &[u8]) -> AcceptAction<TestApplication> {
         AcceptAction {
             session_data: Some(1),
             responder_disallows_downgrade: true,
@@ -85,28 +88,28 @@ impl ApplicationLayer for &TestApplication {
     }
 
     fn restore_by_fingerprint(
-        &self,
+        &mut self,
         ratchet_fingerprint: &[u8; RATCHET_SIZE],
-    ) -> Result<Option<RatchetState>, Self::StorageError> {
+    ) -> Result<Option<RatchetState>, ()> {
         let ratchets = self.ratchets.lock().unwrap();
         Ok(ratchets.rf_map.get(ratchet_fingerprint).cloned())
     }
 
     fn restore_by_identity(
-        &self,
-        remote_static_key: &Self::PublicKey,
-        session_data: &Self::SessionData,
-    ) -> Result<Option<RatchetStates>, Self::StorageError> {
+        &mut self,
+        remote_static_key: &P384CratePublicKey,
+        session_data: &u128,
+    ) -> Result<Option<RatchetStates>, ()> {
         let ratchets = self.ratchets.lock().unwrap();
         Ok(ratchets.peer_map.get(session_data).cloned())
     }
 
     fn save_ratchet_state(
-        &self,
-        remote_static_key: &Self::PublicKey,
-        session_data: &Self::SessionData,
+        &mut self,
+        remote_static_key: &P384CratePublicKey,
+        session_data: &u128,
         update_data: RatchetUpdate<'_>,
-    ) -> Result<(), Self::StorageError> {
+    ) -> Result<(), ()> {
         let mut ratchets = self.ratchets.lock().unwrap();
         ratchets.peer_map.insert(*session_data, update_data.to_states());
 
@@ -123,11 +126,11 @@ impl ApplicationLayer for &TestApplication {
         Ok(())
     }
 
-    fn time(&self) -> i64 {
+    fn time(&mut self) -> i64 {
         self.time.elapsed().as_millis() as i64
     }
 
-    fn event_log(&self, event: zssp::LogEvent<Self>) {
+    fn event_log(&mut self, event: zssp::LogEvent<TestApplication>) {
         println!(">[{}] {:?}", self.name, event);
     }
 }
@@ -144,7 +147,7 @@ fn alice_main(
     bob_pubkey: P384CratePublicKey,
 ) {
     let startup_time = std::time::Instant::now();
-    let context = zssp::Context::<&TestApplication>::new(alice_keypair, OsRng);
+    let context = zssp::Context::<TestApplication>::new(alice_keypair, OsRng);
     let mut next_service = startup_time.elapsed().as_millis() as i64 + 500;
     let test_data = [1u8; TEST_MTU * 10];
     let mut up = false;
@@ -250,7 +253,7 @@ fn bob_main(
     bob_keypair: P384CrateKeyPair,
 ) {
     let startup_time = std::time::Instant::now();
-    let context = zssp::Context::<&TestApplication>::new(bob_keypair, OsRng);
+    let context = zssp::Context::<TestApplication>::new(bob_keypair, OsRng);
     let mut last_speed_metric = startup_time.elapsed().as_millis() as i64;
     let mut next_service = last_speed_metric + 500;
     let mut transferred = 0u64;

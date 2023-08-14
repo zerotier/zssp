@@ -37,31 +37,31 @@ pub(crate) use log;
 /// defragment incoming packets that are not yet associated with a session.
 ///
 /// Internally this is just a clonable Arc, so it can be safely shared with multiple threads.
-pub struct Context<Application: ApplicationLayer>(pub Arc<ContextInner<Application>>);
-impl<Application: ApplicationLayer> Clone for Context<Application> {
+pub struct Context<Crypto: CryptoLayer>(pub Arc<ContextInner<Crypto>>);
+impl<Crypto: CryptoLayer> Clone for Context<Crypto> {
     fn clone(&self) -> Self {
         Self(self.0.clone())
     }
 }
 
-pub(crate) type SessionMap<App> = RwLock<HashMap<NonZeroU32, Weak<Session<App>>>>;
-pub(crate) type SessionQueue<App> = IndexedBinaryHeap<Weak<Session<App>>, Reverse<i64>>;
-pub struct ContextInner<App: ApplicationLayer> {
-    pub rng: Mutex<App::Rng>,
-    pub(crate) s_secret: App::KeyPair,
+pub(crate) type SessionMap<Crypto> = RwLock<HashMap<NonZeroU32, Weak<Session<Crypto>>>>;
+pub(crate) type SessionQueue<Crypto> = IndexedBinaryHeap<Weak<Session<Crypto>>, Reverse<i64>>;
+pub struct ContextInner<Crypto: CryptoLayer> {
+    pub rng: Mutex<Crypto::Rng>,
+    pub(crate) s_secret: Crypto::KeyPair,
     /// `session_queue -> state_machine_lock -> state -> session_map`
-    pub(crate) session_queue: Mutex<SessionQueue<App>>,
+    pub(crate) session_queue: Mutex<SessionQueue<Crypto>>,
     /// `session_queue -> state_machine_lock -> state -> session_map`
-    pub(crate) session_map: SessionMap<App>,
-    pub(crate) unassociated_defrag_cache: Mutex<UnassociatedFragCache<App::IncomingPacketBuffer>>,
-    pub(crate) unassociated_handshake_states: UnassociatedHandshakeCache<App>,
+    pub(crate) session_map: SessionMap<Crypto>,
+    pub(crate) unassociated_defrag_cache: Mutex<UnassociatedFragCache<Crypto::IncomingPacketBuffer>>,
+    pub(crate) unassociated_handshake_states: UnassociatedHandshakeCache<Crypto>,
 
     pub(crate) challenge: ChallengeContext,
 }
 
-fn parse_fragment_header<StorageError>(
+fn parse_fragment_header(
     incoming_fragment: &[u8],
-) -> Result<(usize, usize, [u8; AES_GCM_NONCE_SIZE]), ReceiveError<StorageError>> {
+) -> Result<(usize, usize, [u8; AES_GCM_NONCE_SIZE]), ReceiveError> {
     let fragment_no = incoming_fragment[FRAGMENT_NO_IDX] as usize;
     let fragment_count = incoming_fragment[FRAGMENT_COUNT_IDX] as usize;
     if fragment_no >= fragment_count || fragment_count > MAX_FRAGMENTS {
@@ -110,9 +110,9 @@ fn send_with_fragmentation<PrpEnc: Aes256Enc>(
     true
 }
 
-impl<App: ApplicationLayer> Context<App> {
+impl<Crypto: CryptoLayer> Context<Crypto> {
     /// Create a new session context.
-    pub fn new(static_secret_key: App::KeyPair, mut rng: App::Rng) -> Self {
+    pub fn new(static_secret_key: Crypto::KeyPair, mut rng: Crypto::Rng) -> Self {
         let challenge = ChallengeContext::new(&mut rng);
         Self(Arc::new(ContextInner {
             rng: Mutex::new(rng),
@@ -141,15 +141,15 @@ impl<App: ApplicationLayer> Context<App> {
     ///   peer, or None if we do not have one.
     /// * `local_identity_blob` - Payload to be sent to Bob that contains the information necessary
     ///   for the upper protocol to authenticate and approve of Alice's identity.
-    pub fn open(
+    pub fn open<App: ApplicationLayer<Crypto = Crypto>>(
         &self,
         app: App,
         send: impl FnMut(&mut [u8]) -> bool,
         mut mtu: usize,
-        static_remote_key: App::PublicKey,
-        session_data: App::SessionData,
+        static_remote_key: Crypto::PublicKey,
+        session_data: Crypto::SessionData,
         identity: &[u8],
-    ) -> Result<Arc<Session<App>>, OpenError<App::StorageError>> {
+    ) -> Result<Arc<Session<Crypto>>, OpenError> {
         mtu = mtu.max(MIN_TRANSPORT_MTU);
         if identity.len() > IDENTITY_MAX_SIZE {
             return Err(OpenError::IdentityTooLarge);
@@ -198,16 +198,16 @@ impl<App: ApplicationLayer> Context<App> {
     /// * `current_time` - Current time in milliseconds. Does not have to be monotonic, nor synced
     ///   with the remote peer. Used to check the state of local offers we may currently have or want
     ///   to put in-flight.
-    pub fn receive<'a, SendFn: FnMut(&mut [u8]) -> bool>(
+    pub fn receive<'a, App: ApplicationLayer<Crypto = Crypto>, SendFn: FnMut(&mut [u8]) -> bool>(
         &self,
-        app: App,
+        mut app: App,
         mut send_unassociated_reply: impl FnMut(&mut [u8]) -> bool,
         mut send_unassociated_mtu: usize,
-        mut send_to: impl FnMut(&Arc<Session<App>>) -> Option<(SendFn, usize)>,
+        mut send_to: impl FnMut(&Arc<Session<Crypto>>) -> Option<(SendFn, usize)>,
         remote_address: &impl Hash,
-        mut incoming_fragment_buf: App::IncomingPacketBuffer,
+        mut incoming_fragment_buf: Crypto::IncomingPacketBuffer,
         output_buffer: impl Write,
-    ) -> Result<ReceiveOk<App>, ReceiveError<App::StorageError>> {
+    ) -> Result<ReceiveOk<Crypto>, ReceiveError> {
         use crate::result::FaultType::*;
         let ctx = &self.0;
         send_unassociated_mtu = send_unassociated_mtu.max(MIN_TRANSPORT_MTU);
@@ -327,7 +327,7 @@ impl<App: ApplicationLayer> Context<App> {
                         &mut incoming_fragment_buf.as_mut()[HEADER_SIZE..]
                     };
 
-                    let send_associated = |packet: &mut [u8], hk_send: Option<&App::PrpEnc>| {
+                    let send_associated = |packet: &mut [u8], hk_send: Option<&Crypto::PrpEnc>| {
                         if let Some((send_fragment, mut mtu)) = send_to(&session) {
                             mtu = mtu.max(MIN_TRANSPORT_MTU);
                             send_with_fragmentation(send_fragment, mtu, packet, hk_send);
@@ -337,7 +337,7 @@ impl<App: ApplicationLayer> Context<App> {
                         PACKET_TYPE_HANDSHAKE_RESPONSE => {
                             log!(app, ReceivedRawX2);
                             let should_warn_missing_ratchet = received_x2_trans(
-                                &app,
+                                &mut app,
                                 ctx,
                                 &session,
                                 kid_recv,
@@ -355,7 +355,7 @@ impl<App: ApplicationLayer> Context<App> {
                         PACKET_TYPE_KEY_CONFIRM => {
                             log!(app, ReceivedRawKeyConfirm);
                             let just_established = received_c1_trans(
-                                &app,
+                                &mut app,
                                 ctx,
                                 &session,
                                 kid_recv,
@@ -372,14 +372,14 @@ impl<App: ApplicationLayer> Context<App> {
                         }
                         PACKET_TYPE_ACK => {
                             log!(app, ReceivedRawAck);
-                            received_c2_trans(&app, ctx, &session, kid_recv, &nonce, assembled_packet)?;
+                            received_c2_trans(&mut app, ctx, &session, kid_recv, &nonce, assembled_packet)?;
                             log!(app, AckIsAuth(&session));
                             SessionEvent::Control
                         }
                         PACKET_TYPE_REKEY_INIT => {
                             log!(app, ReceivedRawK1);
                             received_k1_trans(
-                                &app,
+                                &mut app,
                                 ctx,
                                 &session,
                                 kid_recv,
@@ -393,7 +393,7 @@ impl<App: ApplicationLayer> Context<App> {
                         PACKET_TYPE_REKEY_COMPLETE => {
                             log!(app, ReceivedRawK2);
                             received_k2_trans(
-                                &app,
+                                &mut app,
                                 ctx,
                                 &session,
                                 kid_recv,
@@ -418,7 +418,7 @@ impl<App: ApplicationLayer> Context<App> {
                 // Check for and handle PACKET_TYPE_ALICE_NOISE_XK_PATTERN_3
                 let zeta = self.0.unassociated_handshake_states.get(kid_recv);
                 if let Some(zeta) = zeta {
-                    App::PrpDec::new(&zeta.hk_recv).decrypt_in_place(
+                    Crypto::PrpDec::new(&zeta.hk_recv).decrypt_in_place(
                         (&mut incoming_fragment[HEADER_AUTH_START..HEADER_AUTH_END])
                             .try_into()
                             .unwrap(),
@@ -468,7 +468,7 @@ impl<App: ApplicationLayer> Context<App> {
 
                     log!(app, ReceivedRawX3);
                     let (session, should_warn_missing_ratchet) =
-                        received_x3_trans(&app, ctx, zeta, kid_recv, assembled_packet, |packet, hk_send| {
+                        received_x3_trans(&mut app, ctx, zeta, kid_recv, assembled_packet, |packet, hk_send| {
                             send_with_fragmentation(send_unassociated_reply, send_unassociated_mtu, packet, hk_send);
                         })?;
                     log!(app, X3IsAuthSentKeyConfirm(&session));
@@ -508,7 +508,7 @@ impl<App: ApplicationLayer> Context<App> {
                     incoming_fragment_buf,
                     fragment_no,
                     fragment_count,
-                    App::SETTINGS.resend_time as i64,
+                    Crypto::SETTINGS.resend_time as i64,
                     app.time(),
                     &mut fragment_buffer,
                 );
@@ -536,7 +536,7 @@ impl<App: ApplicationLayer> Context<App> {
                 }
                 // Process recv challenge layer.
                 let challenge_start = assembled_packet.len() - CHALLENGE_SIZE;
-                let hash = &mut App::Hash::new();
+                let hash = &mut Crypto::Hash::new();
                 match app.incoming_session() {
                     IncomingSessionAction::Allow => {}
                     IncomingSessionAction::Challenge => {
@@ -569,7 +569,7 @@ impl<App: ApplicationLayer> Context<App> {
 
                 // Process recv zeta layer.
                 received_x1_trans(
-                    &app,
+                    &mut app,
                     ctx,
                     hash,
                     &nonce,
@@ -612,7 +612,7 @@ impl<App: ApplicationLayer> Context<App> {
     /// * `current_time` - Current time in milliseconds
     pub fn send(
         &self,
-        session: &Arc<Session<App>>,
+        session: &Arc<Session<Crypto>>,
         send: impl FnMut(&mut [u8]) -> bool,
         mtu_sized_buffer: &mut [u8],
         data: &[u8],
@@ -631,15 +631,15 @@ impl<App: ApplicationLayer> Context<App> {
     ///   with remote peers (although both of these properties would help reliability slightly).
     ///   Used to determine if any current handshakes should be resent or timed-out, or if a session
     ///   should rekey.
-    pub fn service<SendFn: FnMut(&mut [u8]) -> bool>(
+    pub fn service<App: ApplicationLayer<Crypto = Crypto>, SendFn: FnMut(&mut [u8]) -> bool>(
         &self,
-        app: App,
-        mut send_to: impl FnMut(&Arc<Session<App>>) -> Option<(SendFn, usize)>,
+        mut app: App,
+        mut send_to: impl FnMut(&Arc<Session<Crypto>>) -> Option<(SendFn, usize)>,
     ) -> i64 {
         let ctx = &self.0;
         let mut session_queue = ctx.session_queue.lock().unwrap();
         let current_time = app.time();
-        let mut next_service_time = current_time + App::SETTINGS.fragment_assembly_timeout as i64;
+        let mut next_service_time = current_time + Crypto::SETTINGS.fragment_assembly_timeout as i64;
         // This update system takes heavy advantage of the fact that sessions only need to be updated
         // either roughly every second or roughly every hour. That big gap allows for minor optimizations.
         // If the gap changes (unlikely) this code may need to be rewritten.
@@ -655,7 +655,7 @@ impl<App: ApplicationLayer> Context<App> {
                     continue;
                 }
             };
-            let result = process_timers(&app, ctx, &session, current_time, |packet, hk_send| {
+            let result = process_timers(&mut app, ctx, &session, current_time, |packet, hk_send| {
                 if let Some((send_fragment, mut mtu)) = send_to(&session) {
                     mtu = mtu.max(MIN_TRANSPORT_MTU);
                     send_with_fragmentation(send_fragment, mtu, packet, hk_send);
@@ -674,7 +674,7 @@ impl<App: ApplicationLayer> Context<App> {
             .unassociated_defrag_cache
             .lock()
             .unwrap()
-            .check_for_expiry(App::SETTINGS.fragment_assembly_timeout as i64, current_time);
+            .check_for_expiry(Crypto::SETTINGS.fragment_assembly_timeout as i64, current_time);
         self.0.unassociated_handshake_states.service(current_time);
 
         next_service_time - current_time
