@@ -1676,16 +1676,11 @@ pub(crate) fn send_payload<Crypto: CryptoLayer>(
 
         mtu_sized_buffer[..HEADER_SIZE].copy_from_slice(&header);
         mtu_sized_buffer[FRAGMENT_NO_IDX] = fragment_no as u8;
-        cipher.encrypt(
-            &payload[i..j],
-            &mut mtu_sized_buffer[HEADER_SIZE..HEADER_SIZE + fragment_len],
-        );
+        let fragment_start = &mut mtu_sized_buffer[HEADER_SIZE..HEADER_SIZE + fragment_len];
+        cipher.encrypt(&payload[i..j], fragment_start);
 
-        state.hk_send.encrypt_in_place(
-            (&mut mtu_sized_buffer[HEADER_AUTH_START..HEADER_AUTH_END])
-                .try_into()
-                .unwrap(),
-        );
+        let header_auth = &mut mtu_sized_buffer[HEADER_AUTH_START..HEADER_AUTH_END];
+        state.hk_send.encrypt_in_place(header_auth.try_into().unwrap());
 
         if !send(&mut mtu_sized_buffer[..HEADER_SIZE + fragment_len]) {
             return Ok(());
@@ -1699,17 +1694,12 @@ pub(crate) fn send_payload<Crypto: CryptoLayer>(
 
     mtu_sized_buffer[..HEADER_SIZE].copy_from_slice(&header);
     mtu_sized_buffer[FRAGMENT_NO_IDX] = fragment_no as u8;
-    cipher.encrypt(
-        &payload[i..],
-        &mut mtu_sized_buffer[HEADER_SIZE..HEADER_SIZE + payload_rem],
-    );
+    let fragment_start = &mut mtu_sized_buffer[HEADER_SIZE..HEADER_SIZE + payload_rem];
+    cipher.encrypt(&payload[i..], fragment_start);
     mtu_sized_buffer[HEADER_SIZE + payload_rem..HEADER_SIZE + fragment_len].copy_from_slice(&cipher.finish());
 
-    state.hk_send.encrypt_in_place(
-        (&mut mtu_sized_buffer[HEADER_AUTH_START..HEADER_AUTH_END])
-            .try_into()
-            .unwrap(),
-    );
+    let header_auth = &mut mtu_sized_buffer[HEADER_AUTH_START..HEADER_AUTH_END];
+    state.hk_send.encrypt_in_place(header_auth.try_into().unwrap());
 
     if !send(&mut mtu_sized_buffer[..HEADER_SIZE + fragment_len]) {
         return Ok(());
