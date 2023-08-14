@@ -1,10 +1,9 @@
 use std::{
     ptr::{self, NonNull},
-    sync::Mutex,
+    sync::{Mutex, MutexGuard},
 };
 
 use openssl_sys::*;
-use zeroize::Zeroizing;
 
 use crate::crypto::*;
 
@@ -150,8 +149,8 @@ impl Aes256Dec for Aes256OpenSSLDec {
     }
 }
 
-pub struct AesGcmOpenSSLEnc(CipherCtx);
-impl AesGcmEncContext for AesGcmOpenSSLEnc {
+pub struct AesGcmOpenSSLEnc<'a>(MutexGuard<'a, CipherCtx>);
+impl<'a> AesGcmEncContext for AesGcmOpenSSLEnc<'a> {
     fn encrypt(&mut self, input: &[u8], output: &mut [u8]) {
         unsafe { assert!(self.0.update::<true>(input, output.as_mut_ptr())) };
     }
@@ -166,8 +165,8 @@ impl AesGcmEncContext for AesGcmOpenSSLEnc {
     }
 }
 
-pub struct AesGcmOpenSSLDec(CipherCtx);
-impl AesGcmDecContext for AesGcmOpenSSLDec {
+pub struct AesGcmOpenSSLDec<'a>(MutexGuard<'a, CipherCtx>);
+impl<'a> AesGcmDecContext for AesGcmOpenSSLDec<'a> {
     fn decrypt_in_place(&mut self, data: &mut [u8]) {
         let p = data.as_mut_ptr();
         unsafe { assert!(self.0.update::<false>(data, p)) };
@@ -179,39 +178,54 @@ impl AesGcmDecContext for AesGcmOpenSSLDec {
 }
 
 pub struct AesGcmOpenSSLPool {
-    enc_key: Zeroizing<[u8; AES_256_KEY_SIZE]>,
-    dec_key: Zeroizing<[u8; AES_256_KEY_SIZE]>,
+    enc: [Mutex<CipherCtx>; 8],
+    dec: [Mutex<CipherCtx>; 8],
 }
-impl HighThroughputAesGcmPool for AesGcmOpenSSLPool {
-    type EncContext<'a> = AesGcmOpenSSLEnc;
+unsafe impl Send for AesGcmOpenSSLPool {}
+unsafe impl Sync for AesGcmOpenSSLPool {}
 
-    type DecContext<'a> = AesGcmOpenSSLDec;
+impl HighThroughputAesGcmPool for AesGcmOpenSSLPool {
+    type EncContext<'a> = AesGcmOpenSSLEnc<'a>;
+
+    type DecContext<'a> = AesGcmOpenSSLDec<'a>;
 
     fn new(encrypt_key: &[u8; AES_256_KEY_SIZE], decrypt_key: &[u8; AES_256_KEY_SIZE]) -> Self {
-        AesGcmOpenSSLPool {
-            enc_key: Zeroizing::new(*encrypt_key),
-            dec_key: Zeroizing::new(*decrypt_key),
+        unsafe {
+            AesGcmOpenSSLPool {
+                enc: std::array::from_fn(|_| {
+                    let ctx = CipherCtx::new().unwrap();
+                    let t = openssl_sys::EVP_aes_256_gcm();
+                    assert!(ctx.cipher_init::<true>(t, encrypt_key.as_ptr(), ptr::null()));
+                    openssl_sys::EVP_CIPHER_CTX_set_padding(ctx.as_ptr(), 0);
+                    Mutex::new(ctx)
+                }),
+                dec: std::array::from_fn(|_| {
+                    let ctx = CipherCtx::new().unwrap();
+                    let t = openssl_sys::EVP_aes_256_gcm();
+                    assert!(ctx.cipher_init::<false>(t, decrypt_key.as_ptr(), ptr::null()));
+                    openssl_sys::EVP_CIPHER_CTX_set_padding(ctx.as_ptr(), 0);
+                    Mutex::new(ctx)
+                }),
+            }
         }
     }
 
     fn start_enc<'a>(&'a self, nonce: &[u8; AES_GCM_NONCE_SIZE]) -> AesGcmOpenSSLEnc {
-        let ctx = CipherCtx::new().unwrap();
+        let i = u64::from_be_bytes(nonce[4..].try_into().unwrap());
+        let g = self.enc[(i as usize) % self.enc.len()].lock().unwrap();
         unsafe {
-            let t = openssl_sys::EVP_aes_256_gcm();
-            assert!(ctx.cipher_init::<true>(t, self.enc_key.as_ptr(), nonce.as_ptr()));
-            openssl_sys::EVP_CIPHER_CTX_set_padding(ctx.as_ptr(), 0);
+            assert!(g.cipher_init::<true>(ptr::null(), ptr::null(), nonce.as_ptr()));
         }
-        AesGcmOpenSSLEnc(ctx)
+        AesGcmOpenSSLEnc(g)
     }
 
     fn start_dec<'a>(&'a self, nonce: &[u8; AES_GCM_NONCE_SIZE]) -> AesGcmOpenSSLDec {
-        let ctx = CipherCtx::new().unwrap();
+        let i = u64::from_be_bytes(nonce[4..].try_into().unwrap());
+        let g = self.dec[(i as usize) % self.enc.len()].lock().unwrap();
         unsafe {
-            let t = openssl_sys::EVP_aes_256_gcm();
-            assert!(ctx.cipher_init::<false>(t, self.dec_key.as_ptr(), nonce.as_ptr()));
-            openssl_sys::EVP_CIPHER_CTX_set_padding(ctx.as_ptr(), 0);
+            assert!(g.cipher_init::<false>(ptr::null(), ptr::null(), nonce.as_ptr()));
         }
-        AesGcmOpenSSLDec(ctx)
+        AesGcmOpenSSLDec(g)
     }
 }
 
