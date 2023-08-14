@@ -1376,13 +1376,8 @@ pub(crate) fn received_k1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
 
     let i = k1.len() - AES_GCM_TAG_SIZE;
     let tag = k1[i..].try_into().unwrap();
-    if !Crypto::Aead::decrypt_in_place(
-        state.key_ref(false).recv.kek.as_ref().unwrap(),
-        n,
-        &[],
-        &mut k1[..i],
-        &tag,
-    ) {
+    let kek_recv = state.key_ref(false).recv.kek.as_ref().unwrap();
+    if !Crypto::Aead::decrypt_in_place(kek_recv, n, &[], &mut k1[..i], &tag) {
         return Err(fault!(FailedAuth, true));
     }
     let (_, c) = from_nonce(n);
@@ -1527,13 +1522,8 @@ pub(crate) fn received_k2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
 
     let i = k2.len() - AES_GCM_TAG_SIZE;
     let tag = k2[i..].try_into().unwrap();
-    if !Crypto::Aead::decrypt_in_place(
-        state.key_ref(false).recv.kek.as_ref().unwrap(),
-        n,
-        &[],
-        &mut k2[..i],
-        &tag,
-    ) {
+    let kek_recv = state.key_ref(false).recv.kek.as_ref().unwrap();
+    if !Crypto::Aead::decrypt_in_place(kek_recv, n, &[], &mut k2[..i], &tag) {
         return Err(fault!(FailedAuth, true));
     }
     let (_, c) = from_nonce(n);
