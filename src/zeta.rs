@@ -229,7 +229,7 @@ pub(crate) fn from_nonce(n: &[u8]) -> (u8, u64) {
     let c_start = n.len() - 8;
     (n[c_start - 1], u64::from_be_bytes(n[c_start..].try_into().unwrap()))
 }
-fn set_header(packet: &mut [u8], kid_send: u32, nonce: &[u8; AES_GCM_NONCE_SIZE]) {
+pub(crate) fn set_header(packet: &mut [u8], kid_send: u32, nonce: &[u8; AES_GCM_NONCE_SIZE]) {
     packet[..KID_SIZE].copy_from_slice(&kid_send.to_ne_bytes());
     packet[PACKET_NONCE_START..HEADER_SIZE].copy_from_slice(&nonce[NONCE_SIZE_DIFF..]);
 }

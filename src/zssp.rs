@@ -8,16 +8,16 @@ use std::sync::{Arc, Mutex, RwLock, Weak};
 use arrayvec::ArrayVec;
 use rand_core::RngCore;
 
+use crate::application::*;
 use crate::challenge::ChallengeContext;
 use crate::crypto::*;
-use crate::zeta::*;
-use crate::application::*;
 use crate::frag_cache::UnassociatedFragCache;
 use crate::fragged::Assembled;
 use crate::handshake_cache::UnassociatedHandshakeCache;
 use crate::indexed_heap::IndexedBinaryHeap;
 use crate::proto::*;
 use crate::result::{fault, FaultType, OpenError, ReceiveError, ReceiveOk, SendError, SessionEvent};
+use crate::zeta::*;
 #[cfg(feature = "logging")]
 use crate::LogEvent::*;
 
@@ -549,7 +549,8 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                             challenge_packet.extend(challenge);
                             let nonce = to_nonce(PACKET_TYPE_CHALLENGE, ctx.rng.lock().unwrap().next_u64());
                             challenge_packet[FRAGMENT_COUNT_IDX] = 1;
-                            challenge_packet[PACKET_NONCE_START..HEADER_SIZE].copy_from_slice(&nonce);
+                            challenge_packet[PACKET_NONCE_START..HEADER_SIZE].copy_from_slice(&nonce[..PACKET_NONCE_SIZE]);
+                            set_header(&mut challenge_packet, 0, &nonce);
 
                             send_unassociated_reply(&mut challenge_packet);
                             // If we issue a challenge the first hello packet will always fail.

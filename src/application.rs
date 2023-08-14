@@ -243,7 +243,8 @@ pub trait ApplicationLayer: Sized {
     /// These are provided for debugging, logging or metrics purposes, and must be used for
     /// nothing else. Do not base protocol-level decisions upon the events passed to this function.
     #[cfg(feature = "logging")]
-    fn event_log(&mut self, event: crate::LogEvent<'_, Self::Crypto>);
+    #[allow(unused)]
+    fn event_log(&mut self, event: crate::LogEvent<'_, Self::Crypto>) {}
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]

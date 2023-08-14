@@ -68,7 +68,7 @@ impl ApplicationLayer for &TestApplication {
     type Crypto = TestApplication;
 
     fn incoming_session(&mut self) -> IncomingSessionAction {
-        IncomingSessionAction::Allow
+        IncomingSessionAction::Challenge
     }
 
     fn hello_requires_recognized_ratchet(&mut self) -> bool {
