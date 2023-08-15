@@ -7,7 +7,7 @@ use openssl_sys::*;
 
 use crate::crypto::*;
 
-struct CipherCtx(NonNull<openssl_sys::EVP_CIPHER_CTX>);
+pub struct CipherCtx(NonNull<openssl_sys::EVP_CIPHER_CTX>);
 impl Drop for CipherCtx {
     fn drop(&mut self) {
         unsafe {
