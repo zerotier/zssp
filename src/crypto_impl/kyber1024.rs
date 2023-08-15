@@ -8,7 +8,9 @@ use crate::crypto::*;
 pub type RustKyber1024PrivateKey = Zeroizing<[u8; pqc_kyber::KYBER_SECRETKEYBYTES]>;
 impl<Rng: RngCore + CryptoRng> Kyber1024PrivateKey<Rng> for RustKyber1024PrivateKey {
     fn generate(rng: &mut Rng) -> (Self, [u8; KYBER_PUBLIC_KEY_SIZE]) {
-        let keypair = pqc_kyber::keypair(rng);
+        // According to the source code this can only fail if the RNG fails.
+        // Idk why rust allows RNG to fail.
+        let keypair = pqc_kyber::keypair(rng).unwrap();
         (Zeroizing::new(keypair.secret), keypair.public)
     }
 

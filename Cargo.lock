@@ -215,9 +215,9 @@ checksum = "26072860ba924cbfa98ea39c8c19b4dd6a4a25423dbdf219c1eca91aa0cf6964"
 
 [[package]]
 name = "pqc_kyber"
-version = "0.6.0"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "84c578a7eab95d8649f115dd6f90894d167766e82a6bcf66ff25f60e7dfc857e"
+checksum = "1b5dd33c0b42d244b01ab4f6cabaeb03c3b875017780fb3903b53b9c91fb6663"
 dependencies = [
  "rand_core",
 ]

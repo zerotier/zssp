@@ -117,7 +117,7 @@ impl<Fragment> UnassociatedFragCache<Fragment> {
         if self.map[idx].key == 0 {
             // This is a new entry so initialize it.
             if (fragment_count as usize) <= self.frags_unused_size {
-                let mut entry = &mut self.map[idx];
+                let entry = &mut self.map[idx];
                 entry.key = key;
                 entry.frags_idx = self.frags_first_unused as u32;
                 entry.fragment_have = 0;
@@ -135,7 +135,7 @@ impl<Fragment> UnassociatedFragCache<Fragment> {
                 return;
             }
         }
-        let mut entry = &mut self.map[idx];
+        let entry = &mut self.map[idx];
 
         let new_size = entry.packet_size + fragment_size as u32;
         let got = 1u64.wrapping_shl(fragment_no as u32);
