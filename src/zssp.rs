@@ -131,12 +131,10 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
     /// * `send` - Function to be called to send one or more initial packets to the remote being
     ///   contacted
     /// * `mtu` - MTU for initial packets
-    /// * `remote_static_key` - Remote side's static public NIST P-384 key
-    /// * `application_data` - Arbitrary data meaningful to the application to include with session
+    /// * `static_remote_key` - Remote side's static public NIST P-384 key
+    /// * `session_data` - Arbitrary data meaningful to the application to include with session
     ///   object
-    /// * `ratchet_state` - The last saved and confirmed ratchet state associated with this remote
-    ///   peer, or None if we do not have one.
-    /// * `local_identity_blob` - Payload to be sent to Bob that contains the information necessary
+    /// * `identity` - Payload to be sent to Bob that contains the information necessary
     ///   for the upper protocol to authenticate and approve of Alice's identity.
     pub fn open<App: ApplicationLayer<Crypto = Crypto>>(
         &self,
@@ -176,25 +174,12 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
     /// session and will always result in a new session ReceiveOk being returned.
     ///
     /// * `app` - Interface to application using ZSSP
-    /// * `check_allow_incoming_session` - Function to call to check whether an unidentified new
-    ///   session should be accepted
-    /// * `check_accept_session` - Function to accept sessions after final negotiation.
-    ///   The second argument is the identity blob that the remote peer sent us. The application
-    ///   must verify this identity is associated with the remote peer's static key.
-    ///   The third argument is the ratchet chain length, or ratchet count.
-    ///   To prevent desync, if this function returns (Some(_), _), no other open session with the
-    ///   same remote peer must exist.
     /// * `send_unassociated_reply` - Function to send reply packets directly when no session exists
     /// * `send_unassociated_mtu` - MTU for unassociated replies
     /// * `send_to` - Function to get senders for existing sessions, permitting MTU and path lookup
     /// * `remote_address` - Whatever the remote address is, as long as you can Hash it
-    /// * `data_buf` - Buffer to receive decrypted and authenticated object data (an error is
-    ///   returned if too small)
-    /// * `incoming_physical_packet_buf` - Buffer containing incoming wire packet
-    ///   (receive() takes ownership)
-    /// * `current_time` - Current time in milliseconds. Does not have to be monotonic, nor synced
-    ///   with the remote peer. Used to check the state of local offers we may currently have or want
-    ///   to put in-flight.
+    /// * `incoming_fragment_buf` - Buffer containing incoming wire packet (the context takes ownership)
+    /// * `output_buffer` - Buffer to receive decrypted and authenticated object data
     pub fn receive<'a, App: ApplicationLayer<Crypto = Crypto>, SendFn: FnMut(&mut [u8]) -> bool>(
         &self,
         mut app: App,
@@ -605,7 +590,6 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
     ///   slice of `data`
     /// * `mtu_sized_buffer` - A writable work buffer whose size equals the MTU
     /// * `data` - Data to send
-    /// * `current_time` - Current time in milliseconds
     pub fn send(
         &self,
         session: &Arc<Session<Crypto>>,
@@ -622,11 +606,8 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
     /// try to satisfy this but small variations in timing of up to +/- a second or two are not
     /// a problem.
     ///
+    /// * `app` - Interface to application using ZSSP
     /// * `send_to` - Function to get a sender and an MTU to send something over an active session
-    /// * `current_time` - Current time in milliseconds. Does not have to be monotonic, nor synced
-    ///   with remote peers (although both of these properties would help reliability slightly).
-    ///   Used to determine if any current handshakes should be resent or timed-out, or if a session
-    ///   should rekey.
     pub fn service<App: ApplicationLayer<Crypto = Crypto>, SendFn: FnMut(&mut [u8]) -> bool>(
         &self,
         mut app: App,
