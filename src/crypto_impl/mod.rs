@@ -36,15 +36,15 @@ pub trait DefaultCrypto {
 #[cfg(feature = "default-crypto")]
 impl<C: DefaultCrypto> crate::application::CryptoLayer for C {
     type Rng = rand_core::OsRng;
-    type PrpEnc = Aes256OpenSSLEnc;
-    type PrpDec = Aes256OpenSSLDec;
-    type Aead = AesGcmOpenSSL;
-    type AeadPool = AesGcmOpenSSLPool;
-    type Hash = Sha512Crate;
-    type Hmac = HmacSha512Crate;
-    type PublicKey = P384CratePublicKey;
-    type KeyPair = P384CrateKeyPair;
-    type Kem = Kyber1024CratePrivateKey;
+    type PrpEnc = OpenSSLAes256Enc;
+    type PrpDec = OpenSSLAes256Dec;
+    type Aead = OpenSSLAesGcm;
+    type AeadPool = OpenSSLAesGcmPool;
+    type Hash = CrateSha512;
+    type Hmac = CrateHmacSha512;
+    type PublicKey = CrateP384PublicKey;
+    type KeyPair = CrateP384KeyPair;
+    type Kem = CrateKyber1024PrivateKey;
 
     type SessionData = C::SessionData;
     type IncomingPacketBuffer = C::IncomingPacketBuffer;

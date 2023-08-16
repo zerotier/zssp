@@ -49,15 +49,15 @@ impl CryptoLayer for TestApplication {
     };
 
     type Rng = OsRng;
-    type PrpEnc = Aes256OpenSSLEnc;
-    type PrpDec = Aes256OpenSSLDec;
-    type Aead = AesGcmOpenSSL;
-    type AeadPool = AesGcmOpenSSLPool;
-    type Hash = Sha512Crate;
-    type Hmac = HmacSha512Crate;
-    type PublicKey = P384CratePublicKey;
-    type KeyPair = P384CrateKeyPair;
-    type Kem = Kyber1024CratePrivateKey;
+    type PrpEnc = OpenSSLAes256Enc;
+    type PrpDec = OpenSSLAes256Dec;
+    type Aead = OpenSSLAesGcm;
+    type AeadPool = OpenSSLAesGcmPool;
+    type Hash = CrateSha512;
+    type Hmac = CrateHmacSha512;
+    type PublicKey = CrateP384PublicKey;
+    type KeyPair = CrateP384KeyPair;
+    type Kem = CrateKyber1024PrivateKey;
 
     type SessionData = u128;
 
@@ -81,7 +81,7 @@ impl ApplicationLayer for &TestApplication {
 
     fn check_accept_session(
         &mut self,
-        remote_static_key: &P384CratePublicKey,
+        remote_static_key: &CrateP384PublicKey,
         identity: &[u8],
     ) -> AcceptAction<TestApplication> {
         AcceptAction {
@@ -98,7 +98,7 @@ impl ApplicationLayer for &TestApplication {
 
     fn restore_by_identity(
         &mut self,
-        remote_static_key: &P384CratePublicKey,
+        remote_static_key: &CrateP384PublicKey,
         session_data: &u128,
     ) -> Result<Option<RatchetStates>, ()> {
         let ratchets = self.ratchets.lock().unwrap();
@@ -107,7 +107,7 @@ impl ApplicationLayer for &TestApplication {
 
     fn save_ratchet_state(
         &mut self,
-        remote_static_key: &P384CratePublicKey,
+        remote_static_key: &CrateP384PublicKey,
         session_data: &u128,
         update_data: RatchetUpdate<'_>,
     ) -> Result<(), ()> {
@@ -144,8 +144,8 @@ fn alice_main(
     alice_out: mpsc::SyncSender<Vec<u8>>,
     alice_in: mpsc::Receiver<Vec<u8>>,
     recursive_out: mpsc::SyncSender<Vec<u8>>,
-    alice_keypair: P384CrateKeyPair,
-    bob_pubkey: P384CratePublicKey,
+    alice_keypair: CrateP384KeyPair,
+    bob_pubkey: CrateP384PublicKey,
 ) {
     let startup_time = std::time::Instant::now();
     let context = zssp::Context::<TestApplication>::new(alice_keypair, OsRng);
@@ -251,7 +251,7 @@ fn bob_main(
     bob_out: mpsc::SyncSender<Vec<u8>>,
     bob_in: mpsc::Receiver<Vec<u8>>,
     recursive_out: mpsc::SyncSender<Vec<u8>>,
-    bob_keypair: P384CrateKeyPair,
+    bob_keypair: CrateP384KeyPair,
 ) {
     let startup_time = std::time::Instant::now();
     let context = zssp::Context::<TestApplication>::new(bob_keypair, OsRng);
@@ -335,13 +335,13 @@ fn bob_main(
 fn core(time: u64, packet_success_rate: u32) {
     let run = &AtomicBool::new(true);
 
-    let alice_keypair = P384CrateKeyPair::generate(&mut OsRng);
+    let alice_keypair = CrateP384KeyPair::generate(&mut OsRng);
     let alice_app = TestApplication {
         time: Instant::now(),
         name: "alice",
         ratchets: Mutex::new(Ratchets::new()),
     };
-    let bob_keypair = P384CrateKeyPair::generate(&mut OsRng);
+    let bob_keypair = CrateP384KeyPair::generate(&mut OsRng);
     let bob_pubkey = bob_keypair.public_key();
     let bob_app = TestApplication {
         time: Instant::now(),

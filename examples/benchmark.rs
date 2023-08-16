@@ -75,7 +75,7 @@ impl ApplicationLayer for &TestApplication {
 
     fn check_accept_session(
         &mut self,
-        remote_static_key: &P384CratePublicKey,
+        remote_static_key: &CrateP384PublicKey,
         identity: &[u8],
     ) -> AcceptAction<TestApplication> {
         AcceptAction {
@@ -91,7 +91,7 @@ impl ApplicationLayer for &TestApplication {
 
     fn restore_by_identity(
         &mut self,
-        remote_static_key: &P384CratePublicKey,
+        remote_static_key: &CrateP384PublicKey,
         session_data: &(),
     ) -> Result<Option<RatchetStates>, ()> {
         Ok(None)
@@ -99,7 +99,7 @@ impl ApplicationLayer for &TestApplication {
 
     fn save_ratchet_state(
         &mut self,
-        remote_static_key: &P384CratePublicKey,
+        remote_static_key: &CrateP384PublicKey,
         session_data: &(),
         update_data: RatchetUpdate<'_>,
     ) -> Result<(), ()> {
@@ -117,8 +117,8 @@ fn alice_main(
     alice_app: &TestApplication,
     alice_out: mpsc::SyncSender<PooledVec>,
     alice_in: mpsc::Receiver<PooledVec>,
-    alice_keypair: P384CrateKeyPair,
-    bob_pubkey: P384CratePublicKey,
+    alice_keypair: CrateP384KeyPair,
+    bob_pubkey: CrateP384PublicKey,
 ) {
     let startup_time = std::time::Instant::now();
     let context = zssp::Context::<TestApplication>::new(alice_keypair, OsRng);
@@ -211,7 +211,7 @@ fn bob_main(
     bob_app: &TestApplication,
     bob_out: mpsc::SyncSender<PooledVec>,
     bob_in: mpsc::Receiver<PooledVec>,
-    bob_keypair: P384CrateKeyPair,
+    bob_keypair: CrateP384KeyPair,
 ) {
     let startup_time = std::time::Instant::now();
     let context = zssp::Context::<TestApplication>::new(bob_keypair, OsRng);
@@ -292,9 +292,9 @@ fn bob_main(
 fn core(time: u64) {
     let run = &AtomicBool::new(true);
 
-    let alice_keypair = P384CrateKeyPair::generate(&mut OsRng);
+    let alice_keypair = CrateP384KeyPair::generate(&mut OsRng);
     let alice_app = TestApplication { time: Instant::now() };
-    let bob_keypair = P384CrateKeyPair::generate(&mut OsRng);
+    let bob_keypair = CrateP384KeyPair::generate(&mut OsRng);
     let bob_pubkey = bob_keypair.public_key();
     let bob_app = TestApplication { time: Instant::now() };
 

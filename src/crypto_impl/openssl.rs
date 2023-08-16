@@ -7,18 +7,18 @@ use openssl_sys::*;
 
 use crate::crypto::*;
 
-pub struct CipherCtx(NonNull<openssl_sys::EVP_CIPHER_CTX>);
-impl Drop for CipherCtx {
+pub struct OpenSSLCtx(NonNull<openssl_sys::EVP_CIPHER_CTX>);
+impl Drop for OpenSSLCtx {
     fn drop(&mut self) {
         unsafe {
             EVP_CIPHER_CTX_free(self.0.as_ptr());
         }
     }
 }
-impl CipherCtx {
+impl OpenSSLCtx {
     /// Creates a new context.
     pub fn new() -> Option<Self> {
-        unsafe { Some(CipherCtx(NonNull::new(EVP_CIPHER_CTX_new())?)) }
+        unsafe { Some(OpenSSLCtx(NonNull::new(EVP_CIPHER_CTX_new())?)) }
     }
 
     pub unsafe fn cipher_init<const ENCRYPT: bool>(
@@ -88,13 +88,13 @@ impl CipherCtx {
     }
 }
 
-pub struct Aes256OpenSSLEnc(Mutex<CipherCtx>);
-unsafe impl Send for Aes256OpenSSLEnc {}
-unsafe impl Sync for Aes256OpenSSLEnc {}
+pub struct OpenSSLAes256Enc(Mutex<OpenSSLCtx>);
+unsafe impl Send for OpenSSLAes256Enc {}
+unsafe impl Sync for OpenSSLAes256Enc {}
 
-impl Aes256Enc for Aes256OpenSSLEnc {
+impl Aes256Enc for OpenSSLAes256Enc {
     fn new(key: &[u8; AES_256_KEY_SIZE]) -> Self {
-        let ctx = CipherCtx::new().unwrap();
+        let ctx = OpenSSLCtx::new().unwrap();
         unsafe {
             let t = openssl_sys::EVP_aes_256_ecb();
             assert!(ctx.cipher_init::<true>(t, key.as_ptr(), ptr::null()));
@@ -118,13 +118,13 @@ impl Aes256Enc for Aes256OpenSSLEnc {
         unsafe { assert!(ctx.update::<true>(block, ptr)) }
     }
 }
-pub struct Aes256OpenSSLDec(Mutex<CipherCtx>);
-unsafe impl Send for Aes256OpenSSLDec {}
-unsafe impl Sync for Aes256OpenSSLDec {}
+pub struct OpenSSLAes256Dec(Mutex<OpenSSLCtx>);
+unsafe impl Send for OpenSSLAes256Dec {}
+unsafe impl Sync for OpenSSLAes256Dec {}
 
-impl Aes256Dec for Aes256OpenSSLDec {
+impl Aes256Dec for OpenSSLAes256Dec {
     fn new(key: &[u8; AES_256_KEY_SIZE]) -> Self {
-        let ctx = CipherCtx::new().unwrap();
+        let ctx = OpenSSLCtx::new().unwrap();
         unsafe {
             let t = openssl_sys::EVP_aes_256_ecb();
             assert!(ctx.cipher_init::<false>(t, key.as_ptr(), ptr::null()));
@@ -149,8 +149,8 @@ impl Aes256Dec for Aes256OpenSSLDec {
     }
 }
 
-pub struct AesGcmOpenSSLEnc<'a>(MutexGuard<'a, CipherCtx>);
-impl<'a> AesGcmEncContext for AesGcmOpenSSLEnc<'a> {
+pub struct OpenSSLAesGcmEnc<'a>(MutexGuard<'a, OpenSSLCtx>);
+impl<'a> AesGcmEncContext for OpenSSLAesGcmEnc<'a> {
     fn encrypt(&mut self, input: &[u8], output: &mut [u8]) {
         unsafe { assert!(self.0.update::<true>(input, output.as_mut_ptr())) };
     }
@@ -165,8 +165,8 @@ impl<'a> AesGcmEncContext for AesGcmOpenSSLEnc<'a> {
     }
 }
 
-pub struct AesGcmOpenSSLDec<'a>(MutexGuard<'a, CipherCtx>);
-impl<'a> AesGcmDecContext for AesGcmOpenSSLDec<'a> {
+pub struct OpenSSLAesGcmDec<'a>(MutexGuard<'a, OpenSSLCtx>);
+impl<'a> AesGcmDecContext for OpenSSLAesGcmDec<'a> {
     fn decrypt_in_place(&mut self, data: &mut [u8]) {
         let p = data.as_mut_ptr();
         unsafe { assert!(self.0.update::<false>(data, p)) };
@@ -177,30 +177,30 @@ impl<'a> AesGcmDecContext for AesGcmOpenSSLDec<'a> {
     }
 }
 
-pub struct AesGcmOpenSSLPool {
-    enc: [Mutex<CipherCtx>; 8],
-    dec: [Mutex<CipherCtx>; 8],
+pub struct OpenSSLAesGcmPool {
+    enc: [Mutex<OpenSSLCtx>; 8],
+    dec: [Mutex<OpenSSLCtx>; 8],
 }
-unsafe impl Send for AesGcmOpenSSLPool {}
-unsafe impl Sync for AesGcmOpenSSLPool {}
+unsafe impl Send for OpenSSLAesGcmPool {}
+unsafe impl Sync for OpenSSLAesGcmPool {}
 
-impl HighThroughputAesGcmPool for AesGcmOpenSSLPool {
-    type EncContext<'a> = AesGcmOpenSSLEnc<'a>;
+impl HighThroughputAesGcmPool for OpenSSLAesGcmPool {
+    type EncContext<'a> = OpenSSLAesGcmEnc<'a>;
 
-    type DecContext<'a> = AesGcmOpenSSLDec<'a>;
+    type DecContext<'a> = OpenSSLAesGcmDec<'a>;
 
     fn new(encrypt_key: &[u8; AES_256_KEY_SIZE], decrypt_key: &[u8; AES_256_KEY_SIZE]) -> Self {
         unsafe {
-            AesGcmOpenSSLPool {
+            OpenSSLAesGcmPool {
                 enc: std::array::from_fn(|_| {
-                    let ctx = CipherCtx::new().unwrap();
+                    let ctx = OpenSSLCtx::new().unwrap();
                     let t = openssl_sys::EVP_aes_256_gcm();
                     assert!(ctx.cipher_init::<true>(t, encrypt_key.as_ptr(), ptr::null()));
                     openssl_sys::EVP_CIPHER_CTX_set_padding(ctx.as_ptr(), 0);
                     Mutex::new(ctx)
                 }),
                 dec: std::array::from_fn(|_| {
-                    let ctx = CipherCtx::new().unwrap();
+                    let ctx = OpenSSLCtx::new().unwrap();
                     let t = openssl_sys::EVP_aes_256_gcm();
                     assert!(ctx.cipher_init::<false>(t, decrypt_key.as_ptr(), ptr::null()));
                     openssl_sys::EVP_CIPHER_CTX_set_padding(ctx.as_ptr(), 0);
@@ -210,27 +210,27 @@ impl HighThroughputAesGcmPool for AesGcmOpenSSLPool {
         }
     }
 
-    fn start_enc<'a>(&'a self, nonce: &[u8; AES_GCM_NONCE_SIZE]) -> AesGcmOpenSSLEnc {
+    fn start_enc<'a>(&'a self, nonce: &[u8; AES_GCM_NONCE_SIZE]) -> OpenSSLAesGcmEnc {
         let i = u64::from_be_bytes(nonce[4..].try_into().unwrap());
         let g = self.enc[(i as usize) % self.enc.len()].lock().unwrap();
         unsafe {
             assert!(g.cipher_init::<true>(ptr::null(), ptr::null(), nonce.as_ptr()));
         }
-        AesGcmOpenSSLEnc(g)
+        OpenSSLAesGcmEnc(g)
     }
 
-    fn start_dec<'a>(&'a self, nonce: &[u8; AES_GCM_NONCE_SIZE]) -> AesGcmOpenSSLDec {
+    fn start_dec<'a>(&'a self, nonce: &[u8; AES_GCM_NONCE_SIZE]) -> OpenSSLAesGcmDec {
         let i = u64::from_be_bytes(nonce[4..].try_into().unwrap());
         let g = self.dec[(i as usize) % self.enc.len()].lock().unwrap();
         unsafe {
             assert!(g.cipher_init::<false>(ptr::null(), ptr::null(), nonce.as_ptr()));
         }
-        AesGcmOpenSSLDec(g)
+        OpenSSLAesGcmDec(g)
     }
 }
 
-pub struct AesGcmOpenSSL;
-impl LowThroughputAesGcm for AesGcmOpenSSL {
+pub struct OpenSSLAesGcm;
+impl LowThroughputAesGcm for OpenSSLAesGcm {
     fn encrypt_in_place(
         key: &[u8; AES_256_KEY_SIZE],
         nonce: &[u8; AES_GCM_NONCE_SIZE],
@@ -238,7 +238,7 @@ impl LowThroughputAesGcm for AesGcmOpenSSL {
         data: &mut [u8],
     ) -> [u8; AES_GCM_TAG_SIZE] {
         let mut output = [0u8; AES_GCM_TAG_SIZE];
-        let ctx = CipherCtx::new().unwrap();
+        let ctx = OpenSSLCtx::new().unwrap();
         unsafe {
             let t = openssl_sys::EVP_aes_256_gcm();
             assert!(ctx.cipher_init::<true>(t, key.as_ptr(), nonce.as_ptr()));
@@ -261,7 +261,7 @@ impl LowThroughputAesGcm for AesGcmOpenSSL {
         data: &mut [u8],
         tag: &[u8; AES_GCM_TAG_SIZE],
     ) -> bool {
-        let ctx = CipherCtx::new().unwrap();
+        let ctx = OpenSSLCtx::new().unwrap();
         unsafe {
             let t = openssl_sys::EVP_aes_256_gcm();
             assert!(ctx.cipher_init::<false>(t, key.as_ptr(), nonce.as_ptr()));
@@ -282,7 +282,7 @@ mod test {
     #[test]
     fn aes_128_ecb() {
         let key = [1u8; 16];
-        let ctx = CipherCtx::new().unwrap();
+        let ctx = OpenSSLCtx::new().unwrap();
         unsafe {
             assert!(ctx.cipher_init::<true>(openssl_sys::EVP_aes_128_ecb(), key.as_ptr(), ptr::null()));
             openssl_sys::EVP_CIPHER_CTX_set_padding(ctx.as_ptr(), 0);

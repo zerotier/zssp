@@ -5,8 +5,8 @@ use crate::crypto::*;
 
 /// A wrapper for a buffer the size of a pqc_kyber secret key.
 /// The crate `pqc_kyber` is low level and operates directly on buffers of bytes.
-pub type Kyber1024CratePrivateKey = Zeroizing<[u8; pqc_kyber::KYBER_SECRETKEYBYTES]>;
-impl<Rng: RngCore + CryptoRng> Kyber1024PrivateKey<Rng> for Kyber1024CratePrivateKey {
+pub type CrateKyber1024PrivateKey = Zeroizing<[u8; pqc_kyber::KYBER_SECRETKEYBYTES]>;
+impl<Rng: RngCore + CryptoRng> Kyber1024PrivateKey<Rng> for CrateKyber1024PrivateKey {
     fn generate(rng: &mut Rng) -> (Self, [u8; KYBER_PUBLIC_KEY_SIZE]) {
         // According to the source code this can only fail if the RNG fails.
         // Idk why rust allows RNG to fail.

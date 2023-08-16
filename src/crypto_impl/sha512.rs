@@ -3,8 +3,8 @@ use sha2::{Digest, Sha512};
 
 use crate::crypto::*;
 
-pub type Sha512Crate = Sha512;
-impl Sha512Hash for Sha512Crate {
+pub type CrateSha512 = Sha512;
+impl Sha512Hash for CrateSha512 {
     fn new() -> Self {
         Digest::new()
     }
@@ -20,10 +20,10 @@ impl Sha512Hash for Sha512Crate {
     }
 }
 
-pub struct HmacSha512Crate;
-impl Sha512Hmac for HmacSha512Crate {
+pub struct CrateHmacSha512;
+impl Sha512Hmac for CrateHmacSha512 {
     fn new() -> Self {
-        HmacSha512Crate
+        CrateHmacSha512
     }
 
     fn hash(&mut self, key: &[u8], full_input: &[u8], output: &mut [u8; SHA512_HASH_SIZE]) {
