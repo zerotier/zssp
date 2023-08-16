@@ -8,13 +8,12 @@ use rand_core::OsRng;
 use rand_core::RngCore;
 
 use zssp::application::{
-    AcceptAction, ApplicationLayer, IncomingSessionAction, RatchetState, RatchetStates, RatchetUpdate,
-    RATCHET_SIZE,
+    AcceptAction, ApplicationLayer, IncomingSessionAction, RatchetState, RatchetStates, RatchetUpdate, RATCHET_SIZE,
 };
 use zssp::crypto::P384KeyPair;
 use zssp::crypto_impl::*;
-use zssp::Session;
 use zssp::result::ReceiveError;
+use zssp::Session;
 
 const TEST_MTU: usize = 1500;
 

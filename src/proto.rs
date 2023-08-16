@@ -88,6 +88,7 @@ pub(crate) const LABEL_HEADER_KEY: &[u8; 4] = b"ASKH";
 pub(crate) const LABEL_KEX_KEY: &[u8; 4] = b"ASKK";
 
 pub(crate) const EXPIRE_AFTER_USES: u64 = 1 << 32 - 1;
+pub(crate) const THREAD_SAFE_COUNTER_HARD_EXPIRE: u64 = u64::MAX - 1 << 16;
 /// Determines the number of counters a session will remember. If a counter arrives over
 /// this amount out of order relative to other received counters, it is likely to be
 /// rejected on the basis that the session can't remember if this counter was replayed.
@@ -101,7 +102,6 @@ pub(crate) const COUNTER_WINDOW_MAX_SKIP_AHEAD: u64 = 1 << 24;
 /// When Bob issues a challenge to Alice to mitigate DDOS, Bob will only accept Alice's
 /// response once, and then its attached counter is added to the window.
 pub(crate) const CHALLENGE_COUNTER_WINDOW_MAX_OOO: usize = 32;
-pub(crate) const THREAD_SAFE_COUNTER_HARD_EXPIRE: u64 = u64::MAX - 1 << 16;
 
 /* Packet constants */
 
