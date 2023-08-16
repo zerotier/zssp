@@ -14,6 +14,7 @@ use zssp::application::{
 use zssp::crypto::P384KeyPair;
 use zssp::crypto_impl::*;
 use zssp::Session;
+use zssp::result::ReceiveError;
 
 const TEST_MTU: usize = 1500;
 
@@ -21,6 +22,8 @@ struct TestApplication {
     time: Instant,
 }
 
+/// We have to pool allocations or else variations in the speed of the memory allocator will bias
+/// our performance stats.
 struct PooledVec(Vec<u8>);
 static POOL: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
 fn alloc(b: &[u8]) -> PooledVec {
@@ -181,10 +184,10 @@ fn alice_main(
                         _ => panic!(),
                     },
                     Err(e) => {
-                        //println!("[alice] ERROR {:?}", e);
-                        //if let ReceiveError::ByzantineFault { unnatural, .. } = e {
-                        //    assert!(!unnatural)
-                        //}
+                        println!("[alice] ERROR {:?}", e);
+                        if let ReceiveError::ByzantineFault { unnatural, .. } = e {
+                            assert!(!unnatural)
+                        }
                     }
                 }
             } else {
@@ -271,10 +274,10 @@ fn bob_main(
                     _ => panic!(),
                 },
                 Err(e) => {
-                    //println!("[bob] ERROR {:?}", e);
-                    //if let ReceiveError::ByzantineFault { unnatural, .. } = e {
-                    //    assert!(!unnatural)
-                    //}
+                    println!("[bob] ERROR {:?}", e);
+                    if let ReceiveError::ByzantineFault { unnatural, .. } = e {
+                        assert!(!unnatural)
+                    }
                 }
             }
         }
