@@ -8,7 +8,7 @@ use rand_core::OsRng;
 use rand_core::RngCore;
 
 use zssp::application::{
-    AcceptAction, ApplicationLayer, CryptoLayer, IncomingSessionAction, RatchetState, RatchetStates, RatchetUpdate,
+    AcceptAction, ApplicationLayer, IncomingSessionAction, RatchetState, RatchetStates, RatchetUpdate,
     RATCHET_SIZE,
 };
 use zssp::crypto::P384KeyPair;
@@ -53,20 +53,8 @@ impl AsRef<[u8]> for PooledVec {
 }
 
 #[allow(unused)]
-impl CryptoLayer for TestApplication {
-    type Rng = OsRng;
-    type PrpEnc = Aes256OpenSSLEnc;
-    type PrpDec = Aes256OpenSSLDec;
-    type Aead = AesGcmOpenSSL;
-    type AeadPool = AesGcmOpenSSLPool;
-    type Hash = Sha512Crate;
-    type Hmac = HmacSha512Crate;
-    type PublicKey = P384CratePublicKey;
-    type KeyPair = P384CrateKeyPair;
-    type Kem = RustKyber1024PrivateKey;
-
+impl DefaultCrypto for TestApplication {
     type SessionData = ();
-
     type IncomingPacketBuffer = PooledVec;
 }
 #[allow(unused)]

@@ -57,7 +57,7 @@ impl CryptoLayer for TestApplication {
     type Hmac = HmacSha512Crate;
     type PublicKey = P384CratePublicKey;
     type KeyPair = P384CrateKeyPair;
-    type Kem = RustKyber1024PrivateKey;
+    type Kem = Kyber1024CratePrivateKey;
 
     type SessionData = u128;
 
