@@ -592,7 +592,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
     /// * `data` - Data to send
     pub fn send(
         &self,
-        session: &Arc<Session<Crypto>>,
+        session: &Session<Crypto>,
         send: impl FnMut(&mut [u8]) -> bool,
         mtu_sized_buffer: &mut [u8],
         data: &[u8],

@@ -1623,7 +1623,7 @@ pub(crate) fn received_k2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
 /// Corresponds to Algorithm 9 found in Section 4.3.
 pub(crate) fn send_payload<Crypto: CryptoLayer>(
     ctx: &Arc<ContextInner<Crypto>>,
-    session: &Arc<Session<Crypto>>,
+    session: &Session<Crypto>,
     payload: &[u8],
     mut send: impl FnMut(&mut [u8]) -> bool,
     mtu_sized_buffer: &mut [u8],
