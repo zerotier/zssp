@@ -1,70 +1,165 @@
-/* This Source Code Form is subject to the terms of the Mozilla Public
- * License, v. 2.0. If a copy of the MPL was not distributed with this
- * file, You can obtain one at https://mozilla.org/MPL/2.0/.
- *
- * (c) ZeroTier, Inc.
- * https://www.zerotier.com/
- */
+use arrayvec::ArrayVec;
+use zeroize::Zeroizing;
 
-use std::num::NonZeroU64;
-
-use crate::crypto::secret::Secret;
-use crate::RATCHET_SIZE;
-
-#[derive(Clone, PartialEq, Eq)]
-pub enum RatchetState {
-    Null,
-    Empty,
-    NonEmpty(NonEmptyRatchetState),
-}
-use RatchetState::*;
-impl RatchetState {
-    #[inline]
-    pub fn new_nonempty(key: Secret<RATCHET_SIZE>, fingerprint: Secret<RATCHET_SIZE>, chain_len: NonZeroU64) -> Self {
-        NonEmpty(NonEmptyRatchetState { key, fingerprint, chain_len })
-    }
-    #[inline]
-    pub fn new_initial_states() -> [RatchetState; 2] {
-        [RatchetState::Empty, RatchetState::Null]
-    }
-    #[inline]
-    pub fn is_null(&self) -> bool {
-        matches!(self, Null)
-    }
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        matches!(self, Empty)
-    }
-    #[inline]
-    pub fn nonempty(&self) -> Option<&NonEmptyRatchetState> {
-        match self {
-            NonEmpty(rs) => Some(rs),
-            _ => None,
-        }
-    }
-    #[inline]
-    pub fn chain_len(&self) -> u64 {
-        self.nonempty().map_or(0, |rs| rs.chain_len.get())
-    }
-    #[inline]
-    pub fn fingerprint(&self) -> Option<&[u8; RATCHET_SIZE]> {
-        self.nonempty().map(|rs| rs.fingerprint.as_ref())
-    }
-    #[inline]
-    pub fn key(&self) -> Option<&[u8; RATCHET_SIZE]> {
-        const ZERO_KEY: [u8; RATCHET_SIZE] = [0u8; RATCHET_SIZE];
-        match self {
-            Null => None,
-            Empty => Some(&ZERO_KEY),
-            NonEmpty(rs) => Some(rs.key.as_ref()),
-        }
-    }
-}
+use crate::crypto::*;
+use crate::proto::*;
 /// A ratchet key and fingerprint,
 /// along with the length of the ratchet chain the keys were derived from.
-#[derive(Clone, PartialEq, Eq)]
-pub struct NonEmptyRatchetState {
-    pub key: Secret<RATCHET_SIZE>,
-    pub fingerprint: Secret<RATCHET_SIZE>,
-    pub chain_len: NonZeroU64,
+///
+/// Implements constant time equality.
+/// The hash implementation only uses the ratchet fingerprint.
+/// Any operation involving the ratchet key must take constant time.
+///
+/// Corresponds to the Ratchet Key and Ratchet Fingerprint described in Section 3.
+#[derive(Clone, Eq)]
+pub struct RatchetState {
+    pub key: Zeroizing<[u8; RATCHET_SIZE]>,
+    pub fingerprint: Option<Zeroizing<[u8; RATCHET_SIZE]>>,
+    pub chain_len: u64,
+}
+impl PartialEq for RatchetState {
+    fn eq(&self, other: &Self) -> bool {
+        let ret = match (self.fingerprint.as_ref(), other.fingerprint.as_ref()) {
+            (Some(rf1), Some(rf2)) => secure_eq(rf1, rf2),
+            (None, None) => true,
+            _ => false,
+        };
+        ret & secure_eq(&self.key, &other.key) & (self.chain_len == other.chain_len)
+    }
+}
+impl std::hash::Hash for RatchetState {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        if let Some(rf) = &self.fingerprint {
+            state.write_u64(u64::from_ne_bytes(rf[..8].try_into().unwrap()))
+        }
+    }
+}
+impl RatchetState {
+    pub fn new(key: Zeroizing<[u8; RATCHET_SIZE]>, fingerprint: Zeroizing<[u8; RATCHET_SIZE]>, chain_len: u64) -> Self {
+        RatchetState { key, fingerprint: Some(fingerprint), chain_len }
+    }
+    pub fn new_raw(key: [u8; RATCHET_SIZE], fingerprint: [u8; RATCHET_SIZE], chain_len: u64) -> Self {
+        RatchetState {
+            key: Zeroizing::new(key),
+            fingerprint: Some(Zeroizing::new(fingerprint)),
+            chain_len,
+        }
+    }
+    pub fn empty() -> Self {
+        RatchetState {
+            key: Zeroizing::new([0u8; RATCHET_SIZE]),
+            fingerprint: None,
+            chain_len: 0,
+        }
+    }
+    pub fn new_from_otp<Hmac: Sha512Hmac>(otp: &[u8]) -> RatchetState {
+        let mut buffer = ArrayVec::<u8, 23>::new();
+        buffer.push(1);
+        buffer.extend(*LABEL_OTP_TO_RATCHET);
+        buffer.push(0x00);
+        buffer.extend((1024u16).to_be_bytes());
+
+        let mut hmac = Hmac::new();
+        let mut output = Zeroizing::new([0u8; HASHLEN]);
+        hmac.hash(otp, &buffer, &mut output);
+        let rk = Zeroizing::new(output[..RATCHET_SIZE].try_into().unwrap());
+        buffer[0] = 2;
+        hmac.hash(otp, &buffer, &mut output);
+        let rf = Zeroizing::new(output[..RATCHET_SIZE].try_into().unwrap());
+
+        Self::new(rk, rf, 1)
+    }
+    pub fn is_empty(&self) -> bool {
+        self.fingerprint.is_none()
+    }
+    pub fn fingerprint_eq(&self, rf: &[u8; RATCHET_SIZE]) -> bool {
+        self.fingerprint.as_ref().map_or(false, |rf0| secure_eq(rf0, rf))
+    }
+    pub fn fingerprint(&self) -> Option<&[u8; RATCHET_SIZE]> {
+        self.fingerprint.as_deref()
+    }
+}
+impl Default for RatchetState {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
+/// A pair of ratchet states.
+/// It is expected that an instance of this object will be saved to a storage device per-peer,
+/// and be restore-able via the `ApplicationLayer` trait.
+///
+/// This corresponds to the possible values of abstract variables `rf` and `rk` found in Section 4.3.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct RatchetStates {
+    pub state1: RatchetState,
+    pub state2: Option<RatchetState>,
+}
+impl RatchetStates {
+    pub fn new(state1: RatchetState, state2: Option<RatchetState>) -> Self {
+        Self { state1, state2 }
+    }
+    pub fn new_initial_states() -> Self {
+        Self { state1: RatchetState::empty(), state2: None }
+    }
+    pub fn new_otp_states<Hmac: Sha512Hmac>(otp: &[u8]) -> Self {
+        Self {
+            state1: RatchetState::new_from_otp::<Hmac>(otp),
+            state2: None,
+        }
+    }
+}
+impl Default for RatchetStates {
+    fn default() -> Self {
+        Self::new_initial_states()
+    }
+}
+
+/// A set of references to ratchet states specifying how a remote peer's persistent
+/// storage should be updated.
+///
+/// There should be only up to two ratchet states saved to storage at a time per peer.
+/// Every time a new ratchet state is generated, a previous ratchet state will be deleted.
+///
+/// These are sensitive values should they ought to be securely stored.
+#[derive(Clone)]
+pub struct RatchetUpdate<'a> {
+    /// The ratchet key and fingerprint to store in the first slot.
+    pub state1: &'a RatchetState,
+    /// The ratchet key and fingerprint to store in the second slot.
+    pub state2: Option<&'a RatchetState>,
+    /// Whether `state1` is a brand new ratchet state, or if it was previously saved.
+    pub state1_was_just_added: bool,
+    /// A previous ratchet key and fingerprint that now must be deleted from storage.
+    /// This will have been a previously given value of `state1` or `state2`.
+    pub deleted_state1: Option<&'a RatchetState>,
+    /// A previous ratchet key and fingerprint that now must be deleted from storage.
+    /// It is extremely rare that this field is occupied.
+    pub deleted_state2: Option<&'a RatchetState>,
+}
+impl<'a> RatchetUpdate<'a> {
+    pub fn to_states(&self) -> RatchetStates {
+        RatchetStates::new(self.state1.clone(), self.state2.cloned())
+    }
+    pub fn added_fingerprint(&self) -> Option<&[u8; RATCHET_SIZE]> {
+        if self.state1_was_just_added {
+            self.state1.fingerprint()
+        } else {
+            None
+        }
+    }
+    pub fn deleted_fingerprint1(&self) -> Option<&[u8; RATCHET_SIZE]> {
+        if let Some(rs) = &self.deleted_state1 {
+            rs.fingerprint()
+        } else {
+            None
+        }
+    }
+    pub fn deleted_fingerprint2(&self) -> Option<&[u8; RATCHET_SIZE]> {
+        if let Some(rs) = &self.deleted_state2 {
+            rs.fingerprint()
+        } else {
+            None
+        }
+    }
 }

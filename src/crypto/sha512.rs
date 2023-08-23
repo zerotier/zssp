@@ -2,41 +2,27 @@
 
 pub const SHA512_HASH_SIZE: usize = 64;
 
-/// Opaque SHA-512 implementation.
-/// Does not need to be threadsafe.
-pub trait Sha512 {
-    /// Allocate memory on the stack or heap for Sha512.
-    /// An instance of Sha512 will only ever be held on the stack.
+/// A SHA-512 implementation.
+pub trait Sha512Hash {
+    /// Create a new instance of SHA-512 for streaming data to.
     fn new() -> Self;
-
-    /// Reinitialize the internal state of the hash function for a fresh input.
-    fn reset(&mut self);
-
-    fn update(&mut self, input: &[u8]);
-    /// Finish hashing the input and write the final hash to output.
-    ///
-    /// After this function is called, this instance of Sha512 will either be dropped
-    /// or `reset` will be called.
-    fn finish(&mut self, output: &mut [u8; SHA512_HASH_SIZE]);
+    /// Update the instance of SHA-512 with input `data`.
+    /// This must update the state of SHA-512 as if `data` was appended to the previous input.
+    fn update(&mut self, data: &[u8]);
+    /// Finish streaming input and output the final hash.
+    fn finish_and_reset(&mut self, output: &mut [u8; SHA512_HASH_SIZE]);
 }
 
 /// Opaque HMAC-SHA-512 implementation.
 /// Does not need to be threadsafe.
-pub trait HmacSha512 {
-    /// Allocate memory on the stack or heap for HmacSha512.
-    /// An instance of HmacSha512 will only ever be held on the stack.
+pub trait Sha512Hmac {
+    /// Allocate space on the stack or heap for repeated Hmac invocations.
     ///
-    /// `reset` will always be called before `update` on a new instance of HmacSha512,
-    /// to make sure there is always a set key.
+    /// Many FIPS compliant libraries, namely OpenSSL, require initializing an Hmac context on the
+    /// heap before operating on it.
+    /// If you are using a more sane library feel free to make this return an empty type.
     fn new() -> Self;
-    /// Reinitialize the internal state of the hash function for a fresh input.
-    /// The provided key should replace the previous Hmac key.
-    fn reset(&mut self, key: &[u8]);
-
-    fn update(&mut self, input: &[u8]);
-    /// Finish hashing the input and write the final hash to output.
-    ///
-    /// After this function is called, this instance of HmacSha512 will either be dropped
-    /// or `reset` will be called.
-    fn finish(&mut self, output: &mut [u8; SHA512_HASH_SIZE]);
+    /// Pure function for computing a single HMAC Hash. Repeat invocations of this function should
+    /// have no effect on each other.
+    fn hash(&mut self, key: &[u8], full_input: &[u8], output: &mut [u8; SHA512_HASH_SIZE]);
 }

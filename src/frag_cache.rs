@@ -1,15 +1,8 @@
-/* This Source Code Form is subject to the terms of the Mozilla Public
- * License, v. 2.0. If a copy of the MPL was not distributed with this
- * file, You can obtain one at https://mozilla.org/MPL/2.0/.
- *
- * (c) ZeroTier, Inc.
- * https://www.zerotier.com/
- */
-
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::mem::MaybeUninit;
 
+use crate::crypto::AES_GCM_NONCE_SIZE;
 use crate::fragged::Assembled;
 use crate::proto::{MAX_FRAGMENTS, MAX_UNASSOCIATED_FRAGMENTS, MAX_UNASSOCIATED_PACKETS, MAX_UNASSOCIATED_PACKET_SIZE};
 
@@ -17,7 +10,7 @@ struct PacketMetadata {
     key: u64,
     frags_idx: u32,
     fragment_have: u64,
-    fragment_count: u32,
+    fragment_count: u8,
     packet_size: u32,
     creation_time: i64,
 }
@@ -55,24 +48,27 @@ impl<Fragment> UnassociatedFragCache<Fragment> {
     /// Will check that aad is the same for all fragments.
     pub(crate) fn assemble(
         &mut self,
-        nonce: [u8; 10],
+        nonce: &[u8; AES_GCM_NONCE_SIZE],
         remote_address: impl Hash,
         fragment_size: usize,
         fragment: Fragment,
-        fragment_no: u8,
-        fragment_count: u8,
-        timeout: i64,
+        fragment_no: usize,
+        fragment_count: usize,
+        timeout_interval: i64,
         current_time: i64,
         ret_assembled: &mut Assembled<Fragment>,
     ) {
         debug_assert!(MAX_FRAGMENTS < MAX_UNASSOCIATED_FRAGMENTS);
-        if fragment_no >= fragment_count || (fragment_count as usize) > MAX_FRAGMENTS || fragment_size > MAX_UNASSOCIATED_PACKET_SIZE {
+        if fragment_no >= fragment_count
+            || fragment_count > MAX_FRAGMENTS
+            || fragment_size > MAX_UNASSOCIATED_PACKET_SIZE
+        {
             return;
         }
 
         let mut hasher = self.dos_salt.build_hasher();
         remote_address.hash(&mut hasher);
-        hasher.write(&nonce);
+        hasher.write(nonce);
         let mut key = hasher.finish();
         if key == 0 {
             key = 1;
@@ -98,7 +94,7 @@ impl<Fragment> UnassociatedFragCache<Fragment> {
         } else if self.map[idx0].key == 0 || self.map[idx1].key == 0 {
             if (fragment_count as usize) > self.frags_unused_size {
                 // There are not enough free fragment slots so attempt to expire a bunch of entries.
-                self.check_for_expiry(timeout, current_time);
+                self.check_for_expiry(timeout_interval, current_time);
             }
             if self.map[idx0].key == 0 {
                 idx0
@@ -107,7 +103,7 @@ impl<Fragment> UnassociatedFragCache<Fragment> {
             }
         } else {
             // No room for a new entry so attempt to expire a bunch of entries.
-            self.check_for_expiry(timeout, current_time);
+            self.check_for_expiry(timeout_interval, current_time);
             if self.map[idx0].key == 0 {
                 idx0
             } else if self.map[idx1].key == 0 {
@@ -121,11 +117,11 @@ impl<Fragment> UnassociatedFragCache<Fragment> {
         if self.map[idx].key == 0 {
             // This is a new entry so initialize it.
             if (fragment_count as usize) <= self.frags_unused_size {
-                let mut entry = &mut self.map[idx];
+                let entry = &mut self.map[idx];
                 entry.key = key;
                 entry.frags_idx = self.frags_first_unused as u32;
                 entry.fragment_have = 0;
-                entry.fragment_count = fragment_count as u32;
+                entry.fragment_count = fragment_count as u8;
                 entry.packet_size = 0;
                 entry.creation_time = current_time;
 
@@ -139,11 +135,14 @@ impl<Fragment> UnassociatedFragCache<Fragment> {
                 return;
             }
         }
-        let mut entry = &mut self.map[idx];
+        let entry = &mut self.map[idx];
 
         let new_size = entry.packet_size + fragment_size as u32;
         let got = 1u64.wrapping_shl(fragment_no as u32);
-        if got & entry.fragment_have == 0 && fragment_count == entry.fragment_count as u8 && new_size <= MAX_UNASSOCIATED_PACKET_SIZE as u32 {
+        if got & entry.fragment_have == 0
+            && fragment_count == entry.fragment_count as usize
+            && new_size <= MAX_UNASSOCIATED_PACKET_SIZE as u32
+        {
             entry.packet_size = new_size;
             entry.fragment_have |= got;
 
@@ -151,24 +150,11 @@ impl<Fragment> UnassociatedFragCache<Fragment> {
             self.frags[frag_idx].write(fragment);
 
             if entry.fragment_have == 1u64.wrapping_shl(fragment_count as u32) - 1 {
-                ret_assembled.empty();
-                ret_assembled.1 = fragment_count as usize;
+                debug_assert!(ret_assembled.is_empty());
                 let start_idx = entry.frags_idx as usize;
-                // This is a ring buffer copy into ret_assembled.
-                // The fragments are moved into the `ret_assembled` container and returned.
-                // That container will drop them when it is dropped.
-                if start_idx + ret_assembled.1 <= self.frags.len() {
-                    // Copy does not occur at the buffer's boundary
-                    unsafe {
-                        std::ptr::copy_nonoverlapping(&self.frags[start_idx], &mut ret_assembled.0[0], ret_assembled.1);
-                    }
-                } else {
-                    // Copy does occur at the buffer's boundary
-                    let first_chunk_size = self.frags.len() - start_idx;
-                    let second_chunk_size = ret_assembled.1 - first_chunk_size;
-                    unsafe {
-                        std::ptr::copy_nonoverlapping(&self.frags[start_idx], &mut ret_assembled.0[0], first_chunk_size);
-                        std::ptr::copy_nonoverlapping(&self.frags[0], &mut ret_assembled.0[first_chunk_size], second_chunk_size);
+                unsafe {
+                    for i in start_idx..start_idx + fragment_count {
+                        ret_assembled.push(self.frags[i % self.frags.len()].assume_init_read())
                     }
                 }
                 self.invalidate::<false>(idx);
@@ -234,9 +220,20 @@ impl<Fragment> Drop for UnassociatedFragCache<Fragment> {
     }
 }
 
-/*
 #[test]
 fn test_cache() {
+    use std::sync::Mutex;
+    fn xorshift64_random() -> u64 {
+        static XORSHIFT64_STATE: Mutex<u64> = Mutex::new(12);
+        let mut x = XORSHIFT64_STATE.lock().unwrap();
+        *x ^= x.wrapping_shr(12);
+        *x ^= x.wrapping_shl(25);
+        *x ^= x.wrapping_shr(27);
+        let r = *x;
+        drop(x);
+        r.wrapping_mul(0x2545F4914F6CDD1Du64)
+    }
+
     let mut cache = UnassociatedFragCache::new();
     let mut assembled = Assembled::new();
 
@@ -245,8 +242,8 @@ fn test_cache() {
     let mut in_progress_fragments = 0;
     // A basic fuzzer for testing the cache.
     for i in 0..5000u32 {
-        let fragment_count = (random::xorshift64_random() as usize % MAX_FRAGMENTS) + 1;
-        let r = random::xorshift64_random() as u8;
+        let fragment_count = (xorshift64_random() as usize % MAX_FRAGMENTS) + 1;
+        let r = xorshift64_random() as u8;
         if r & 1 == 0 {
             let mut packet = Vec::new();
             for j in 0..fragment_count {
@@ -255,21 +252,38 @@ fn test_cache() {
             }
             in_progress.push((i, fragment_count as u8, packet));
         } else {
-            assembled.empty();
-            let drop = random::xorshift64_random() as usize % (2 * fragment_count);
+            assembled.clear();
+            let drop = xorshift64_random() as usize % (2 * fragment_count);
             for j in 0..fragment_count {
                 if drop != j {
                     let fragment = vec![0, 1, 2, 3, 4, 5, 6, r];
                     // If the timeout is 1 we should be guaranteed to get our packet cached.
-                    let mut nonce = [0; 10];
+                    let mut nonce = [0; 12];
                     nonce[..4].copy_from_slice(&i.to_be_bytes());
-                    cache.assemble(nonce, 0, fragment.len(), fragment, j as u8, fragment_count as u8, 1, time, &mut assembled);
+                    cache.assemble(
+                        &nonce,
+                        0,
+                        fragment.len(),
+                        fragment,
+                        j,
+                        fragment_count,
+                        1,
+                        time,
+                        &mut assembled,
+                    );
                     time += 1;
                 }
             }
             if drop >= fragment_count {
-                assert!(!assembled.is_empty(), "Packet was dropped from the cache when it shouldn't have");
-                assert_eq!(assembled.as_ref().len(), fragment_count, "Cache returned the wrong packet");
+                assert!(
+                    !assembled.is_empty(),
+                    "Packet was dropped from the cache when it shouldn't have"
+                );
+                assert_eq!(
+                    assembled.as_ref().len(),
+                    fragment_count,
+                    "Cache returned the wrong packet"
+                );
                 for j in 0..fragment_count {
                     assert_eq!(assembled.as_ref()[j][7], r, "Cache returned a corrupted packet");
                 }
@@ -279,16 +293,27 @@ fn test_cache() {
         }
         if r > 200 {
             if in_progress.len() > 0 {
-                let to_remain = (random::xorshift64_random() as usize % in_progress_fragments) + 16;
+                let to_remain = (xorshift64_random() as usize % in_progress_fragments) + 16;
                 while in_progress_fragments > to_remain {
-                    let (id, fragment_count, mut packet) = in_progress.swap_remove(random::xorshift64_random() as usize % in_progress.len());
-                    for _ in 0..((random::xorshift64_random() as usize % packet.len()) + 1) {
-                        let (no, fragment) = packet.swap_remove(random::xorshift64_random() as usize % packet.len());
+                    let (id, fragment_count, mut packet) =
+                        in_progress.swap_remove(xorshift64_random() as usize % in_progress.len());
+                    for _ in 0..((xorshift64_random() as usize % packet.len()) + 1) {
+                        let (no, fragment) = packet.swap_remove(xorshift64_random() as usize % packet.len());
 
-                        assembled.empty();
-                        let mut nonce = [0; 10];
+                        assembled.clear();
+                        let mut nonce = [0; 12];
                         nonce[..4].copy_from_slice(&id.to_be_bytes());
-                        cache.assemble(nonce, 0, fragment.len(), fragment, no, fragment_count, 1000, time, &mut assembled);
+                        cache.assemble(
+                            &nonce,
+                            0,
+                            fragment.len(),
+                            fragment,
+                            no as usize,
+                            fragment_count as usize,
+                            1000,
+                            time,
+                            &mut assembled,
+                        );
                         time += 1;
                         in_progress_fragments -= 1;
 
@@ -304,4 +329,3 @@ fn test_cache() {
         }
     }
 }
- */

@@ -42,7 +42,6 @@ impl<T, P: Ord> IndexedBinaryHeap<T, P> {
             .first_mut()
             .map(|entry| (&mut entry.0, &entry.1, BinaryHeapIndex(entry.2, self.map[entry.2].1)))
     }
-    #[inline]
     fn swap(&mut self, a: usize, b: usize) {
         self.map[self.data[a].2].0 = b;
         self.map[self.data[b].2].0 = a;
@@ -53,7 +52,8 @@ impl<T, P: Ord> IndexedBinaryHeap<T, P> {
             let child0_idx = parent_idx * 2 + 1;
             let child1_idx = child0_idx + 1;
             if child0_idx < self.data.len() {
-                let largest_child = if child1_idx < self.data.len() && self.data[child1_idx].1 > self.data[child0_idx].1 {
+                let largest_child = if child1_idx < self.data.len() && self.data[child1_idx].1 > self.data[child0_idx].1
+                {
                     child1_idx
                 } else {
                     child0_idx
@@ -156,7 +156,8 @@ impl<T, P: Ord> IndexedBinaryHeap<T, P> {
             .map(|data_idx| std::mem::replace(&mut self.data[data_idx].0, new_item))
     }
     pub fn get(&self, idx: BinaryHeapIndex) -> Option<(&T, &P)> {
-        self.deref_index(idx).map(|data_idx| (&self.data[data_idx].0, &self.data[data_idx].1))
+        self.deref_index(idx)
+            .map(|data_idx| (&self.data[data_idx].0, &self.data[data_idx].1))
     }
     pub fn get_mut(&mut self, idx: BinaryHeapIndex) -> Option<(&mut T, &P)> {
         self.deref_index(idx).map(|data_idx| {

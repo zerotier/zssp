@@ -1,74 +1,88 @@
-/* This Source Code Form is subject to the terms of the Mozilla Public
- * License, v. 2.0. If a copy of the MPL was not distributed with this
- * file, You can obtain one at https://mozilla.org/MPL/2.0/.
- *
- * (c) ZeroTier, Inc.
- * https://www.zerotier.com/
- */
 use std::sync::Arc;
 
-use crate::{ApplicationLayer, Session};
+use crate::application::CryptoLayer;
+use crate::zeta::Session;
 
 /// ZSSP events that might be interesting to log or aggregate into metrics.
-pub enum LogEvent<'a, Application: ApplicationLayer> {
-    ServiceXK1Resend(&'a Arc<Session<Application>>),
-    ServiceXK3Resend(&'a Arc<Session<Application>>),
-    ServiceXKTimeout(&'a Arc<Session<Application>>),
-    ServiceKKStart(&'a Arc<Session<Application>>),
-    ServiceKK1Resend(&'a Arc<Session<Application>>),
-    ServiceKK2Resend(&'a Arc<Session<Application>>),
-    ServiceKKTimeout(&'a Arc<Session<Application>>),
-    ServiceKeyConfirmResend(&'a Arc<Session<Application>>),
-    ServiceKeyConfirmTimeout(&'a Arc<Session<Application>>),
-    /// `(fragment_count, fragment_no, packet_type)`
-    ReceiveUnassociatedFragment(u8, u8, u8),
-    ReceiveUncheckedXK1,
-    ReceiveCheckXK1Challenge(bool),
-    ReceiveValidXK1,
-    ReceiveUncheckedDOSChallenge,
-    ReceiveValidDOSChallenge(&'a Arc<Session<Application>>),
-    ReceiveUncheckedXK2,
-    ReceiveValidXK2(&'a Arc<Session<Application>>),
-    ReceiveUncheckedXK3,
-    ReceiveValidXK3(&'a Application::Data),
-    ReceiveUncheckedKK1,
-    ReceiveValidKK1(&'a Arc<Session<Application>>),
-    ReceiveUncheckedKK2,
-    ReceiveValidKK2(&'a Arc<Session<Application>>),
-    ReceiveValidKeyConfirm(&'a Arc<Session<Application>>),
-    ReceiveValidKeyDelete(&'a Arc<Session<Application>>),
+pub enum LogEvent<'a, Crypto: CryptoLayer> {
+    ResentX1(&'a Arc<Session<Crypto>>),
+    TimeoutX1(&'a Arc<Session<Crypto>>),
+    TimeoutX2,
+    ResentX3(&'a Arc<Session<Crypto>>),
+    TimeoutX3(&'a Arc<Session<Crypto>>),
+    ResentKeyConfirm(&'a Arc<Session<Crypto>>),
+    TimeoutKeyConfirm(&'a Arc<Session<Crypto>>),
+    StartedRekeyingSentK1(&'a Arc<Session<Crypto>>),
+    ResentK1(&'a Arc<Session<Crypto>>),
+    TimeoutK1(&'a Arc<Session<Crypto>>),
+    ResentK2(&'a Arc<Session<Crypto>>),
+    TimeoutK2(&'a Arc<Session<Crypto>>),
+    /// `(packet_type, packet_counter, fragment_no, fragment_count)`
+    ReceivedRawFragment(u8, u64, usize, usize),
+    ReceivedRawX1,
+    X1FailedChallengeSentNewChallenge,
+    X1SucceededChallenge,
+    X1IsAuthSentX2,
+    ReceivedRawChallenge,
+    ChallengeIsAuth(&'a Arc<Session<Crypto>>),
+    ReceivedRawX2,
+    X2IsAuthSentX3(&'a Arc<Session<Crypto>>),
+    ReceivedRawX3,
+    X3IsAuthSentKeyConfirm(&'a Arc<Session<Crypto>>),
+    ReceivedRawKeyConfirm,
+    KeyConfirmIsAuthSentAck(&'a Arc<Session<Crypto>>),
+    ReceivedRawAck,
+    AckIsAuth(&'a Arc<Session<Crypto>>),
+    ReceivedRawK1,
+    K1IsAuthSentK2(&'a Arc<Session<Crypto>>),
+    ReceivedRawK2,
+    K2IsAuthSentKeyConfirm(&'a Arc<Session<Crypto>>),
+    ReceivedRawD,
+    DIsAuthClosedSession(&'a Arc<Session<Crypto>>),
 }
-impl<'a, Application: ApplicationLayer> std::fmt::Debug for LogEvent<'a, Application> {
+
+impl<'a, Crypto: CryptoLayer> std::fmt::Debug for LogEvent<'a, Crypto> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        use LogEvent::*;
         match self {
-            ServiceXK1Resend(_) => write!(f, "ServiceXK1Resend"),
-            ServiceXK3Resend(_) => write!(f, "ServiceXK3Resend"),
-            ServiceXKTimeout(_) => write!(f, "ServiceXKTimeout"),
-            ServiceKKStart(_) => write!(f, "ServiceKKStart"),
-            ServiceKK1Resend(_) => write!(f, "ServiceKK1Resend"),
-            ServiceKK2Resend(_) => write!(f, "ServiceKK2Resend"),
-            ServiceKKTimeout(_) => write!(f, "ServiceKKTimeout"),
-            ServiceKeyConfirmResend(_) => write!(f, "ServiceKeyConfirmResend"),
-            ServiceKeyConfirmTimeout(_) => write!(f, "ServiceKeyConfirmTimeout"),
-            ReceiveUnassociatedFragment(arg0, arg1, arg2) => {
-                f.debug_tuple("ReceiveUnassociatedFragment").field(arg0).field(arg1).field(arg2).finish()
-            }
-            ReceiveUncheckedXK1 => write!(f, "ReceiveUncheckedXK1"),
-            ReceiveCheckXK1Challenge(arg0) => f.debug_tuple("ReceiveCheckXK1Challenge").field(arg0).finish(),
-            ReceiveValidXK1 => write!(f, "ReceiveValidXK1"),
-            ReceiveUncheckedDOSChallenge => write!(f, "ReceiveUncheckedDOSChallenge"),
-            ReceiveValidDOSChallenge(_) => write!(f, "ReceiveValidDOSChallenge"),
-            ReceiveUncheckedXK2 => write!(f, "ReceiveUncheckedXK2"),
-            ReceiveValidXK2(_) => write!(f, "ReceiveValidXK2"),
-            ReceiveUncheckedXK3 => write!(f, "ReceiveUncheckedXK3"),
-            ReceiveValidXK3(_) => write!(f, "ReceiveValidXK3"),
-            ReceiveUncheckedKK1 => write!(f, "ReceiveUncheckedKK1"),
-            ReceiveValidKK1(_) => write!(f, "ReceiveValidKK1"),
-            ReceiveUncheckedKK2 => write!(f, "ReceiveUncheckedKK2"),
-            ReceiveValidKK2(_) => write!(f, "ReceiveValidKK2"),
-            ReceiveValidKeyConfirm(_) => write!(f, "ReceiveValidKeyConfirm"),
-            ReceiveValidKeyDelete(_) => write!(f, "ReceiveValidKeyDelete"),
+            Self::ResentX1(_) => f.debug_tuple("ResentX1").finish(),
+            Self::TimeoutX1(_) => f.debug_tuple("TimeoutX1").finish(),
+            Self::TimeoutX2 => write!(f, "TimeoutX2"),
+            Self::ResentX3(_) => f.debug_tuple("ResentX3").finish(),
+            Self::TimeoutX3(_) => f.debug_tuple("TimeoutX3").finish(),
+            Self::ResentKeyConfirm(_) => f.debug_tuple("ResentKeyConfirm").finish(),
+            Self::TimeoutKeyConfirm(_) => f.debug_tuple("TimeoutKeyConfirm").finish(),
+            Self::StartedRekeyingSentK1(_) => f.debug_tuple("StartedRekeyingSentK1").finish(),
+            Self::ResentK1(_) => f.debug_tuple("ResentK1").finish(),
+            Self::TimeoutK1(_) => f.debug_tuple("TimeoutK1").finish(),
+            Self::ResentK2(_) => f.debug_tuple("ResentK2").finish(),
+            Self::TimeoutK2(_) => f.debug_tuple("TimeoutK2").finish(),
+            Self::ReceivedRawFragment(arg0, arg1, arg2, arg3) => f
+                .debug_tuple("ReceivedRawFragment")
+                .field(arg0)
+                .field(arg1)
+                .field(arg2)
+                .field(arg3)
+                .finish(),
+            Self::ReceivedRawX1 => write!(f, "ReceivedRawX1"),
+            Self::X1FailedChallengeSentNewChallenge => write!(f, "X1FailedChallengeSentNewChallenge"),
+            Self::X1SucceededChallenge => write!(f, "X1SucceededChallenge"),
+            Self::X1IsAuthSentX2 => write!(f, "X1IsAuthSentX2"),
+            Self::ReceivedRawChallenge => write!(f, "ReceivedRawChallenge"),
+            Self::ChallengeIsAuth(_) => f.debug_tuple("ChallengeIsAuth").finish(),
+            Self::ReceivedRawX2 => write!(f, "ReceivedRawX2"),
+            Self::X2IsAuthSentX3(_) => f.debug_tuple("X2IsAuthSentX3").finish(),
+            Self::ReceivedRawX3 => write!(f, "ReceivedRawX3"),
+            Self::X3IsAuthSentKeyConfirm(_) => f.debug_tuple("X3IsAuthSentKeyConfirm").finish(),
+            Self::ReceivedRawKeyConfirm => write!(f, "ReceivedRawKeyConfirm"),
+            Self::KeyConfirmIsAuthSentAck(_) => f.debug_tuple("KeyConfirmIsAuthSentAck").finish(),
+            Self::ReceivedRawAck => write!(f, "ReceivedRawAck"),
+            Self::AckIsAuth(_) => f.debug_tuple("AckIsAuth").finish(),
+            Self::ReceivedRawK1 => write!(f, "ReceivedRawK1"),
+            Self::K1IsAuthSentK2(_) => f.debug_tuple("K1IsAuthSentK2").finish(),
+            Self::ReceivedRawK2 => write!(f, "ReceivedRawK2"),
+            Self::K2IsAuthSentKeyConfirm(_) => f.debug_tuple("K2IsAuthSentKeyConfirm").finish(),
+            Self::ReceivedRawD => write!(f, "ReceivedRawD"),
+            Self::DIsAuthClosedSession(_) => f.debug_tuple("DIsAuthClosedSession").finish(),
         }
     }
 }

@@ -49,11 +49,11 @@ Further information can be found in the ZSSP whitepaper (pending official releas
 * **Forward Secret Identity Hiding**: An attacker with the static private key of one or more parties cannot determine the identity of everyone they have previously communicated with.
 * **Quantum Forward Secret**: A quantum computer powerful enough to break Elliptic-curve cryptography is not sufficient in order to decrypt recordings of messages sent between parties.
 * **Ratcheted Forward Secrecy**: In order to break forward secrecy an attacker must record and break every single key exchange two parties perform, in order, starting from the first time they began communicating. Improves secrecy under weak or compromised RNG.
+* **Silence is a Virtue**: A server running the protocol can be configured in such a way that it will not respond to an unauthenticated, anonymous or replayed message.
 * **Key-Compromise Impersonation**: The attacker has a memory image of a single party, and attempts to create a brand new session with that party, pretending to be someone else.
 * **Compromise-and-Impersonate**: The attacker has a memory image of a single party, and attempts to impersonate them on a brand new session with the other party.
 * **Single Key-Compromise MitM**: The attacker has a memory image of a single party, and attempts to become a Man-in-the-Middle between them and any other party.
 * **Double Key-Compromise MitM**: The attacker has a memory image of both parties, and attempts to become a Man-in-the-Middle between them.
-* **Silence is a Virtue**: A server running the protocol can be configured in such a way that it will not respond to an unauthenticated, anonymous or replayed message.
 * **Supports Fragmentation**: Transmission data can be fragmented into smaller units to support jumbo-sized data or MTU discovery.
 * **FIPS Compliant**: The protocol uses FIPS approved cryptographic algorithms.
 * **Small Code Footprint**: The Codebase implementing the protocol can be easily audited by anyone on the internet.
