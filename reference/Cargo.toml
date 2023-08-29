@@ -13,8 +13,7 @@ doc = true
 [dependencies]
 rand_core = { version = "0.6.4" }
 zeroize = { version = "1.6.0" }
-
-pqc_kyber = { version = "0.6.0", default-features = false, features = ["kyber1024", "std"], optional = true }
+pqc_kyber = { version = "0.7.1", default-features = false, features = ["kyber1024", "std"], optional = true }
 aes-gcm = { version = "0.10.2", default-features = false, features = ["aes"], optional = true }
 aes = { version = "0.8.3", default-features = false, optional = true }
 p384 = { version = "0.13.0", default-features = false, features = ["ecdh"], optional = true }
