@@ -3,3 +3,4 @@ members = [
     "performance",
     "reference",
 ]
+resolver = "2"
