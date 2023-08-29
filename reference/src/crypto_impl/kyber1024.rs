@@ -8,7 +8,7 @@ use crate::crypto::*;
 pub type Kyber1024CratePrivateKey = Zeroizing<[u8; pqc_kyber::KYBER_SECRETKEYBYTES]>;
 impl<Rng: RngCore + CryptoRng> Kyber1024PrivateKey<Rng> for Kyber1024CratePrivateKey {
     fn generate(rng: &mut Rng) -> (Self, [u8; KYBER_PUBLIC_KEY_SIZE]) {
-        let keypair = pqc_kyber::keypair(rng);
+        let keypair = pqc_kyber::keypair(rng).unwrap();
         (Zeroizing::new(keypair.secret), keypair.public)
     }
 
