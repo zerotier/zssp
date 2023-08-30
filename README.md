@@ -13,13 +13,13 @@ Periodic session re-keying uses the [Noise KK](http://noiseprotocol.org/noise.ht
 
 Re-keying does not employ a hybrid exchange. Post-quantum forward secrecy is negotiated only on session startup since the threat model underpinning its use is to protect against very long term data storage and future decryption with quantum computers. Ratcheting causes the result of the initial ephemeral PQ exchange to be mixed into all subsequent session keys, protecting the entire session against a future attacker able to break elliptic curve cryptography.
 
-An in-depth guide to the full protocol specification can be found in the [protocol whitepaper](whitepaper/main.pdf) provided in this repository.
+An in-depth guide to the full protocol specification can be found in the [protocol whitepaper](whitepaper/zssp.pdf) provided in this repository.
 
 ZSSP was designed for use in [ZeroTier](https://www.zerotier.com/) but is payload agnostic and open source and can easily be used by other projects. The implementations here are based around generic cryptographic traits that a user can implement in terms of any cryptographic library of API they wish to use. Default implementations in terms of popular Rust cryptography crates are included but can be disabled via feature selection if alternatives are to be used.
 
 This repository includes both a simpler [reference](reference/) implementation that follows the whitepaper very explicitly and a more complex [high performance](performance/) implementation designed for high throughput or use in systems that will manage very large numbers of ZSSP sessions.
 
-See the [ZSSP whitepaper](whitepaper/main.pdf) for extensive documentation and proofs of security.
+See the [ZSSP whitepaper](whitepaper/zssp.pdf) for extensive documentation and proofs of security.
 
 ## Cryptographic Primitives Used in ZSSP
 

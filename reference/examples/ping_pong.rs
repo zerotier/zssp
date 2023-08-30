@@ -168,7 +168,7 @@ fn receive(
         context
             .send(&session, push_onto_send_queue, TEST_MTU, reply_message)
             .unwrap();
-    
+
         // This example does not properly track time so we just call service on every update.
         context.service(app.borrow_mut().deref_mut(), |_| Some((push_onto_send_queue, TEST_MTU)));
     }

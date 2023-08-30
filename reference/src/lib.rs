@@ -10,7 +10,7 @@
 //!
 //! ## Introduction
 //!
-//! An in-depth guide to the full protocol specification can be found in the [protocol whitepaper](./whitepaper.pdf) provided in this repo. This implementation references it heavily.
+//! An in-depth guide to the full protocol specification can be found in the [protocol whitepaper](whitepaper/zssp.pdf) provided in this repo. This implementation references it heavily.
 //!
 //! ZeroTier Secure Socket Protocol (ZSSP) is a [Noise](http://noiseprotocol.org) protocol implementation using NIST/FIPS/CfSC compliant cryptographic primitives plus post-quantum forward secrecy via [Kyber1024](https://pq-crystals.org/kyber/). It also includes built-in support for fragmentation and defragmentation of large messages with strong resistance against denial of service attacks targeted against the fragmentation protocol.
 //!
@@ -20,7 +20,7 @@
 //!
 //! ZSSP is designed for use in ZeroTier but is payload-agnostic and could easily be adapted for use in other projects.
 //!
-//! Further information can be found in the ZSSP whitepaper [protocol whitepaper](./whitepaper.pdf).
+//! Further information can be found in the ZSSP whitepaper [protocol whitepaper](whitepaper/zssp.pdf).
 //!
 //! ## Cryptographic Primitives Used
 //!

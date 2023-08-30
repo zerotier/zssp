@@ -1,3 +1,13 @@
 target
 Cargo.lock
 .DS_Store
+*.aux
+*.fdb_latexmk
+*.fls
+*.out
+*.synctex.gz
+*.log
+*.xml
+*.bcf
+*.bbl
+*.blg
