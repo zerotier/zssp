@@ -1754,11 +1754,16 @@ pub(crate) fn receive_payload_in_place<Crypto: CryptoLayer>(
         return Err(fault!(ExpiredCounter, true));
     }
 
-    for fragment in fragments {
-        let result = output_buffer.write(&fragment.as_ref()[HEADER_SIZE..]);
+    for i in 0..fragments.len() - 1 {
+        let result = output_buffer.write(&fragments[i].as_ref()[HEADER_SIZE..]);
         if let Err(e) = result {
             return Err(ReceiveError::IoError(e));
         }
+    }
+    let fragment = &fragments[fragments.len() - 1].as_ref()[HEADER_SIZE..];
+    let result = output_buffer.write(&fragment[..tag_idx]);
+    if let Err(e) = result {
+        return Err(ReceiveError::IoError(e));
     }
 
     Ok(())
