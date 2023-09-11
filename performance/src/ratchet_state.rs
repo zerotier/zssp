@@ -13,9 +13,9 @@ use crate::proto::*;
 /// Corresponds to the Ratchet Key and Ratchet Fingerprint described in Section 3.
 #[derive(Clone, Eq)]
 pub struct RatchetState {
+    pub chain_len: u64,
     pub key: Zeroizing<[u8; RATCHET_SIZE]>,
     pub fingerprint: Option<Zeroizing<[u8; RATCHET_SIZE]>>,
-    pub chain_len: u64,
 }
 impl PartialEq for RatchetState {
     fn eq(&self, other: &Self) -> bool {
@@ -161,5 +161,147 @@ impl<'a> RatchetUpdate<'a> {
         } else {
             None
         }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl serde::Serialize for RatchetState {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeSeq;
+        if let Some(rf) = &self.fingerprint {
+            let mut seq = serializer.serialize_seq(Some(4))?;
+            seq.serialize_element(&0u8)?;
+            seq.serialize_element(&self.chain_len)?;
+            seq.serialize_element(self.key.as_ref())?;
+            seq.serialize_element(rf.as_ref())?;
+            seq.end()
+        } else {
+            let mut seq = serializer.serialize_seq(Some(3))?;
+            seq.serialize_element(&0u8)?;
+            seq.serialize_element(&self.chain_len)?;
+            seq.serialize_element(self.key.as_ref())?;
+            seq.end()
+        }
+    }
+}
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for RatchetState {
+    fn deserialize<D>(deserializer: D) -> Result<RatchetState, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct Visitor;
+
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = RatchetState;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a ratchet state sequence")
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::SeqAccess<'de>,
+            {
+                use serde::de::Error;
+                if Some(0u8) == seq.next_element()? {
+                    if let Some(chain_len) = seq.next_element()? {
+                        if let Some(rk) = seq.next_element::<&[u8]>()? {
+                            if rk.len() == RATCHET_SIZE {
+                                let mut key: Zeroizing<[u8; RATCHET_SIZE]> = Zeroizing::default();
+                                key.copy_from_slice(rk);
+                                let fingerprint = if let Some(rf) = seq.next_element::<&[u8]>()? {
+                                    if rf.len() == RATCHET_SIZE {
+                                        let mut fingerprint: Zeroizing<[u8; RATCHET_SIZE]> = Zeroizing::default();
+                                        fingerprint.copy_from_slice(rf);
+                                        Some(fingerprint)
+                                    } else {
+                                        return Err(A::Error::invalid_length(
+                                            rf.len(),
+                                            &"a ratchet fingerprint of length 32",
+                                        ));
+                                    }
+                                } else {
+                                    None
+                                };
+
+                                Ok(RatchetState { chain_len, key, fingerprint })
+                            } else {
+                                Err(A::Error::invalid_length(
+                                    rk.len(),
+                                    &"a ratchet key of length 32",
+                                ))
+                            }
+                        } else {
+                            Err(A::Error::custom("expected a ratchet key"))
+                        }
+                    } else {
+                        Err(A::Error::custom("expected an unsigned integer"))
+                    }
+                } else {
+                    Err(A::Error::custom("invalid version byte"))
+                }
+            }
+        }
+        deserializer.deserialize_seq(Visitor)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl serde::Serialize for RatchetStates {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeSeq;
+        if let Some(state2) = &self.state2 {
+            let mut seq = serializer.serialize_seq(Some(3))?;
+            seq.serialize_element(&0u8)?;
+            seq.serialize_element(&self.state1)?;
+            seq.serialize_element(state2)?;
+            seq.end()
+        } else {
+            let mut seq = serializer.serialize_seq(Some(2))?;
+            seq.serialize_element(&0u8)?;
+            seq.serialize_element(&self.state1)?;
+            seq.end()
+        }
+    }
+}
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for RatchetStates {
+    fn deserialize<D>(deserializer: D) -> Result<RatchetStates, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct Visitor;
+
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = RatchetStates;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a pair of ratchet states")
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::SeqAccess<'de>,
+            {
+                use serde::de::Error;
+                if Some(0u8) == seq.next_element()? {
+                    if let Some(state1) = seq.next_element()? {
+                        Ok(RatchetStates { state1, state2: seq.next_element()? })
+                    } else {
+                        Err(A::Error::custom("expected a ratchet state"))
+                    }
+                } else {
+                    Err(A::Error::custom("invalid version byte"))
+                }
+            }
+        }
+        deserializer.deserialize_seq(Visitor)
     }
 }
