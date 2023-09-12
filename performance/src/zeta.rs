@@ -651,7 +651,7 @@ pub(crate) fn received_x2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
         drop(ekem1_secret);
         i = k;
         // We attempt to decrypt the payload at most three times. First two times with
-        // the ratchet key Alice remembers, and final time with a ratchet
+        // the ratchet keys Alice remembers, and final time with a ratchet
         // key of zero if Alice allows ratchet downgrades.
         // The following code is not constant time, meaning we leak to an
         // attacker whether or not we downgraded.
