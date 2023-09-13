@@ -115,13 +115,19 @@ impl Default for RatchetStates {
     }
 }
 
-/// A set of references to ratchet states specifying how a remote peer's persistent
-/// storage should be updated.
+/// A set of references to ratchet states specifying how a remote peer's persistent storage should
+/// be updated. This struct is designed to provide any and all potentially needed data for
+/// maintaining a store of these ratchet states. It should be straightforward to commit these updates
+/// to anything from an in-memory hashtable to a disk-based database.
 ///
-/// There should be only up to two ratchet states saved to storage at a time per peer.
-/// Every time a new ratchet state is generated, a previous ratchet state will be deleted.
+/// There will only be up to two ratchet states saved to storage at a time per peer.
+/// Every time a third ratchet state is generated, a previous ratchet state will be deleted.
 ///
-/// These are sensitive values should they ought to be securely stored.
+/// These are sensitive values should they ought to be securely stored, with restricted read-write
+/// permissions if stored on disk.
+///
+/// To prevent desync or resource leakage, these updates should be committed atomically. If that is
+/// not possible, then new ratchet states should be written before old ratchet states are deleted
 #[derive(Clone)]
 pub struct RatchetUpdate<'a> {
     /// The ratchet key and fingerprint to store in the first slot.
@@ -138,9 +144,15 @@ pub struct RatchetUpdate<'a> {
     pub deleted_state2: Option<&'a RatchetState>,
 }
 impl<'a> RatchetUpdate<'a> {
+    /// Returns the final `RatchetStates` that should be the only thing saved after this update is
+    /// fully committed. Future calls to `ApplicationLayer::restore_by_identity` should return this struct.
     pub fn to_states(&self) -> RatchetStates {
         RatchetStates::new(self.state1.clone(), self.state2.cloned())
     }
+    /// If this update specifies adding a brand new ratchet fingerprint, this function will return it.
+    /// The returned ratchet fingerprint will always be the ratchet fingerprint of field `state1`.
+    ///
+    /// If a fingerprint is returned then it is guaranteed that `state1_was_just_added` will be true.
     pub fn added_fingerprint(&self) -> Option<&[u8; RATCHET_SIZE]> {
         if self.state1_was_just_added {
             self.state1.fingerprint()
@@ -148,6 +160,12 @@ impl<'a> RatchetUpdate<'a> {
             None
         }
     }
+    /// If this updated specifies to delete an old ratchet fingerprint, this function will return it.
+    /// The returned ratchet fingerprint will always be the ratchet fingerprint of field
+    /// `deleted_state1`.
+    ///
+    /// There may be a second ratchet fingerprint to be deleted, which function
+    /// `deleted_fingerprint2` will return.
     pub fn deleted_fingerprint1(&self) -> Option<&[u8; RATCHET_SIZE]> {
         if let Some(rs) = &self.deleted_state1 {
             rs.fingerprint()
@@ -155,6 +173,13 @@ impl<'a> RatchetUpdate<'a> {
             None
         }
     }
+    /// If this updated specifies to delete two ratchet fingerprints, this function will return the second one.
+    /// `deleted_fingerprint1` will return the first one.
+    /// The returned ratchet fingerprint will always be the ratchet fingerprint of field `deleted_state2`.
+    ///
+    /// It is exceptionally rare that there will be more than one ratchet fingerprint to be deleted.
+    /// Care should be taken to make sure that this update will still be correctly committed in the
+    /// rare event that this returns `Some`.
     pub fn deleted_fingerprint2(&self) -> Option<&[u8; RATCHET_SIZE]> {
         if let Some(rs) = &self.deleted_state2 {
             rs.fingerprint()
