@@ -220,7 +220,7 @@ pub trait ApplicationLayer: Sized {
     /// the update could not be made.
     /// The implementor is free to choose how to apply these updates to storage.
     ///
-    /// If this returns `Err(IoError)`, the packet which triggered this function to be called will be
+    /// If this returns `Err(())`, the packet which triggered this function to be called will be
     /// dropped, and no session state will be mutated, preserving synchronization. The remote peer
     /// will eventually resend that packet and so this function will be called again.
     ///
