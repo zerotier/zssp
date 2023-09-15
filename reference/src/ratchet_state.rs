@@ -177,7 +177,7 @@ impl Default for RatchetStates {
 /// Every time a new ratchet state is generated, a previous ratchet state will be deleted.
 ///
 /// These are sensitive values should they ought to be securely stored.
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub struct RatchetUpdate<'a> {
     /// The ratchet key and fingerprint to store in the first slot.
     pub state1: &'a RatchetState,
