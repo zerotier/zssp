@@ -2,6 +2,7 @@ use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::mem::MaybeUninit;
 
+use crate::application::CryptoLayer;
 use crate::crypto::AES_GCM_NONCE_SIZE;
 use crate::fragged::Assembled;
 use crate::proto::{MAX_FRAGMENTS, MAX_UNASSOCIATED_FRAGMENTS, MAX_UNASSOCIATED_PACKETS, MAX_UNASSOCIATED_PACKET_SIZE};
@@ -15,18 +16,18 @@ struct PacketMetadata {
     creation_time: i64,
 }
 
-pub(crate) struct UnassociatedFragCache<Fragment> {
+pub(crate) struct UnassociatedFragCache<Crypto: CryptoLayer> {
     dos_salt: RandomState,
     frags_first_unused: usize,
     frags_unused_size: usize,
     map: [PacketMetadata; MAX_UNASSOCIATED_PACKETS],
-    frags: [MaybeUninit<Fragment>; MAX_UNASSOCIATED_FRAGMENTS],
+    frags: [MaybeUninit<Crypto::IncomingPacketBuffer>; MAX_UNASSOCIATED_FRAGMENTS],
     map_idx: [u32; MAX_UNASSOCIATED_FRAGMENTS],
 }
 /// A combination of a hash table cache and a ring buffer for unassociated fragments.
 /// Designed specifically to be extremely DDOS resistant.
 /// This datastructure takes raw unauthenticated fragments straight from the network.
-impl<Fragment> UnassociatedFragCache<Fragment> {
+impl<Crypto: CryptoLayer> UnassociatedFragCache<Crypto> {
     pub(crate) fn new() -> Self {
         Self {
             dos_salt: RandomState::new(),
@@ -46,24 +47,24 @@ impl<Fragment> UnassociatedFragCache<Fragment> {
     }
     /// Add a fragment and return an assembled packet container if all fragments have been received.
     /// Will check that aad is the same for all fragments.
+    /// Returns true if the fragment is a part of a new fragment.
     pub(crate) fn assemble(
         &mut self,
         nonce: &[u8; AES_GCM_NONCE_SIZE],
         remote_address: impl Hash,
         fragment_size: usize,
-        fragment: Fragment,
+        fragment: Crypto::IncomingPacketBuffer,
         fragment_no: usize,
         fragment_count: usize,
-        timeout_interval: i64,
         current_time: i64,
-        ret_assembled: &mut Assembled<Fragment>,
-    ) {
+        ret_assembled: &mut Assembled<Crypto::IncomingPacketBuffer>,
+    ) -> Option<i64> {
         debug_assert!(MAX_FRAGMENTS < MAX_UNASSOCIATED_FRAGMENTS);
         if fragment_no >= fragment_count
             || fragment_count > MAX_FRAGMENTS
             || fragment_size > MAX_UNASSOCIATED_PACKET_SIZE
         {
-            return;
+            return None;
         }
 
         let mut hasher = self.dos_salt.build_hasher();
@@ -94,7 +95,7 @@ impl<Fragment> UnassociatedFragCache<Fragment> {
         } else if self.map[idx0].key == 0 || self.map[idx1].key == 0 {
             if (fragment_count as usize) > self.frags_unused_size {
                 // There are not enough free fragment slots so attempt to expire a bunch of entries.
-                self.check_for_expiry(timeout_interval, current_time);
+                let _ = self.check_for_expiry_inner(Crypto::SETTINGS.resend_time as i64, current_time);
             }
             if self.map[idx0].key == 0 {
                 idx0
@@ -103,20 +104,21 @@ impl<Fragment> UnassociatedFragCache<Fragment> {
             }
         } else {
             // No room for a new entry so attempt to expire a bunch of entries.
-            self.check_for_expiry(timeout_interval, current_time);
+            let _ = self.check_for_expiry_inner(Crypto::SETTINGS.resend_time as i64, current_time);
             if self.map[idx0].key == 0 {
                 idx0
             } else if self.map[idx1].key == 0 {
                 idx1
             } else {
                 // Give up and drop the fragment.
-                return;
+                return None;
             }
         };
-
+        let mut new_expiry = None;
         if self.map[idx].key == 0 {
             // This is a new entry so initialize it.
             if (fragment_count as usize) <= self.frags_unused_size {
+                new_expiry = Some(current_time + Crypto::SETTINGS.fragment_assembly_timeout as i64);
                 let entry = &mut self.map[idx];
                 entry.key = key;
                 entry.frags_idx = self.frags_first_unused as u32;
@@ -132,7 +134,7 @@ impl<Fragment> UnassociatedFragCache<Fragment> {
                 }
             } else {
                 // If there are not enough free fragment slots by this point we just drop the fragment.
-                return;
+                return None;
             }
         }
         let entry = &mut self.map[idx];
@@ -160,8 +162,12 @@ impl<Fragment> UnassociatedFragCache<Fragment> {
                 self.invalidate::<false>(idx);
             }
         }
+        new_expiry
     }
-    pub(crate) fn check_for_expiry(&mut self, timeout: i64, current_time: i64) {
+    pub(crate) fn check_for_expiry(&mut self, current_time: i64) -> i64 {
+        self.check_for_expiry_inner(Crypto::SETTINGS.fragment_assembly_timeout as i64, current_time)
+    }
+    fn check_for_expiry_inner(&mut self, timeout: i64, current_time: i64) -> i64 {
         while self.frags_unused_size < self.frags.len() {
             // Check if we can drop the entry at the start of the ring buffer.
             let frag_idx = (self.frags_first_unused + self.frags_unused_size) % self.frags.len();
@@ -169,12 +175,14 @@ impl<Fragment> UnassociatedFragCache<Fragment> {
             debug_assert!(map_idx < self.map.len());
 
             let entry = &mut self.map[map_idx];
-            if entry.creation_time + timeout < current_time {
+            let expiry = entry.creation_time + timeout;
+            if expiry <= current_time {
                 self.invalidate::<true>(map_idx);
             } else {
-                break;
+                return expiry;
             }
         }
+        return i64::MAX;
     }
 
     fn invalidate<const DROP: bool>(&mut self, idx: usize) {
@@ -210,7 +218,7 @@ impl<Fragment> UnassociatedFragCache<Fragment> {
         }
     }
 }
-impl<Fragment> Drop for UnassociatedFragCache<Fragment> {
+impl<Crypto: CryptoLayer> Drop for UnassociatedFragCache<Crypto> {
     fn drop(&mut self) {
         for i in 0..self.map.len() {
             if self.map[i].key != 0 {
@@ -233,11 +241,28 @@ fn test_cache() {
         drop(x);
         r.wrapping_mul(0x2545F4914F6CDD1Du64)
     }
+    use crate::crypto_impl::*;
+    struct Crypto {}
+    impl CryptoLayer for Crypto {
+        type Rng = rand_core::OsRng;
+        type PrpEnc = OpenSSLAes256Enc;
+        type PrpDec = OpenSSLAes256Dec;
+        type Aead = OpenSSLAesGcm;
+        type AeadPool = OpenSSLAesGcmPool;
+        type Hash = CrateSha512;
+        type Hmac = CrateHmacSha512;
+        type PublicKey = CrateP384PublicKey;
+        type KeyPair = CrateP384KeyPair;
+        type Kem = CrateKyber1024PrivateKey;
 
-    let mut cache = UnassociatedFragCache::new();
+        type SessionData = ();
+        type IncomingPacketBuffer = Vec<u8>;
+    }
+
+    let mut cache = UnassociatedFragCache::<Crypto>::new();
     let mut assembled = Assembled::new();
 
-    let mut time = 1;
+    let mut time = 0;
     let mut in_progress = Vec::new();
     let mut in_progress_fragments = 0;
     // A basic fuzzer for testing the cache.
@@ -267,11 +292,10 @@ fn test_cache() {
                         fragment,
                         j,
                         fragment_count,
-                        1,
                         time,
                         &mut assembled,
                     );
-                    time += 1;
+                    time += 200;
                 }
             }
             if drop >= fragment_count {
@@ -310,11 +334,10 @@ fn test_cache() {
                             fragment,
                             no as usize,
                             fragment_count as usize,
-                            1000,
                             time,
                             &mut assembled,
                         );
-                        time += 1;
+                        time += 200;
                         in_progress_fragments -= 1;
 
                         if packet.len() > 0 {

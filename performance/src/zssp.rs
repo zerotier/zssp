@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use std::io::Write;
 use std::num::NonZeroU32;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 
 use arrayvec::ArrayVec;
@@ -44,18 +45,26 @@ impl<Crypto: CryptoLayer> Clone for Context<Crypto> {
 }
 
 pub(crate) type SessionMap<Crypto> = RwLock<HashMap<NonZeroU32, Weak<Session<Crypto>>>>;
+
 pub(crate) type SessionQueue<Crypto> = IndexedBinaryHeap<Weak<Session<Crypto>>, Reverse<i64>>;
+
 pub struct ContextInner<Crypto: CryptoLayer> {
     pub rng: Mutex<Crypto::Rng>,
+    pub next_service_time: AtomicI64,
     pub(crate) s_secret: Crypto::KeyPair,
     /// `session_queue -> state_machine_lock -> state -> session_map`
     pub(crate) session_queue: Mutex<SessionQueue<Crypto>>,
     /// `session_queue -> state_machine_lock -> state -> session_map`
     pub(crate) session_map: SessionMap<Crypto>,
-    pub(crate) unassociated_defrag_cache: Mutex<UnassociatedFragCache<Crypto::IncomingPacketBuffer>>,
+    pub(crate) unassociated_defrag_cache: Mutex<UnassociatedFragCache<Crypto>>,
     pub(crate) unassociated_handshake_states: UnassociatedHandshakeCache<Crypto>,
 
     pub(crate) challenge: ChallengeContext,
+}
+impl<Crypto: CryptoLayer> ContextInner<Crypto> {
+    pub(crate) fn reduce_next_service_time(&self, time: i64) -> bool {
+        self.next_service_time.fetch_min(time, Ordering::Relaxed) > time
+    }
 }
 
 fn parse_fragment_header(incoming_fragment: &[u8]) -> Result<(usize, usize, [u8; AES_GCM_NONCE_SIZE]), ReceiveError> {
@@ -114,6 +123,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
         Self(Arc::new(ContextInner {
             rng: Mutex::new(rng),
             s_secret: static_secret_key,
+            next_service_time: AtomicI64::new(i64::MAX),
             session_map: RwLock::new(HashMap::new()),
             challenge,
             session_queue: Mutex::new(IndexedBinaryHeap::new()),
@@ -144,7 +154,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
         static_remote_key: Crypto::PublicKey,
         session_data: Crypto::SessionData,
         identity: &[u8],
-    ) -> Result<Arc<Session<Crypto>>, OpenError> {
+    ) -> Result<(Arc<Session<Crypto>>, Option<i64>), OpenError> {
         mtu = mtu.max(MIN_TRANSPORT_MTU);
         if identity.len() > IDENTITY_MAX_SIZE {
             return Err(OpenError::IdentityTooLarge);
@@ -189,7 +199,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
         remote_address: &impl Hash,
         mut incoming_fragment_buf: Crypto::IncomingPacketBuffer,
         output_buffer: impl Write,
-    ) -> Result<ReceiveOk<Crypto>, ReceiveError> {
+    ) -> Result<(ReceiveOk<Crypto>, Option<i64>), ReceiveError> {
         use crate::result::FaultType::*;
         let ctx = &self.0;
         send_unassociated_mtu = send_unassociated_mtu.max(MIN_TRANSPORT_MTU);
@@ -315,7 +325,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                     match packet_type {
                         PACKET_TYPE_HANDSHAKE_RESPONSE => {
                             log!(app, ReceivedRawX2);
-                            let should_warn_missing_ratchet = received_x2_trans(
+                            let (should_warn_missing_ratchet, reduced) = received_x2_trans(
                                 &mut app,
                                 ctx,
                                 &session,
@@ -480,17 +490,19 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
 
             let mut buffer = ArrayVec::<u8, HANDSHAKE_HELLO_CHALLENGE_MAX_SIZE>::new();
             let assembled_packet = if fragment_count > 1 {
-                self.0.unassociated_defrag_cache.lock().unwrap().assemble(
+                let next_service_time = self.0.unassociated_defrag_cache.lock().unwrap().assemble(
                     &nonce,
                     remote_address,
                     incoming_fragment.len() - HEADER_SIZE,
                     incoming_fragment_buf,
                     fragment_no,
                     fragment_count,
-                    Crypto::SETTINGS.resend_time as i64,
                     app.time(),
                     &mut fragment_buffer,
                 );
+                if let Some(next_service_time) = next_service_time {
+                    ctx.reduce_next_service_time(next_service_time);
+                }
                 if fragment_buffer.is_empty() {
                     return Ok(ReceiveOk::Unassociated);
                 } else {
@@ -616,13 +628,13 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
         let ctx = &self.0;
         let mut session_queue = ctx.session_queue.lock().unwrap();
         let current_time = app.time();
-        let mut next_service_time = current_time + Crypto::SETTINGS.fragment_assembly_timeout as i64;
+        let mut queue_service_time = i64::MAX;
         // This update system takes heavy advantage of the fact that sessions only need to be updated
         // either roughly every second or roughly every hour. That big gap allows for minor optimizations.
         // If the gap changes (unlikely) this code may need to be rewritten.
         while let Some((session, Reverse(timer), queue_idx)) = session_queue.peek() {
-            if *timer >= current_time {
-                next_service_time = next_service_time.min(*timer);
+            if *timer > current_time {
+                queue_service_time = queue_service_time.min(*timer);
                 break;
             }
             let session = match session.upgrade() {
@@ -639,21 +651,31 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                 }
             });
             if let Some(next_timer) = result {
-                next_service_time = next_service_time.min(next_timer);
+                queue_service_time = queue_service_time.min(next_timer);
                 session_queue.change_priority(queue_idx, Reverse(next_timer));
             } else {
                 session.expire_inner(Some(ctx), Some(&mut session_queue));
             }
         }
+        // This is the only place where `ctx.next_service_time` can be increased. This only works
+        // correctly because we are holding the `session_queue` lock and we are guaranteed to run
+        // the service code for the other two systems which are not currently locked.
+        ctx.next_service_time.store(queue_service_time, Ordering::Relaxed);
         drop(session_queue);
 
-        self.0
+        let defrag_service_time = self
+            .0
             .unassociated_defrag_cache
             .lock()
             .unwrap()
-            .check_for_expiry(Crypto::SETTINGS.fragment_assembly_timeout as i64, current_time);
-        self.0.unassociated_handshake_states.service(current_time);
+            .check_for_expiry(current_time);
+        let handshake_service_time = self.0.unassociated_handshake_states.service(current_time);
 
-        next_service_time - current_time
+        ctx.next_service_time
+            .fetch_min(defrag_service_time.min(handshake_service_time), Ordering::Relaxed);
+
+        queue_service_time = queue_service_time.min(current_time + Crypto::SETTINGS.fragment_assembly_timeout as i64);
+
+        queue_service_time - current_time
     }
 }
