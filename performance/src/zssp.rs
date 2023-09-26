@@ -502,8 +502,8 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                     app.time(),
                     &mut fragment_buffer,
                 );
-                if let Some(time) = next_service_time {
-                    next_service_time = ctx.reduce_next_service_time(time);
+                if let Some(t) = next_service_time {
+                    next_service_time = ctx.reduce_next_service_time(t);
                 }
                 if fragment_buffer.is_empty() {
                     return Ok((ReceiveOk::Unassociated, next_service_time));
@@ -633,58 +633,10 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
     pub fn service_scheduled<App: ApplicationLayer<Crypto = Crypto>, SendFn: FnMut(&mut [u8]) -> bool>(
         &self,
         mut app: App,
-        mut send_to: impl FnMut(&Arc<Session<Crypto>>) -> Option<(SendFn, usize)>,
+        send_to: impl FnMut(&Arc<Session<Crypto>>) -> Option<(SendFn, usize)>,
     ) -> i64 {
-        let ctx = &self.0;
-        let mut session_queue = ctx.session_queue.lock().unwrap();
         let current_time = app.time();
-        let mut queue_service_time = i64::MAX;
-        // This update system takes heavy advantage of the fact that sessions only need to be updated
-        // either roughly every second or roughly every hour. That big gap allows for minor optimizations.
-        // If the gap changes (unlikely) this code may need to be rewritten.
-        while let Some((session, Reverse(timer), queue_idx)) = session_queue.peek() {
-            if *timer > current_time {
-                queue_service_time = queue_service_time.min(*timer);
-                break;
-            }
-            let session = match session.upgrade() {
-                Some(s) => s,
-                _ => {
-                    session_queue.remove(queue_idx);
-                    continue;
-                }
-            };
-            let result = process_timers(&mut app, ctx, &session, current_time, |packet, hk_send| {
-                if let Some((send_fragment, mut mtu)) = send_to(&session) {
-                    mtu = mtu.max(MIN_TRANSPORT_MTU);
-                    send_with_fragmentation(send_fragment, mtu, packet, hk_send);
-                }
-            });
-            if let Some(next_timer) = result {
-                queue_service_time = queue_service_time.min(next_timer);
-                session_queue.change_priority(queue_idx, Reverse(next_timer));
-            } else {
-                session.expire_inner(Some(ctx), Some(&mut session_queue));
-            }
-        }
-        // This is the only place where `ctx.next_service_time` can be increased. This only works
-        // correctly because we are holding the `session_queue` lock and we are guaranteed to run
-        // the service code for the other two systems which are not currently locked.
-        ctx.next_service_time.store(queue_service_time, Ordering::Relaxed);
-        drop(session_queue);
-
-        let defrag_service_time = self
-            .0
-            .unassociated_defrag_cache
-            .lock()
-            .unwrap()
-            .check_for_expiry(current_time);
-        let handshake_service_time = self.0.unassociated_handshake_states.service(current_time);
-
-        ctx.next_service_time
-            .fetch_min(defrag_service_time.min(handshake_service_time), Ordering::Relaxed);
-
-        queue_service_time
+        self.service_inner(app, send_to, current_time)
     }
 
     /// Perform periodic background service and cleanup tasks.
@@ -698,11 +650,22 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
     pub fn service<App: ApplicationLayer<Crypto = Crypto>, SendFn: FnMut(&mut [u8]) -> bool>(
         &self,
         mut app: App,
+        send_to: impl FnMut(&Arc<Session<Crypto>>) -> Option<(SendFn, usize)>,
+    ) -> i64 {
+        let current_time = app.time();
+        let next_service_time = self.service_inner(app, send_to, current_time);
+        let max_interval = Crypto::SETTINGS.fragment_assembly_timeout.min(Crypto::SETTINGS.rekey_timeout).min(Crypto::SETTINGS.initial_offer_timeout);
+
+        (next_service_time - current_time).min(max_interval as i64)
+    }
+    fn service_inner<App: ApplicationLayer<Crypto = Crypto>, SendFn: FnMut(&mut [u8]) -> bool>(
+        &self,
+        mut app: App,
         mut send_to: impl FnMut(&Arc<Session<Crypto>>) -> Option<(SendFn, usize)>,
+        current_time: i64,
     ) -> i64 {
         let ctx = &self.0;
         let mut session_queue = ctx.session_queue.lock().unwrap();
-        let current_time = app.time();
         let mut queue_service_time = i64::MAX;
         // This update system takes heavy advantage of the fact that sessions only need to be updated
         // either roughly every second or roughly every hour. That big gap allows for minor optimizations.
@@ -746,11 +709,9 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
             .check_for_expiry(current_time);
         let handshake_service_time = self.0.unassociated_handshake_states.service(current_time);
 
-        ctx.next_service_time
-            .fetch_min(defrag_service_time.min(handshake_service_time), Ordering::Relaxed);
+        let t2 = defrag_service_time.min(handshake_service_time);
+        let t1 = ctx.next_service_time.fetch_min(t2, Ordering::Relaxed);
 
-        queue_service_time = queue_service_time.min(current_time + Crypto::SETTINGS.fragment_assembly_timeout as i64);
-
-        queue_service_time - current_time
+        t1.min(t2)
     }
 }

@@ -39,6 +39,7 @@ impl<Application: CryptoLayer> UnassociatedHandshakeCache<Application> {
         }
         None
     }
+    /// Returns the timestamp at which `service` should be called again, or `None` if there is no update.
     pub(crate) fn insert(
         &self,
         local_id: NonZeroU32,
@@ -74,6 +75,7 @@ impl<Application: CryptoLayer> UnassociatedHandshakeCache<Application> {
         }
         false
     }
+    /// Returns the timestamp at which this function should be called again.
     pub(crate) fn service(&self, current_time: i64) -> i64 {
         // Only check for expiration if we have a pending packet.
         // This check is allowed to have false positives for simplicity's sake.

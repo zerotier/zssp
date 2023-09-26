@@ -164,6 +164,7 @@ impl<Crypto: CryptoLayer> UnassociatedFragCache<Crypto> {
         }
         new_expiry
     }
+    /// Returns the timestamp at which this function should be called again.
     pub(crate) fn check_for_expiry(&mut self, current_time: i64) -> i64 {
         self.check_for_expiry_inner(Crypto::SETTINGS.fragment_assembly_timeout as i64, current_time)
     }
