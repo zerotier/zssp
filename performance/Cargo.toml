@@ -3,7 +3,7 @@ authors = ["ZeroTier, Inc. <contact@zerotier.com>", "Adam Ierymenko <adam.ieryme
 edition = "2021"
 license = "MPL-2.0"
 name = "zssp"
-version = "0.0.3"
+version = "0.1.0"
 
 [lib]
 name = "zssp"
