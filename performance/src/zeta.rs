@@ -1,6 +1,5 @@
 use std::cmp::Reverse;
 use std::collections::HashMap;
-use std::io::Write;
 use std::num::NonZeroU32;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
@@ -1732,7 +1731,7 @@ pub(crate) fn receive_payload_in_place<Crypto: CryptoLayer>(
     kid: NonZeroU32,
     nonce: &[u8; AES_GCM_NONCE_SIZE],
     fragments: &mut [Crypto::IncomingPacketBuffer],
-    mut output_buffer: impl Write,
+    mut output_buffer: impl crate::application::Write,
 ) -> Result<(), ReceiveError> {
     use FaultType::*;
     debug_assert!(!fragments.is_empty());
@@ -1751,14 +1750,17 @@ pub(crate) fn receive_payload_in_place<Crypto: CryptoLayer>(
 
     // NOTE: This only works because we check the size of every received fragment in the receive
     // function, otherwise this could panic.
+    let mut total_len = 0;
     for i in 0..fragments.len() - 1 {
         let fragment = &mut fragments[i].as_mut()[HEADER_SIZE..];
         debug_assert!(fragment.len() >= AES_GCM_TAG_SIZE);
+        total_len += fragment.len();
         cipher.decrypt_in_place(fragment);
     }
     let fragment = &mut fragments[fragments.len() - 1].as_mut()[HEADER_SIZE..];
     debug_assert!(fragment.len() >= AES_GCM_TAG_SIZE);
     let tag_idx = fragment.len() - AES_GCM_TAG_SIZE;
+    total_len += tag_idx;
     cipher.decrypt_in_place(&mut fragment[..tag_idx]);
 
     if !cipher.finish((&fragment[tag_idx..]).try_into().unwrap()) {
@@ -1771,6 +1773,9 @@ pub(crate) fn receive_payload_in_place<Crypto: CryptoLayer>(
         return Err(fault!(ExpiredCounter, true));
     }
 
+    if let Err(e) = output_buffer.reserve_capacity(total_len) {
+        return Err(ReceiveError::WriteError(e));
+    }
     for i in 0..fragments.len() - 1 {
         let result = output_buffer.write(&fragments[i].as_ref()[HEADER_SIZE..]);
         if let Err(e) = result {

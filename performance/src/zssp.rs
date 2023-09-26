@@ -1,7 +1,6 @@
 use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::hash::Hash;
-use std::io::Write;
 use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, RwLock, Weak};
@@ -198,7 +197,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
         mut send_to: impl FnMut(&Arc<Session<Crypto>>) -> Option<(SendFn, usize)>,
         remote_address: &impl Hash,
         mut incoming_fragment_buf: Crypto::IncomingPacketBuffer,
-        output_buffer: impl Write,
+        output_buffer: impl crate::application::Write,
     ) -> Result<(ReceiveOk<Crypto>, Option<i64>), ReceiveError> {
         use crate::result::FaultType::*;
         let ctx = &self.0;
@@ -632,7 +631,10 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
     ) -> i64 {
         let current_time = app.time();
         let next_service_time = self.service_inner(app, send_to, current_time);
-        let max_interval = Crypto::SETTINGS.fragment_assembly_timeout.min(Crypto::SETTINGS.rekey_timeout).min(Crypto::SETTINGS.initial_offer_timeout);
+        let max_interval = Crypto::SETTINGS
+            .fragment_assembly_timeout
+            .min(Crypto::SETTINGS.rekey_timeout)
+            .min(Crypto::SETTINGS.initial_offer_timeout);
 
         (next_service_time - current_time).min(max_interval as i64)
     }

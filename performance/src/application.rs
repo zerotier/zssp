@@ -276,3 +276,56 @@ pub struct AcceptAction<Crypto: CryptoLayer> {
     /// authentication checks.
     pub responder_silently_rejects: bool,
 }
+
+pub trait Write {
+    fn reserve_capacity(&mut self, cap: usize) -> Result<(), std::io::Error>;
+
+    fn write(&mut self, buf: &[u8]) -> Result<(), std::io::Error>;
+}
+impl<W: Write> Write for Box<W> {
+    fn reserve_capacity(&mut self, cap: usize) -> Result<(), std::io::Error> {
+        (**self).reserve_capacity(cap)
+    }
+    fn write(&mut self, buf: &[u8]) -> Result<(), std::io::Error> {
+        (**self).write(buf)
+    }
+}
+impl<W: Write> Write for &mut W {
+    fn reserve_capacity(&mut self, cap: usize) -> Result<(), std::io::Error> {
+        (**self).reserve_capacity(cap)
+    }
+    fn write(&mut self, buf: &[u8]) -> Result<(), std::io::Error> {
+        (**self).write(buf)
+    }
+}
+
+impl Write for Vec<u8> {
+    fn reserve_capacity(&mut self, cap: usize) -> Result<(), std::io::Error> {
+        self.reserve(cap);
+        Ok(())
+    }
+    fn write(&mut self, buf: &[u8]) -> Result<(), std::io::Error> {
+        std::io::Write::write(self, buf).map(|_| ())
+    }
+}
+impl Write for std::collections::VecDeque<u8> {
+    fn reserve_capacity(&mut self, cap: usize) -> Result<(), std::io::Error> {
+        self.reserve(cap);
+        Ok(())
+    }
+    fn write(&mut self, buf: &[u8]) -> Result<(), std::io::Error> {
+        std::io::Write::write(self, buf).map(|_| ())
+    }
+}
+impl<const CAP: usize> Write for arrayvec::ArrayVec<u8, CAP> {
+    fn reserve_capacity(&mut self, cap: usize) -> Result<(), std::io::Error> {
+        if self.len() + cap <= CAP {
+            Ok(())
+        } else {
+            Err(std::io::Error::from(std::io::ErrorKind::OutOfMemory))
+        }
+    }
+    fn write(&mut self, buf: &[u8]) -> Result<(), std::io::Error> {
+        std::io::Write::write(self, buf).map(|_| ())
+    }
+}
