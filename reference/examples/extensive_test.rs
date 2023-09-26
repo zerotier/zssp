@@ -7,7 +7,6 @@
  */
 
 use std::collections::HashMap;
-use std::convert::Infallible;
 use std::iter::ExactSizeIterator;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -68,7 +67,7 @@ impl CryptoLayer for TestApplication {
 #[allow(unused)]
 impl ApplicationLayer for &mut TestApplication {
     type Crypto = TestApplication;
-    type StorageError = Infallible;
+
     fn hello_requires_recognized_ratchet(&mut self) -> bool {
         false
     }
@@ -92,7 +91,7 @@ impl ApplicationLayer for &mut TestApplication {
     fn restore_by_fingerprint(
         &mut self,
         ratchet_fingerprint: &[u8; RATCHET_SIZE],
-    ) -> Result<Option<RatchetState>, Infallible> {
+    ) -> Result<Option<RatchetState>, std::io::Error> {
         Ok(self.ratchets.rf_map.get(ratchet_fingerprint).cloned())
     }
 
@@ -100,7 +99,7 @@ impl ApplicationLayer for &mut TestApplication {
         &mut self,
         remote_static_key: &P384CratePublicKey,
         session_data: &u128,
-    ) -> Result<Option<RatchetStates>, Infallible> {
+    ) -> Result<Option<RatchetStates>, std::io::Error> {
         Ok(self.ratchets.peer_map.get(session_data).cloned())
     }
 
@@ -109,7 +108,7 @@ impl ApplicationLayer for &mut TestApplication {
         remote_static_key: &P384CratePublicKey,
         session_data: &u128,
         update_data: RatchetUpdate<'_>,
-    ) -> Result<(), Infallible> {
+    ) -> Result<(), std::io::Error> {
         self.ratchets.peer_map.insert(*session_data, update_data.to_states());
 
         if let Some(rf) = update_data.added_fingerprint() {
@@ -200,8 +199,8 @@ fn alice_main(
                         },
                         Err(e) => {
                             println!("[alice] ERROR {:?}", e);
-                            if let ByzantineFault { unnatural, .. } = e {
-                                assert!(!unnatural)
+                            if let ByzantineFault(e) = e {
+                                assert!(!e.unnatural())
                             }
                         }
                     }
@@ -288,8 +287,8 @@ fn bob_main(
                     },
                     Err(e) => {
                         println!("[bob] ERROR {:?}", e);
-                        if let ByzantineFault { unnatural, .. } = e {
-                            assert!(!unnatural)
+                        if let ByzantineFault(e) = e {
+                            assert!(!e.unnatural())
                         }
                     }
                 }

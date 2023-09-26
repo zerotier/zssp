@@ -84,7 +84,10 @@ impl ApplicationLayer for &TestApplication {
         }
     }
 
-    fn restore_by_fingerprint(&mut self, ratchet_fingerprint: &[u8; RATCHET_SIZE]) -> Result<Option<RatchetState>, ()> {
+    fn restore_by_fingerprint(
+        &mut self,
+        ratchet_fingerprint: &[u8; RATCHET_SIZE],
+    ) -> Result<Option<RatchetState>, std::io::Error> {
         Ok(None)
     }
 
@@ -92,7 +95,7 @@ impl ApplicationLayer for &TestApplication {
         &mut self,
         remote_static_key: &CrateP384PublicKey,
         session_data: &(),
-    ) -> Result<Option<RatchetStates>, ()> {
+    ) -> Result<Option<RatchetStates>, std::io::Error> {
         Ok(None)
     }
 
@@ -101,7 +104,7 @@ impl ApplicationLayer for &TestApplication {
         remote_static_key: &CrateP384PublicKey,
         session_data: &(),
         update_data: RatchetUpdate<'_>,
-    ) -> Result<(), ()> {
+    ) -> Result<(), std::io::Error> {
         Ok(())
     }
 
@@ -126,18 +129,15 @@ fn alice_main(
     let mut up = false;
     let mut output_data = ArrayVec::<u8, 15000>::new();
 
-    let alice_session = Some(
-        context
-            .open(
-                alice_app,
-                |b| alice_out.send(alloc(b)).is_ok(),
-                TEST_MTU,
-                bob_pubkey.clone(),
-                (),
-                &[],
-            )
-            .unwrap(),
+    let result = context.open(
+        alice_app,
+        |b| alice_out.send(alloc(b)).is_ok(),
+        TEST_MTU,
+        bob_pubkey.clone(),
+        (),
+        &[],
     );
+    let alice_session = Some(result.unwrap().0);
     println!("[alice] opening session");
     while run.load(Ordering::Relaxed) {
         let current_time = startup_time.elapsed().as_millis() as i64;
@@ -156,10 +156,10 @@ fn alice_main(
                     pkt,
                     &mut output_data,
                 ) {
-                    Ok(Unassociated) => {
+                    Ok((Unassociated, _)) => {
                         //println!("[alice] ok");
                     }
-                    Ok(Session(_, event)) => match event {
+                    Ok((Session(_, event), _)) => match event {
                         Established => {
                             up = true;
                         }
@@ -172,8 +172,8 @@ fn alice_main(
                     },
                     Err(e) => {
                         println!("[alice] ERROR {:?}", e);
-                        if let ReceiveError::ByzantineFault { unnatural, .. } = e {
-                            assert!(!unnatural)
+                        if let ReceiveError::ByzantineFault(e) = e {
+                            assert!(!e.unnatural())
                         }
                     }
                 }
@@ -238,8 +238,8 @@ fn bob_main(
                 pkt,
                 &mut output_data,
             ) {
-                Ok(Unassociated) => {}
-                Ok(Session(s, event)) => match event {
+                Ok((Unassociated, _)) => {}
+                Ok((Session(s, event), _)) => match event {
                     NewSession | NewDowngradedSession => {
                         println!("[bob] new session, took {}s", current_time as f32 / 1000.0);
                         let _ = bob_session.replace(s);
@@ -262,8 +262,8 @@ fn bob_main(
                 },
                 Err(e) => {
                     println!("[bob] ERROR {:?}", e);
-                    if let ReceiveError::ByzantineFault { unnatural, .. } = e {
-                        assert!(!unnatural)
+                    if let ReceiveError::ByzantineFault(e) = e {
+                        assert!(!e.unnatural())
                     }
                 }
             }

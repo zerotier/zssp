@@ -350,10 +350,10 @@ pub(crate) fn trans_to_a1<Crypto: CryptoLayer, App: ApplicationLayer<Crypto = Cr
     session_data: Crypto::SessionData,
     identity: &[u8],
     send: impl FnOnce(&mut [u8], Option<&Crypto::PrpEnc>),
-) -> Result<Arc<Session<Crypto>>, OpenError> {
+) -> Result<(Arc<Session<Crypto>>, Option<i64>), OpenError> {
     let RatchetStates { state1, state2 } = app
         .restore_by_identity(&s_remote, &session_data)
-        .map_err(|_| OpenError::RatchetStorageError)?
+        .map_err(|e| OpenError::StorageError(e))?
         .unwrap_or_default();
 
     let mut session_queue = ctx.session_queue.lock().unwrap();
@@ -420,13 +420,13 @@ pub(crate) fn trans_to_a1<Crypto: CryptoLayer, App: ApplicationLayer<Crypto = Cr
 
     session_map.insert(kid_recv, Arc::downgrade(&session));
     session_queue.push_reserved(queue_idx, Arc::downgrade(&session), Reverse(resend_timer));
-    let _ = ctx.reduce_next_service_time(resend_timer);
+    let reduced_service_time = ctx.reduce_next_service_time(resend_timer);
     drop(session_map);
     drop(session_queue);
 
     send(&mut x1, None);
 
-    Ok(session)
+    Ok((session, reduced_service_time))
 }
 /// Corresponds to Algorithm 13 found in Section 5.
 pub(crate) fn respond_to_challenge<Crypto: CryptoLayer>(
@@ -450,7 +450,7 @@ pub(crate) fn received_x1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     n: &[u8; AES_GCM_NONCE_SIZE],
     x1: &mut [u8],
     send: impl FnOnce(&mut [u8], Option<&Crypto::PrpEnc>),
-) -> Result<bool, ReceiveError> {
+) -> Result<Option<i64>, ReceiveError> {
     use FaultType::*;
     //    <- s
     //    ...
@@ -507,7 +507,7 @@ pub(crate) fn received_x1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
                 ratchet_state = Some(rs);
                 break;
             }
-            Err(_) => return Err(ReceiveError::RatchetStorageError),
+            Err(e) => return Err(ReceiveError::StorageError(e)),
         }
         i += RATCHET_SIZE;
     }
@@ -583,7 +583,7 @@ pub(crate) fn received_x1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
         }),
         app.time(),
     );
-    let mut reduced_service_time = false;
+    let mut reduced_service_time = None;
     if let Some(next_service_time) = next_service_time {
         reduced_service_time = ctx.reduce_next_service_time(next_service_time);
     }
@@ -603,7 +603,7 @@ pub(crate) fn received_x2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     n: &[u8; AES_GCM_NONCE_SIZE],
     x2: &mut [u8],
     send: impl FnOnce(&mut [u8], Option<&Crypto::PrpEnc>),
-) -> Result<(bool, bool), ReceiveError> {
+) -> Result<(bool, Option<i64>), ReceiveError> {
     use FaultType::*;
     //    <- e, ee, ekem1, psk
     //    -> s, se
@@ -737,7 +737,7 @@ pub(crate) fn received_x2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
                 deleted_state2: None,
             },
         )
-        .map_err(|_| ReceiveError::RatchetStorageError)?;
+        .map_err(|e| ReceiveError::StorageError(e))?;
 
         let mut kek_recv = Zeroizing::new([0u8; HASHLEN]);
         let mut kek_send = Zeroizing::new([0u8; HASHLEN]);
@@ -824,7 +824,7 @@ pub(crate) fn received_x3_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     kid: NonZeroU32,
     x3: &mut [u8],
     send: impl FnOnce(&mut [u8], Option<&Crypto::PrpEnc>),
-) -> Result<(Arc<Session<Crypto>>, bool, bool), ReceiveError> {
+) -> Result<(Arc<Session<Crypto>>, bool, Option<i64>), ReceiveError> {
     use FaultType::*;
     //    -> s, se
     if x3.len() < HANDSHAKE_COMPLETION_MIN_SIZE {
@@ -922,7 +922,7 @@ pub(crate) fn received_x3_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
                         deleted_state2: state2.as_ref(),
                     },
                 )
-                .map_err(|_| ReceiveError::RatchetStorageError)?;
+                .map_err(|e| ReceiveError::StorageError(e))?;
 
                 let (session, reduced_service_time) = {
                     let mut session_map = ctx.session_map.write().unwrap();
@@ -984,7 +984,7 @@ pub(crate) fn received_x3_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
 
                 Ok((session, should_warn_missing_ratchet, reduced_service_time))
             }
-            Err(()) => Err(ReceiveError::RatchetStorageError),
+            Err(e) => Err(ReceiveError::StorageError(e)),
         }
     } else {
         if !responder_silently_rejects {
@@ -1002,7 +1002,7 @@ pub(crate) fn received_c1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     n: &[u8; AES_GCM_NONCE_SIZE],
     c1: &[u8],
     send: impl FnOnce(&mut [u8], Option<&Crypto::PrpEnc>),
-) -> Result<(bool, bool), ReceiveError> {
+) -> Result<(bool, Option<i64>), ReceiveError> {
     use FaultType::*;
 
     if c1.len() != KEY_CONFIRMATION_SIZE {
@@ -1032,7 +1032,7 @@ pub(crate) fn received_c1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     if !session.window.update(c) {
         return Err(fault!(ExpiredCounter, true));
     }
-    let mut reduced_service_time = false;
+    let mut reduced_service_time = None;
 
     let just_establised = is_other && matches!(&state.beta, ZetaAutomata::A3 { .. });
     if is_other {
@@ -1049,7 +1049,7 @@ pub(crate) fn received_c1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
                         deleted_state2: None,
                     },
                 )
-                .map_err(|_| ReceiveError::RatchetStorageError)?;
+                .map_err(|e| ReceiveError::StorageError(e))?;
             }
             drop(state);
             let timeout_timer = {
@@ -1089,7 +1089,7 @@ pub(crate) fn received_c2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     kid: NonZeroU32,
     n: &[u8; AES_GCM_NONCE_SIZE],
     c2: &[u8],
-) -> Result<bool, ReceiveError> {
+) -> Result<Option<i64>, ReceiveError> {
     use FaultType::*;
 
     if c2.len() != ACKNOWLEDGEMENT_SIZE {
@@ -1357,7 +1357,7 @@ pub(crate) fn received_k1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     n: &[u8; AES_GCM_NONCE_SIZE],
     k1: &mut [u8],
     send: impl FnOnce(&mut [u8], Option<&Crypto::PrpEnc>),
-) -> Result<bool, ReceiveError> {
+) -> Result<Option<i64>, ReceiveError> {
     use FaultType::*;
     //    -> s
     //    <- s
@@ -1457,7 +1457,7 @@ pub(crate) fn received_k1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
                 deleted_state2: None,
             },
         )
-        .map_err(|_| ReceiveError::RatchetStorageError)?;
+        .map_err(|e| ReceiveError::StorageError(e))?;
 
         let mut kek_recv = Zeroizing::new([0u8; HASHLEN]);
         let mut kek_send = Zeroizing::new([0u8; HASHLEN]);
@@ -1513,7 +1513,7 @@ pub(crate) fn received_k2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     n: &[u8; AES_GCM_NONCE_SIZE],
     k2: &mut [u8],
     send: impl FnOnce(&mut [u8], Option<&Crypto::PrpEnc>),
-) -> Result<bool, ReceiveError> {
+) -> Result<Option<i64>, ReceiveError> {
     use FaultType::*;
     //    <- e, ee, se
     if k2.len() != REKEY_SIZE {
@@ -1582,7 +1582,7 @@ pub(crate) fn received_k2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
                     deleted_state2: state.ratchet_state2.as_ref(),
                 },
             )
-            .map_err(|_| ReceiveError::RatchetStorageError)?;
+            .map_err(|e| ReceiveError::StorageError(e))?;
 
             let mut kek_recv = Zeroizing::new([0u8; HASHLEN]);
             let mut kek_send = Zeroizing::new([0u8; HASHLEN]);
@@ -1648,7 +1648,7 @@ pub(crate) fn send_payload<Crypto: CryptoLayer>(
     }
 
     let state = session.state.read().unwrap();
-    let (c, should_rekey) = get_counter(session, &state).ok_or(SessionExpired)?;
+    let (c, mut should_rekey) = get_counter(session, &state).ok_or(SessionExpired)?;
     let nonce = to_nonce(PACKET_TYPE_DATA, c);
 
     let key = state.key_ref(false);
@@ -1708,6 +1708,7 @@ pub(crate) fn send_payload<Crypto: CryptoLayer>(
         return Ok(false);
     }
 
+    should_rekey &= matches!(&state.beta, ZetaAutomata::S2);
     drop(state);
 
     if should_rekey {
@@ -1718,7 +1719,8 @@ pub(crate) fn send_payload<Crypto: CryptoLayer>(
             .lock()
             .unwrap()
             .change_priority(session.queue_idx, Reverse(i64::MIN));
-        Ok(ctx.reduce_next_service_time(i64::MIN))
+        ctx.reduce_next_service_time(i64::MIN);
+        Ok(true)
     } else {
         Ok(false)
     }
@@ -1772,13 +1774,13 @@ pub(crate) fn receive_payload_in_place<Crypto: CryptoLayer>(
     for i in 0..fragments.len() - 1 {
         let result = output_buffer.write(&fragments[i].as_ref()[HEADER_SIZE..]);
         if let Err(e) = result {
-            return Err(ReceiveError::IoError(e));
+            return Err(ReceiveError::WriteError(e));
         }
     }
     let fragment = &fragments[fragments.len() - 1].as_ref()[HEADER_SIZE..];
     let result = output_buffer.write(&fragment[..tag_idx]);
     if let Err(e) = result {
-        return Err(ReceiveError::IoError(e));
+        return Err(ReceiveError::WriteError(e));
     }
 
     Ok(())

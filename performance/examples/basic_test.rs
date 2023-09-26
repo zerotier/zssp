@@ -91,7 +91,10 @@ impl ApplicationLayer for &TestApplication {
         }
     }
 
-    fn restore_by_fingerprint(&mut self, ratchet_fingerprint: &[u8; RATCHET_SIZE]) -> Result<Option<RatchetState>, ()> {
+    fn restore_by_fingerprint(
+        &mut self,
+        ratchet_fingerprint: &[u8; RATCHET_SIZE],
+    ) -> Result<Option<RatchetState>, std::io::Error> {
         let ratchets = self.ratchets.lock().unwrap();
         Ok(ratchets.rf_map.get(ratchet_fingerprint).cloned())
     }
@@ -100,7 +103,7 @@ impl ApplicationLayer for &TestApplication {
         &mut self,
         remote_static_key: &CrateP384PublicKey,
         session_data: &u128,
-    ) -> Result<Option<RatchetStates>, ()> {
+    ) -> Result<Option<RatchetStates>, std::io::Error> {
         let ratchets = self.ratchets.lock().unwrap();
         Ok(ratchets.peer_map.get(session_data).cloned())
     }
@@ -110,7 +113,7 @@ impl ApplicationLayer for &TestApplication {
         remote_static_key: &CrateP384PublicKey,
         session_data: &u128,
         update_data: RatchetUpdate<'_>,
-    ) -> Result<(), ()> {
+    ) -> Result<(), std::io::Error> {
         let mut ratchets = self.ratchets.lock().unwrap();
         ratchets.peer_map.insert(*session_data, update_data.to_states());
 
@@ -157,18 +160,15 @@ fn alice_main(
     while run.load(Ordering::Relaxed) {
         if alice_session.is_none() {
             up = false;
-            alice_session = Some(
-                context
-                    .open(
-                        alice_app,
-                        |b| alice_out.send(b.to_vec()).is_ok(),
-                        TEST_MTU,
-                        bob_pubkey.clone(),
-                        0,
-                        &[],
-                    )
-                    .unwrap(),
+            let result = context.open(
+                alice_app,
+                |b| alice_out.send(b.to_vec()).is_ok(),
+                TEST_MTU,
+                bob_pubkey.clone(),
+                0,
+                &[],
             );
+            alice_session = Some(result.unwrap().0);
             println!("[alice] opening session");
         }
         let current_time = startup_time.elapsed().as_millis() as i64;
@@ -188,10 +188,10 @@ fn alice_main(
                         pkt,
                         &mut output_data,
                     ) {
-                        Ok(Unassociated) => {
+                        Ok((Unassociated, _)) => {
                             //println!("[alice] ok");
                         }
-                        Ok(Session(_, event)) => match event {
+                        Ok((Session(_, event), _)) => match event {
                             Established => {
                                 up = true;
                             }
@@ -204,8 +204,8 @@ fn alice_main(
                         },
                         Err(e) => {
                             println!("[alice] ERROR {:?}", e);
-                            if let ReceiveError::ByzantineFault { unnatural, .. } = e {
-                                assert!(!unnatural)
+                            if let ReceiveError::ByzantineFault(e) = e {
+                                assert!(!e.unnatural())
                             }
                         }
                     }
@@ -279,8 +279,8 @@ fn bob_main(
                     pkt,
                     &mut output_data,
                 ) {
-                    Ok(Unassociated) => {}
-                    Ok(Session(s, event)) => match event {
+                    Ok((Unassociated, _)) => {}
+                    Ok((Session(s, event), _)) => match event {
                         NewSession | NewDowngradedSession => {
                             println!("[bob] new session, took {}s", current_time as f32 / 1000.0);
                             let _ = bob_session.replace(s);
@@ -303,8 +303,8 @@ fn bob_main(
                     },
                     Err(e) => {
                         println!("[bob] ERROR {:?}", e);
-                        if let ReceiveError::ByzantineFault { unnatural, .. } = e {
-                            assert!(!unnatural)
+                        if let ReceiveError::ByzantineFault(e) = e {
+                            assert!(!e.unnatural())
                         }
                     }
                 }
