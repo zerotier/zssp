@@ -619,6 +619,25 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
     }
     /// Perform periodic background service and cleanup tasks.
     ///
+    /// This returns the number of milliseconds until it should be called again. The caller should
+    /// try to satisfy this but small variations in timing of up to +/- a second or two are not
+    /// a problem.
+    ///
+    /// * `app` - Interface to application using ZSSP
+    /// * `send_to` - Function to get a sender and an MTU to send something over an active session
+    pub fn service<App: ApplicationLayer<Crypto = Crypto>, SendFn: FnMut(&mut [u8]) -> bool>(
+        &self,
+        mut app: App,
+        send_to: impl FnMut(&Arc<Session<Crypto>>) -> Option<(SendFn, usize)>,
+    ) -> i64 {
+        let current_time = app.time();
+        let next_service_time = self.service_inner(app, send_to, current_time);
+        let max_interval = Crypto::SETTINGS.fragment_assembly_timeout.min(Crypto::SETTINGS.rekey_timeout).min(Crypto::SETTINGS.initial_offer_timeout);
+
+        (next_service_time - current_time).min(max_interval as i64)
+    }
+    /// Perform periodic background service and cleanup tasks.
+    ///
     /// This returns exact timestamp at which this function should be called again, or `i64::MAX` if
     /// there is currently no reason to call this again. However, future calls to `Context::open`
     /// and `Context::receive` can and will change this timestamp. Both of these functions return
@@ -637,26 +656,6 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
     ) -> i64 {
         let current_time = app.time();
         self.service_inner(app, send_to, current_time)
-    }
-
-    /// Perform periodic background service and cleanup tasks.
-    ///
-    /// This returns the number of milliseconds until it should be called again. The caller should
-    /// try to satisfy this but small variations in timing of up to +/- a second or two are not
-    /// a problem.
-    ///
-    /// * `app` - Interface to application using ZSSP
-    /// * `send_to` - Function to get a sender and an MTU to send something over an active session
-    pub fn service<App: ApplicationLayer<Crypto = Crypto>, SendFn: FnMut(&mut [u8]) -> bool>(
-        &self,
-        mut app: App,
-        send_to: impl FnMut(&Arc<Session<Crypto>>) -> Option<(SendFn, usize)>,
-    ) -> i64 {
-        let current_time = app.time();
-        let next_service_time = self.service_inner(app, send_to, current_time);
-        let max_interval = Crypto::SETTINGS.fragment_assembly_timeout.min(Crypto::SETTINGS.rekey_timeout).min(Crypto::SETTINGS.initial_offer_timeout);
-
-        (next_service_time - current_time).min(max_interval as i64)
     }
     fn service_inner<App: ApplicationLayer<Crypto = Crypto>, SendFn: FnMut(&mut [u8]) -> bool>(
         &self,
@@ -713,5 +712,10 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
         let t1 = ctx.next_service_time.fetch_min(t2, Ordering::Relaxed);
 
         t1.min(t2)
+    }
+    /// Returns the exact timestamp at which either `Context::service` or
+    /// `Context::service_scheduled` should be called again.
+    pub fn next_service_time(&self) -> i64 {
+        self.0.next_service_time.load(Ordering::Relaxed)
     }
 }
