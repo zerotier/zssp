@@ -101,7 +101,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
         static_remote_key: Crypto::PublicKey,
         session_data: Crypto::SessionData,
         identity: Vec<u8>,
-    ) -> Result<Arc<Session<Crypto>>, OpenError<App::StorageError>>
+    ) -> Result<Arc<Session<Crypto>>, OpenError>
     where
         App: ApplicationLayer<Crypto = Crypto>,
     {
@@ -141,7 +141,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
         send_to: impl FnOnce(&Arc<Session<Crypto>>) -> Option<(SendFn, usize)>,
         remote_address: &impl Hash,
         raw_fragment: Vec<u8>,
-    ) -> Result<ReceiveOk<Crypto>, ReceiveError<App::StorageError>>
+    ) -> Result<ReceiveOk<Crypto>, ReceiveError>
     where
         App: ApplicationLayer<Crypto = Crypto>,
     {

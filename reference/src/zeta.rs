@@ -296,7 +296,7 @@ pub(crate) fn trans_to_a1<App: ApplicationLayer>(
     session_data: <App::Crypto as CryptoLayer>::SessionData,
     identity: Vec<u8>,
     send: impl FnOnce(&Packet),
-) -> Result<Arc<Session<App::Crypto>>, OpenError<App::StorageError>> {
+) -> Result<Arc<Session<App::Crypto>>, OpenError> {
     let ratchet_states = app
         .restore_by_identity(&s_remote, &session_data)
         .map_err(|e| OpenError::StorageError(e))?;
@@ -364,7 +364,7 @@ pub(crate) fn received_x1_trans<App: ApplicationLayer>(
     n: [u8; AES_GCM_NONCE_SIZE],
     mut x1: Vec<u8>,
     send: impl FnOnce(&Packet, &[u8; AES_256_KEY_SIZE]),
-) -> Result<(), ReceiveError<App::StorageError>> {
+) -> Result<(), ReceiveError> {
     use FaultType::*;
     //    <- s
     //    ...
@@ -497,7 +497,7 @@ pub(crate) fn received_x2_trans<App: ApplicationLayer>(
     n: [u8; AES_GCM_NONCE_SIZE],
     mut x2: Vec<u8>,
     send: impl FnOnce(&Packet, Option<&[u8; AES_256_KEY_SIZE]>),
-) -> Result<bool, ReceiveError<App::StorageError>> {
+) -> Result<bool, ReceiveError> {
     use FaultType::*;
     //    <- e, ee, ekem1, psk
     //    -> s, se
@@ -681,7 +681,7 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
     kid: NonZeroU32,
     mut x3: Vec<u8>,
     send: impl FnOnce(&Packet, Option<&[u8; AES_256_KEY_SIZE]>),
-) -> Result<(Arc<Session<App::Crypto>>, bool), ReceiveError<App::StorageError>> {
+) -> Result<(Arc<Session<App::Crypto>>, bool), ReceiveError> {
     use FaultType::*;
     //    -> s, se
     if !(HANDSHAKE_COMPLETION_MIN_SIZE..=HANDSHAKE_COMPLETION_MAX_SIZE).contains(&x3.len()) {
@@ -834,7 +834,7 @@ pub(crate) fn received_c1_trans<App: ApplicationLayer>(
     n: [u8; AES_GCM_NONCE_SIZE],
     c1: Vec<u8>,
     send: impl FnOnce(&Packet, Option<&[u8; AES_256_KEY_SIZE]>),
-) -> Result<bool, ReceiveError<App::StorageError>> {
+) -> Result<bool, ReceiveError> {
     use FaultType::*;
 
     if c1.len() != KEY_CONFIRMATION_SIZE {
@@ -912,7 +912,7 @@ pub(crate) fn received_c2_trans<App: ApplicationLayer>(
     kid: NonZeroU32,
     n: [u8; AES_GCM_NONCE_SIZE],
     c2: Vec<u8>,
-) -> Result<(), ReceiveError<App::StorageError>> {
+) -> Result<(), ReceiveError> {
     use FaultType::*;
 
     if c2.len() != ACKNOWLEDGEMENT_SIZE {
@@ -958,7 +958,7 @@ pub(crate) fn received_d_trans<App: ApplicationLayer>(
     kid: NonZeroU32,
     n: [u8; AES_GCM_NONCE_SIZE],
     d: Vec<u8>,
-) -> Result<(), ReceiveError<App::StorageError>> {
+) -> Result<(), ReceiveError> {
     use FaultType::*;
 
     if d.len() != SESSION_REJECTED_SIZE {
@@ -1137,7 +1137,7 @@ pub(crate) fn received_k1_trans<App: ApplicationLayer>(
     n: [u8; AES_GCM_NONCE_SIZE],
     mut k1: Vec<u8>,
     send: impl FnOnce(&Packet, Option<&[u8; AES_256_KEY_SIZE]>),
-) -> Result<(), ReceiveError<App::StorageError>> {
+) -> Result<(), ReceiveError> {
     use FaultType::*;
     //    -> s
     //    <- s
@@ -1272,7 +1272,7 @@ pub(crate) fn received_k2_trans<App: ApplicationLayer>(
     n: [u8; AES_GCM_NONCE_SIZE],
     mut k2: Vec<u8>,
     send: impl FnOnce(&Packet, Option<&[u8; AES_256_KEY_SIZE]>),
-) -> Result<(), ReceiveError<App::StorageError>> {
+) -> Result<(), ReceiveError> {
     use FaultType::*;
     //    <- e, ee, se
     if k2.len() != REKEY_SIZE {
@@ -1389,7 +1389,7 @@ pub(crate) fn send_payload<Crypto: CryptoLayer>(
         return Err(SessionNotEstablished);
     }
     if let Some((c, should_rekey)) = zeta.get_counter() {
-        if should_rekey {
+        if should_rekey && matches!(&zeta.beta, ZetaAutomata::S1) {
             // Cause timeout to occur next service interval.
             zeta.timeout_timer = i64::MIN;
         }
@@ -1414,7 +1414,7 @@ pub(crate) fn received_payload_in_place<App: ApplicationLayer>(
     kid: NonZeroU32,
     n: [u8; AES_GCM_NONCE_SIZE],
     payload: &mut Vec<u8>,
-) -> Result<(), ReceiveError<App::StorageError>> {
+) -> Result<(), ReceiveError> {
     use FaultType::*;
 
     if payload.len() < AES_GCM_TAG_SIZE {

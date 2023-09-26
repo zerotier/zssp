@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use std::io::Write;
 use std::num::NonZeroU32;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 
 use arrayvec::ArrayVec;
@@ -44,18 +45,26 @@ impl<Crypto: CryptoLayer> Clone for Context<Crypto> {
 }
 
 pub(crate) type SessionMap<Crypto> = RwLock<HashMap<NonZeroU32, Weak<Session<Crypto>>>>;
+
 pub(crate) type SessionQueue<Crypto> = IndexedBinaryHeap<Weak<Session<Crypto>>, Reverse<i64>>;
+
 pub struct ContextInner<Crypto: CryptoLayer> {
     pub rng: Mutex<Crypto::Rng>,
+    pub next_service_time: AtomicI64,
     pub(crate) s_secret: Crypto::KeyPair,
     /// `session_queue -> state_machine_lock -> state -> session_map`
     pub(crate) session_queue: Mutex<SessionQueue<Crypto>>,
     /// `session_queue -> state_machine_lock -> state -> session_map`
     pub(crate) session_map: SessionMap<Crypto>,
-    pub(crate) unassociated_defrag_cache: Mutex<UnassociatedFragCache<Crypto::IncomingPacketBuffer>>,
+    pub(crate) unassociated_defrag_cache: Mutex<UnassociatedFragCache<Crypto>>,
     pub(crate) unassociated_handshake_states: UnassociatedHandshakeCache<Crypto>,
 
     pub(crate) challenge: ChallengeContext,
+}
+impl<Crypto: CryptoLayer> ContextInner<Crypto> {
+    pub(crate) fn reduce_next_service_time(&self, time: i64) -> Option<i64> {
+        (self.next_service_time.fetch_min(time, Ordering::Relaxed) > time).then_some(time)
+    }
 }
 
 fn parse_fragment_header(incoming_fragment: &[u8]) -> Result<(usize, usize, [u8; AES_GCM_NONCE_SIZE]), ReceiveError> {
@@ -114,6 +123,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
         Self(Arc::new(ContextInner {
             rng: Mutex::new(rng),
             s_secret: static_secret_key,
+            next_service_time: AtomicI64::new(i64::MAX),
             session_map: RwLock::new(HashMap::new()),
             challenge,
             session_queue: Mutex::new(IndexedBinaryHeap::new()),
@@ -122,10 +132,15 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
         }))
     }
 
-    /// Create a new session and send initial packet(s) to other side.
+    /// Create a new session and send initialization packets to Bob, our remote peer.
     ///
-    /// This will return SendError::DataTooLarge if the combined size of the metadata and the local
-    /// static public blob (as retrieved from the application layer) exceed MAX_INIT_PAYLOAD_SIZE.
+    /// The session will not be "established" right away, and so will not be able to send data to
+    /// the remote peer until they respond and finish the handshake. A `SessionEvent` variant of
+    /// `Established` will be returned by `Context::receive` when this session is able to send data.
+    ///
+    /// This function returns an `Option<i64>`, which can safely be ignored if not using
+    /// `Context::service_scheduled`. `Context::service_scheduled` contains documentation on how to
+    /// handle the return value.
     ///
     /// * `app` - Application layer instance
     /// * `send` - Function to be called to send one or more initial packets to the remote being
@@ -144,7 +159,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
         static_remote_key: Crypto::PublicKey,
         session_data: Crypto::SessionData,
         identity: &[u8],
-    ) -> Result<Arc<Session<Crypto>>, OpenError> {
+    ) -> Result<(Arc<Session<Crypto>>, Option<i64>), OpenError> {
         mtu = mtu.max(MIN_TRANSPORT_MTU);
         if identity.len() > IDENTITY_MAX_SIZE {
             return Err(OpenError::IdentityTooLarge);
@@ -164,14 +179,9 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
 
     /// Receive, authenticate, decrypt, and process a physical wire packet.
     ///
-    /// The check_allow_incoming_session function is called when an initial Noise_XK init message is
-    /// received. This is before anything is known about the caller. A return value of true proceeds
-    /// with negotiation. False drops the packet and ignores the inbound attempt.
-    ///
-    /// The check_accept_session function is called at the end of negotiation for an incoming
-    /// session with the caller's static public blob. It must return the P-384 static public key
-    /// extracted from the supplied blob and application data. A return of Some() accepts the
-    /// session and will always result in a new session ReceiveOk being returned.
+    /// This function returns an `Option<i64>`, which can safely be ignored if not using
+    /// `Context::service_scheduled`. `Context::service_scheduled` contains documentation on how to
+    /// handle the return value.
     ///
     /// * `app` - Interface to application using ZSSP
     /// * `send_unassociated_reply` - Function to send reply packets directly when no session exists
@@ -189,7 +199,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
         remote_address: &impl Hash,
         mut incoming_fragment_buf: Crypto::IncomingPacketBuffer,
         output_buffer: impl Write,
-    ) -> Result<ReceiveOk<Crypto>, ReceiveError> {
+    ) -> Result<(ReceiveOk<Crypto>, Option<i64>), ReceiveError> {
         use crate::result::FaultType::*;
         let ctx = &self.0;
         send_unassociated_mtu = send_unassociated_mtu.max(MIN_TRANSPORT_MTU);
@@ -265,7 +275,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                             &mut fragment_buffer,
                         );
                         if fragment_buffer.is_empty() {
-                            return Ok(ReceiveOk::Unassociated);
+                            return Ok((ReceiveOk::Unassociated, None));
                         } else {
                             // We have not yet authenticated the sender so we do not report
                             // receiving a packet from them.
@@ -277,7 +287,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
 
                     receive_payload_in_place(&session, state, kid_recv, &nonce, fragments, output_buffer)?;
 
-                    SessionEvent::Data
+                    (SessionEvent::Data, None)
                 } else {
                     drop(state);
                     let mut buffer = ArrayVec::<u8, HANDSHAKE_RESPONSE_SIZE>::new();
@@ -291,7 +301,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                             &mut fragment_buffer,
                         );
                         if fragment_buffer.is_empty() {
-                            return Ok(ReceiveOk::Unassociated);
+                            return Ok((ReceiveOk::Unassociated, None));
                         } else {
                             for fragment in fragment_buffer.as_ref() {
                                 buffer
@@ -315,7 +325,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                     match packet_type {
                         PACKET_TYPE_HANDSHAKE_RESPONSE => {
                             log!(app, ReceivedRawX2);
-                            let should_warn_missing_ratchet = received_x2_trans(
+                            let (should_warn_missing_ratchet, reduced) = received_x2_trans(
                                 &mut app,
                                 ctx,
                                 &session,
@@ -326,14 +336,14 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                             )?;
                             log!(app, X2IsAuthSentX3(&session));
                             if should_warn_missing_ratchet {
-                                SessionEvent::DowngradedRatchetKey
+                                (SessionEvent::DowngradedRatchetKey, reduced)
                             } else {
-                                SessionEvent::Control
+                                (SessionEvent::Control, reduced)
                             }
                         }
                         PACKET_TYPE_KEY_CONFIRM => {
                             log!(app, ReceivedRawKeyConfirm);
-                            let just_established = received_c1_trans(
+                            let (just_established, reduced) = received_c1_trans(
                                 &mut app,
                                 ctx,
                                 &session,
@@ -344,20 +354,21 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                             )?;
                             log!(app, KeyConfirmIsAuthSentAck(&session));
                             if just_established {
-                                SessionEvent::Established
+                                (SessionEvent::Established, reduced)
                             } else {
-                                SessionEvent::Control
+                                (SessionEvent::Control, reduced)
                             }
                         }
                         PACKET_TYPE_ACK => {
                             log!(app, ReceivedRawAck);
-                            received_c2_trans(&mut app, ctx, &session, kid_recv, &nonce, assembled_packet)?;
+                            let reduced =
+                                received_c2_trans(&mut app, ctx, &session, kid_recv, &nonce, assembled_packet)?;
                             log!(app, AckIsAuth(&session));
-                            SessionEvent::Control
+                            (SessionEvent::Control, reduced)
                         }
                         PACKET_TYPE_REKEY_INIT => {
                             log!(app, ReceivedRawK1);
-                            received_k1_trans(
+                            let reduced = received_k1_trans(
                                 &mut app,
                                 ctx,
                                 &session,
@@ -367,11 +378,11 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                                 send_associated,
                             )?;
                             log!(app, K1IsAuthSentK2(&session));
-                            SessionEvent::Control
+                            (SessionEvent::Control, reduced)
                         }
                         PACKET_TYPE_REKEY_COMPLETE => {
                             log!(app, ReceivedRawK2);
-                            received_k2_trans(
+                            let reduced = received_k2_trans(
                                 &mut app,
                                 ctx,
                                 &session,
@@ -381,18 +392,18 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                                 send_associated,
                             )?;
                             log!(app, K2IsAuthSentKeyConfirm(&session));
-                            SessionEvent::Control
+                            (SessionEvent::Control, reduced)
                         }
                         PACKET_TYPE_SESSION_REJECTED => {
                             log!(app, ReceivedRawD);
                             received_d_trans(&session, kid_recv, &nonce, assembled_packet)?;
                             log!(app, DIsAuthClosedSession(&session));
-                            SessionEvent::Rejected
+                            (SessionEvent::Rejected, None)
                         }
                         _ => return Err(fault!(InvalidPacket, true)), // This is unreachable.
                     }
                 };
-                Ok(ReceiveOk::Session(session, ret))
+                Ok((ReceiveOk::Session(session, ret.0), ret.1))
             } else {
                 // Check for and handle PACKET_TYPE_ALICE_NOISE_XK_PATTERN_3
                 let zeta = self.0.unassociated_handshake_states.get(kid_recv);
@@ -427,7 +438,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                             &mut fragment_buffer,
                         );
                         if fragment_buffer.is_empty() {
-                            return Ok(ReceiveOk::Unassociated);
+                            return Ok((ReceiveOk::Unassociated, None));
                         } else {
                             for fragment in fragment_buffer.as_ref() {
                                 buffer
@@ -442,22 +453,25 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                     // We must guarantee that this incoming handshake is processed once and only
                     // once. This prevents catastrophic nonce reuse caused by multithreading.
                     if !self.0.unassociated_handshake_states.remove(kid_recv) {
-                        return Ok(ReceiveOk::Unassociated);
+                        return Ok((ReceiveOk::Unassociated, None));
                     }
 
                     log!(app, ReceivedRawX3);
-                    let (session, should_warn_missing_ratchet) =
+                    let (session, should_warn_missing_ratchet, reduced) =
                         received_x3_trans(&mut app, ctx, zeta, kid_recv, assembled_packet, |packet, hk_send| {
                             send_with_fragmentation(send_unassociated_reply, send_unassociated_mtu, packet, hk_send);
                         })?;
                     log!(app, X3IsAuthSentKeyConfirm(&session));
-                    Ok(ReceiveOk::Session(
-                        session,
-                        if should_warn_missing_ratchet {
-                            SessionEvent::NewDowngradedSession
-                        } else {
-                            SessionEvent::NewSession
-                        },
+                    Ok((
+                        ReceiveOk::Session(
+                            session,
+                            if should_warn_missing_ratchet {
+                                SessionEvent::NewDowngradedSession
+                            } else {
+                                SessionEvent::NewSession
+                            },
+                        ),
+                        reduced,
                     ))
                 } else {
                     // This can occur naturally because either Bob's incoming_sessions cache got
@@ -471,28 +485,28 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
             let (packet_type, _c) = from_nonce(&nonce);
             log!(app, ReceivedRawFragment(packet_type, _c, fragment_no, fragment_count));
 
-            {
-                //vrfy
-                if packet_type != PACKET_TYPE_HANDSHAKE_HELLO && packet_type != PACKET_TYPE_CHALLENGE {
-                    return Err(fault!(InvalidPacket, true));
-                }
+            //vrfy
+            if packet_type != PACKET_TYPE_HANDSHAKE_HELLO && packet_type != PACKET_TYPE_CHALLENGE {
+                return Err(fault!(InvalidPacket, true));
             }
 
             let mut buffer = ArrayVec::<u8, HANDSHAKE_HELLO_CHALLENGE_MAX_SIZE>::new();
             let assembled_packet = if fragment_count > 1 {
-                self.0.unassociated_defrag_cache.lock().unwrap().assemble(
+                let mut next_service_time = self.0.unassociated_defrag_cache.lock().unwrap().assemble(
                     &nonce,
                     remote_address,
                     incoming_fragment.len() - HEADER_SIZE,
                     incoming_fragment_buf,
                     fragment_no,
                     fragment_count,
-                    Crypto::SETTINGS.resend_time as i64,
                     app.time(),
                     &mut fragment_buffer,
                 );
+                if let Some(t) = next_service_time {
+                    next_service_time = ctx.reduce_next_service_time(t);
+                }
                 if fragment_buffer.is_empty() {
-                    return Ok(ReceiveOk::Unassociated);
+                    return Ok((ReceiveOk::Unassociated, next_service_time));
                 } else {
                     for fragment in fragment_buffer.as_ref() {
                         buffer
@@ -549,7 +563,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                 }
 
                 // Process recv zeta layer.
-                received_x1_trans(
+                let reduced = received_x1_trans(
                     &mut app,
                     ctx,
                     hash,
@@ -561,7 +575,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                 )?;
                 log!(app, X1IsAuthSentX2);
 
-                Ok(ReceiveOk::Unassociated)
+                Ok((ReceiveOk::Unassociated, reduced))
             } else if packet_type == PACKET_TYPE_CHALLENGE {
                 log!(app, ReceivedRawChallenge);
                 // Process recv challenge layer.
@@ -574,7 +588,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                     if let Some(Some(session)) = ctx.session_map.read().unwrap().get(&kid_recv).map(|r| r.upgrade()) {
                         respond_to_challenge(ctx, &session, &assembled_packet[KID_SIZE..].try_into().unwrap());
                         log!(app, ChallengeIsAuth(&session));
-                        return Ok(ReceiveOk::Unassociated);
+                        return Ok((ReceiveOk::Unassociated, None));
                     }
                 }
                 Err(fault!(UnknownLocalKeyId, true))
@@ -583,7 +597,11 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
             }
         }
     }
-    /// Send data over the session.
+    /// Encrypt and send data over the session.
+    ///
+    /// If this function returns `Ok(true)`, if you are using the function `Context::service_scheduled`,
+    /// then it should be called as soon as possible. If you are using `Context::service` instead,
+    /// then this returned boolean can safely be ignored.
     ///
     /// * `session` - The session to send to
     /// * `send` - Function to call to send physical packet(s); the buffer passed to `send` is a
@@ -596,10 +614,9 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
         send: impl FnMut(&mut [u8]) -> bool,
         mtu_sized_buffer: &mut [u8],
         data: &[u8],
-    ) -> Result<(), SendError> {
+    ) -> Result<bool, SendError> {
         send_payload(&self.0, session, data, send, mtu_sized_buffer)
     }
-
     /// Perform periodic background service and cleanup tasks.
     ///
     /// This returns the number of milliseconds until it should be called again. The caller should
@@ -611,23 +628,55 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
     pub fn service<App: ApplicationLayer<Crypto = Crypto>, SendFn: FnMut(&mut [u8]) -> bool>(
         &self,
         mut app: App,
+        send_to: impl FnMut(&Arc<Session<Crypto>>) -> Option<(SendFn, usize)>,
+    ) -> i64 {
+        let current_time = app.time();
+        let next_service_time = self.service_inner(app, send_to, current_time);
+        let max_interval = Crypto::SETTINGS.fragment_assembly_timeout.min(Crypto::SETTINGS.rekey_timeout).min(Crypto::SETTINGS.initial_offer_timeout);
+
+        (next_service_time - current_time).min(max_interval as i64)
+    }
+    /// Perform periodic background service and cleanup tasks.
+    ///
+    /// This returns exact timestamp at which this function should be called again, or `i64::MAX` if
+    /// there is currently no reason to call this again. However, future calls to `Context::open`
+    /// and `Context::receive` can and will change this timestamp. Both of these functions return
+    /// an `Option<i64>`. This option can contain an updated, reduced timestamp at which this
+    /// function ought to be called again.
+    ///
+    /// This function should only be used if the caller has direct access to a scheduler that allows
+    /// them to dynamically modify the interval at which this function is repeatedly called.
+    ///
+    /// * `app` - Interface to application using ZSSP
+    /// * `send_to` - Function to get a sender and an MTU to send something over an active session
+    pub fn service_scheduled<App: ApplicationLayer<Crypto = Crypto>, SendFn: FnMut(&mut [u8]) -> bool>(
+        &self,
+        mut app: App,
+        send_to: impl FnMut(&Arc<Session<Crypto>>) -> Option<(SendFn, usize)>,
+    ) -> i64 {
+        let current_time = app.time();
+        self.service_inner(app, send_to, current_time)
+    }
+    fn service_inner<App: ApplicationLayer<Crypto = Crypto>, SendFn: FnMut(&mut [u8]) -> bool>(
+        &self,
+        mut app: App,
         mut send_to: impl FnMut(&Arc<Session<Crypto>>) -> Option<(SendFn, usize)>,
+        current_time: i64,
     ) -> i64 {
         let ctx = &self.0;
         let mut session_queue = ctx.session_queue.lock().unwrap();
-        let current_time = app.time();
-        let mut next_service_time = current_time + Crypto::SETTINGS.fragment_assembly_timeout as i64;
-        // This update system takes heavy advantage of the fact that sessions only need to be updated
+        let mut queue_service_time = i64::MAX;
+        // This update system takes advantage of the fact that sessions only need to be updated
         // either roughly every second or roughly every hour. That big gap allows for minor optimizations.
         // If the gap changes (unlikely) this code may need to be rewritten.
         while let Some((session, Reverse(timer), queue_idx)) = session_queue.peek() {
-            if *timer >= current_time {
-                next_service_time = next_service_time.min(*timer);
+            if *timer > current_time {
+                queue_service_time = queue_service_time.min(*timer);
                 break;
             }
             let session = match session.upgrade() {
                 Some(s) => s,
-                _ => {
+                None => {
                     session_queue.remove(queue_idx);
                     continue;
                 }
@@ -639,21 +688,35 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                 }
             });
             if let Some(next_timer) = result {
-                next_service_time = next_service_time.min(next_timer);
+                queue_service_time = queue_service_time.min(next_timer);
                 session_queue.change_priority(queue_idx, Reverse(next_timer));
             } else {
                 session.expire_inner(Some(ctx), Some(&mut session_queue));
             }
         }
+        // This is the only place where `ctx.next_service_time` can be increased. This only works
+        // correctly because we are holding the `session_queue` lock and we are guaranteed to run
+        // the service code for the other two systems which are not currently locked.
+        // The code above should not update `ctx.next_service_time`.
+        ctx.next_service_time.store(queue_service_time, Ordering::Relaxed);
         drop(session_queue);
 
-        self.0
+        let defrag_service_time = self
+            .0
             .unassociated_defrag_cache
             .lock()
             .unwrap()
-            .check_for_expiry(Crypto::SETTINGS.fragment_assembly_timeout as i64, current_time);
-        self.0.unassociated_handshake_states.service(current_time);
+            .check_for_expiry(current_time);
+        let handshake_service_time = self.0.unassociated_handshake_states.service(current_time);
 
-        next_service_time - current_time
+        let t2 = defrag_service_time.min(handshake_service_time);
+        let t1 = ctx.next_service_time.fetch_min(t2, Ordering::Relaxed);
+
+        t1.min(t2)
+    }
+    /// Returns the exact timestamp at which either `Context::service` or
+    /// `Context::service_scheduled` should be called again.
+    pub fn next_service_time(&self) -> i64 {
+        self.0.next_service_time.load(Ordering::Relaxed)
     }
 }

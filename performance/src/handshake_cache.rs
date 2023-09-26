@@ -12,7 +12,7 @@ pub(crate) struct UnassociatedHandshakeCache<Application: CryptoLayer> {
 /// SoA format
 struct CacheInner<Crypto: CryptoLayer> {
     local_ids: [Option<NonZeroU32>; MAX_UNASSOCIATED_HANDSHAKE_STATES],
-    timeouts: [i64; MAX_UNASSOCIATED_HANDSHAKE_STATES],
+    expiries: [i64; MAX_UNASSOCIATED_HANDSHAKE_STATES],
     handshakes: [Option<Arc<StateB2<Crypto>>>; MAX_UNASSOCIATED_HANDSHAKE_STATES],
 }
 
@@ -25,7 +25,7 @@ impl<Application: CryptoLayer> UnassociatedHandshakeCache<Application> {
             has_pending: AtomicBool::new(false),
             cache: RwLock::new(CacheInner {
                 local_ids: std::array::from_fn(|_| None),
-                timeouts: std::array::from_fn(|_| 0),
+                expiries: std::array::from_fn(|_| 0),
                 handshakes: std::array::from_fn(|_| None),
             }),
         }
@@ -39,55 +39,66 @@ impl<Application: CryptoLayer> UnassociatedHandshakeCache<Application> {
         }
         None
     }
-    pub(crate) fn insert(&self, local_id: NonZeroU32, state: Arc<StateB2<Application>>, current_time: i64) {
+    /// Returns the timestamp at which `service` should be called again, or `None` if there is no update.
+    pub(crate) fn insert(
+        &self,
+        local_id: NonZeroU32,
+        state: Arc<StateB2<Application>>,
+        current_time: i64,
+    ) -> Option<i64> {
         let mut cache = self.cache.write().unwrap();
         let mut idx = 0;
         for i in 0..cache.local_ids.len() {
-            if cache.local_ids[i].is_none() || cache.timeouts[i] < current_time {
+            if cache.local_ids[i].is_none() || cache.expiries[i] <= current_time {
                 idx = i;
                 break;
             } else if cache.local_ids[i] == Some(local_id) {
-                return;
+                return None;
             }
         }
+        let expiry = current_time + Application::SETTINGS.fragment_assembly_timeout as i64;
         cache.local_ids[idx] = Some(local_id);
-        cache.timeouts[idx] = current_time + Application::SETTINGS.fragment_assembly_timeout as i64;
+        cache.expiries[idx] = expiry;
         cache.handshakes[idx] = Some(state);
         self.has_pending.store(true, Ordering::Release);
+        return Some(expiry);
     }
     pub(crate) fn remove(&self, local_id: NonZeroU32) -> bool {
         let mut cache = self.cache.write().unwrap();
         for (i, id) in cache.local_ids.iter().enumerate() {
             if *id == Some(local_id) {
                 cache.local_ids[i] = None;
-                cache.timeouts[i] = 0;
+                cache.expiries[i] = 0;
                 cache.handshakes[i] = None;
                 return true;
             }
         }
         false
     }
-    pub(crate) fn service(&self, current_time: i64) {
+    /// Returns the timestamp at which this function should be called again.
+    pub(crate) fn service(&self, current_time: i64) -> i64 {
         // Only check for expiration if we have a pending packet.
         // This check is allowed to have false positives for simplicity's sake.
+        let mut next_service_time = i64::MAX;
         if self.has_pending.swap(false, Ordering::Acquire) {
             // Check for packet expiration
             let mut cache = self.cache.write().unwrap();
-            let mut has_pending = false;
             for i in 0..cache.local_ids.len() {
                 if cache.local_ids[i].is_some() {
-                    if cache.timeouts[i] < current_time {
+                    let expiry = cache.expiries[i];
+                    if expiry <= current_time {
                         cache.local_ids[i] = None;
-                        cache.timeouts[i] = 0;
+                        cache.expiries[i] = 0;
                         cache.handshakes[i] = None;
                     } else {
-                        has_pending = true;
+                        next_service_time = next_service_time.min(expiry);
                     }
                 }
             }
-            if has_pending {
+            if next_service_time < i64::MAX {
                 self.has_pending.store(true, Ordering::Release);
             }
         }
+        next_service_time
     }
 }

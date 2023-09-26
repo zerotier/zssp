@@ -5,6 +5,7 @@
  * (c) ZeroTier, Inc.
  * https://www.zerotier.com/
  */
+//#![warn(missing_docs, rust_2018_idioms)]
 pub mod crypto;
 pub mod crypto_impl;
 

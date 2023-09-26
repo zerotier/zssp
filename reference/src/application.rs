@@ -141,9 +141,6 @@ pub trait CryptoLayer: Sized {
 pub trait ApplicationLayer: Sized {
     /// Specifies which concrete set of cryptography types will be used by this application.
     type Crypto: CryptoLayer;
-    /// A user-defined error returned when the `ApplicationLayer` fails to access persistent storage
-    /// for a peer's ratchet states.
-    type StorageError: std::error::Error;
 
     /// Should return the current time in milliseconds. Does not have to be monotonic, nor synced
     /// with remote peers (although both of these properties would help reliability slightly).
@@ -198,7 +195,7 @@ pub trait ApplicationLayer: Sized {
     fn restore_by_fingerprint(
         &mut self,
         ratchet_fingerprint: &[u8; RATCHET_SIZE],
-    ) -> Result<Option<RatchetState>, Self::StorageError>;
+    ) -> Result<Option<RatchetState>, std::io::Error>;
     /// Lookup the specific ratchet states based on the identity of the peer being communicated with.
     /// This function will be called whenever Alice attempts to open a session, or Bob attempts
     /// to verify Alice's identity.
@@ -217,7 +214,7 @@ pub trait ApplicationLayer: Sized {
         &mut self,
         remote_static_key: &<Self::Crypto as CryptoLayer>::PublicKey,
         session_data: &<Self::Crypto as CryptoLayer>::SessionData,
-    ) -> Result<Option<RatchetStates>, Self::StorageError>;
+    ) -> Result<Option<RatchetStates>, std::io::Error>;
     /// Atomically commit the update specified by `update_data` to storage, or return an error if
     /// the update could not be made.
     /// The implementor is free to choose how to apply these updates to storage.
@@ -239,7 +236,7 @@ pub trait ApplicationLayer: Sized {
         remote_static_key: &<Self::Crypto as CryptoLayer>::PublicKey,
         session_data: &<Self::Crypto as CryptoLayer>::SessionData,
         update_data: RatchetUpdate<'_>,
-    ) -> Result<(), Self::StorageError>;
+    ) -> Result<(), std::io::Error>;
 
     /// Receives a stream of events that occur during an execution of ZSSP.
     /// These are provided for debugging, logging or metrics purposes, and must be used for

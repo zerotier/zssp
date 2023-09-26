@@ -13,9 +13,9 @@ use crate::proto::*;
 /// Corresponds to the Ratchet Key and Ratchet Fingerprint described in Section 3.
 #[derive(Clone, Eq)]
 pub struct RatchetState {
-    pub key: Zeroizing<[u8; RATCHET_SIZE]>,
-    pub fingerprint: Option<Zeroizing<[u8; RATCHET_SIZE]>>,
-    pub chain_len: u64,
+    pub(crate) key: Zeroizing<[u8; RATCHET_SIZE]>,
+    pub(crate) fingerprint: Option<Zeroizing<[u8; RATCHET_SIZE]>>,
+    pub(crate) chain_len: u64,
 }
 impl PartialEq for RatchetState {
     fn eq(&self, other: &Self) -> bool {
@@ -35,9 +35,14 @@ impl std::hash::Hash for RatchetState {
     }
 }
 impl RatchetState {
+    /// Creates a new ratchet state from the given ratchet key, ratchet fingerprint and chain length.
     pub fn new(key: Zeroizing<[u8; RATCHET_SIZE]>, fingerprint: Zeroizing<[u8; RATCHET_SIZE]>, chain_len: u64) -> Self {
         RatchetState { key, fingerprint: Some(fingerprint), chain_len }
     }
+    /// Creates a new ratchet state from the given ratchet key, ratchet fingerprint and chain length.
+    ///
+    /// The caller should make sure any copies of these values are deleted from memory once they are
+    /// no longer needed.
     pub fn new_raw(key: [u8; RATCHET_SIZE], fingerprint: [u8; RATCHET_SIZE], chain_len: u64) -> Self {
         RatchetState {
             key: Zeroizing::new(key),
@@ -45,6 +50,28 @@ impl RatchetState {
             chain_len,
         }
     }
+    /// The ratchet key for this ratchet state. This is directly mixed into the master secret of a
+    /// session and so is very sensitive. All operations upon a ratchet key must be implemented
+    /// in constant time. The user should prefer to do nothing with the ratchet key besides copying
+    /// it to or from a storage device.
+    ///
+    /// If `fingerprint` returns `None` then this is the "empty" ratchet state and the key will be
+    /// all zeros.
+    pub fn key(&self) -> &[u8; RATCHET_SIZE] {
+        &self.key
+    }
+    /// Ratchet keys and fingerprints are "chained together", where each set is derived from the
+    /// previous set.
+    ///
+    /// This function outputs the total length of that chain, as in the total number of previous
+    /// ratchet states that this ratchet state was derived from.
+    pub fn chain_len(&self) -> u64 {
+        self.chain_len
+    }
+    /// Creates a new "empty" ratchet state, where the ratchet fingerprint is the
+    /// empty string, the ratchet key is all zeros, and the chain length is 0.
+    ///
+    /// This value is the default value of `RatchetState`.
     pub fn empty() -> Self {
         RatchetState {
             key: Zeroizing::new([0u8; RATCHET_SIZE]),
@@ -52,6 +79,9 @@ impl RatchetState {
             chain_len: 0,
         }
     }
+    /// Creates a new ratchet state derived from a one-time-password. If both sides of a session use
+    /// the same one-time-password then they can use this ratchet state to connect with each other
+    /// for the first time.
     pub fn new_from_otp<Hmac: Sha512Hmac>(otp: &[u8]) -> RatchetState {
         let mut buffer = ArrayVec::<u8, 23>::new();
         buffer.push(1);
@@ -69,12 +99,25 @@ impl RatchetState {
 
         Self::new(rk, rf, 1)
     }
+    /// Returns true if this is the "empty" ratchet state, where the ratchet fingerprint is the
+    /// empty string, the ratchet key is all zeros, and the chain length is 0.
     pub fn is_empty(&self) -> bool {
         self.fingerprint.is_none()
     }
+    /// Checks if the fingerprint of this ratchet state equals the fingerprint contained in argument
+    /// `rf`. Uses constant time equality.
     pub fn fingerprint_eq(&self, rf: &[u8; RATCHET_SIZE]) -> bool {
         self.fingerprint.as_ref().map_or(false, |rf0| secure_eq(rf0, rf))
     }
+    /// The ratchet fingerprint for this ratchet state.
+    ///
+    /// If this returns `None` then the ratchet fingerprint is the empty string.
+    /// This is the "empty" ratchet state and the key will be all zeros.
+    ///
+    /// The ratchet fingerprint value is sensitive and should be hidden,
+    /// but the security of ZSSP can survive having this value leaked.
+    /// Operations on a ratchet fingerprint should be implemented in constant time,
+    /// but it is ok if they are not.
     pub fn fingerprint(&self) -> Option<&[u8; RATCHET_SIZE]> {
         self.fingerprint.as_deref()
     }
@@ -85,23 +128,38 @@ impl Default for RatchetState {
     }
 }
 
-/// A pair of ratchet states.
+/// An ordered pair of two ratchet states.
 /// It is expected that an instance of this object will be saved to a storage device per-peer,
 /// and be restore-able via the `ApplicationLayer` trait.
 ///
 /// This corresponds to the possible values of abstract variables `rf` and `rk` found in Section 4.3.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct RatchetStates {
+    /// The first ratchet state from the pair.
     pub state1: RatchetState,
+    /// The second ratchet state from the pair. It can, and usually will be `None`.
     pub state2: Option<RatchetState>,
 }
 impl RatchetStates {
+    /// Creates a new pair of ratchet states. The order of the arguments matters, and it should be
+    /// the same order that was originally given by an instance of the `RatchetUpdate` struct.
     pub fn new(state1: RatchetState, state2: Option<RatchetState>) -> Self {
         Self { state1, state2 }
     }
+    /// Creates a new initial pair of ratchet states, where the first ratchet state is the empty
+    /// ratchet state and the second is `None`.
+    ///
+    /// This value is the default value of `RatchetStates`.
     pub fn new_initial_states() -> Self {
         Self { state1: RatchetState::empty(), state2: None }
     }
+    /// Creates a new initial pair of ratchet states from a one-time password.
+    /// The first ratchet state will be derived from this password, while the second will be `None`.
+    ///
+    /// If both sides of a session use the same one-time-password then they can use this pair to
+    /// connect with each other for the first time. This pair can be generated with this function,
+    /// saved to persistent storage, and eventually restored by the `ApplicationLayer` when we
+    /// attempt to form a session with the correct peer.
     pub fn new_otp_states<Hmac: Sha512Hmac>(otp: &[u8]) -> Self {
         Self {
             state1: RatchetState::new_from_otp::<Hmac>(otp),
@@ -173,9 +231,10 @@ impl<'a> RatchetUpdate<'a> {
             None
         }
     }
-    /// If this updated specifies to delete two ratchet fingerprints, this function will return the second one.
-    /// `deleted_fingerprint1` will return the first one.
-    /// The returned ratchet fingerprint will always be the ratchet fingerprint of field `deleted_state2`.
+    /// If this updated specifies to delete two ratchet fingerprints, this function will return the
+    /// second one. `deleted_fingerprint1` will return the first one.
+    /// The returned ratchet fingerprint will always be the ratchet fingerprint of field
+    /// `deleted_state2`.
     ///
     /// It is exceptionally rare that there will be more than one ratchet fingerprint to be deleted.
     /// Care should be taken to make sure that this update will still be correctly committed in the

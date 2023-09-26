@@ -7,7 +7,6 @@
 */
 
 use std::cell::RefCell;
-use std::convert::Infallible;
 use std::ops::DerefMut;
 use std::sync::Arc;
 use std::time::Instant;
@@ -47,7 +46,6 @@ impl CryptoLayer for MyApp {
 #[allow(unused)]
 impl ApplicationLayer for &mut MyApp {
     type Crypto = MyApp;
-    type StorageError = Infallible;
 
     fn hello_requires_recognized_ratchet(&mut self) -> bool {
         false
@@ -69,7 +67,7 @@ impl ApplicationLayer for &mut MyApp {
     fn restore_by_fingerprint(
         &mut self,
         ratchet_fingerprint: &[u8; RATCHET_SIZE],
-    ) -> Result<Option<RatchetState>, Infallible> {
+    ) -> Result<Option<RatchetState>, std::io::Error> {
         Ok(None)
     }
 
@@ -77,7 +75,7 @@ impl ApplicationLayer for &mut MyApp {
         &mut self,
         remote_static_key: &P384CratePublicKey,
         session_data: &(),
-    ) -> Result<Option<RatchetStates>, Infallible> {
+    ) -> Result<Option<RatchetStates>, std::io::Error> {
         Ok(None)
     }
 
@@ -86,7 +84,7 @@ impl ApplicationLayer for &mut MyApp {
         remote_static_key: &P384CratePublicKey,
         session_data: &(),
         update_data: RatchetUpdate<'_>,
-    ) -> Result<(), Infallible> {
+    ) -> Result<(), std::io::Error> {
         Ok(())
     }
 
