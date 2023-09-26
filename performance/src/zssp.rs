@@ -666,7 +666,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
         let ctx = &self.0;
         let mut session_queue = ctx.session_queue.lock().unwrap();
         let mut queue_service_time = i64::MAX;
-        // This update system takes heavy advantage of the fact that sessions only need to be updated
+        // This update system takes advantage of the fact that sessions only need to be updated
         // either roughly every second or roughly every hour. That big gap allows for minor optimizations.
         // If the gap changes (unlikely) this code may need to be rewritten.
         while let Some((session, Reverse(timer), queue_idx)) = session_queue.peek() {
@@ -676,7 +676,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
             }
             let session = match session.upgrade() {
                 Some(s) => s,
-                _ => {
+                None => {
                     session_queue.remove(queue_idx);
                     continue;
                 }
@@ -697,6 +697,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
         // This is the only place where `ctx.next_service_time` can be increased. This only works
         // correctly because we are holding the `session_queue` lock and we are guaranteed to run
         // the service code for the other two systems which are not currently locked.
+        // The code above should not update `ctx.next_service_time`.
         ctx.next_service_time.store(queue_service_time, Ordering::Relaxed);
         drop(session_queue);
 
