@@ -16,7 +16,6 @@ use zssp::application::{
 use zssp::crypto::P384KeyPair;
 use zssp::crypto_impl::*;
 use zssp::result::ReceiveError;
-use zssp::Session;
 
 const TEST_MTU: usize = 1500;
 
@@ -25,6 +24,8 @@ struct TestApplication {
     name: &'static str,
     ratchets: Mutex<Ratchets>,
 }
+
+type Session = zssp::Session<TestApplication>;
 
 struct Ratchets {
     rf_map: HashMap<[u8; RATCHET_SIZE], RatchetState>,
@@ -64,9 +65,7 @@ impl CryptoLayer for TestApplication {
     type IncomingPacketBuffer = Vec<u8>;
 }
 #[allow(unused)]
-impl ApplicationLayer for &TestApplication {
-    type Crypto = TestApplication;
-
+impl ApplicationLayer<TestApplication> for &TestApplication {
     fn incoming_session(&mut self) -> IncomingSessionAction {
         IncomingSessionAction::Challenge
     }
@@ -75,7 +74,7 @@ impl ApplicationLayer for &TestApplication {
         false
     }
 
-    fn initiator_disallows_downgrade(&mut self, session: &Arc<Session<TestApplication>>) -> bool {
+    fn initiator_disallows_downgrade(&mut self, session: &Arc<Session>) -> bool {
         true
     }
 
@@ -162,7 +161,7 @@ fn alice_main(
             up = false;
             let result = context.open(
                 alice_app,
-                |b| alice_out.send(b.to_vec()).is_ok(),
+                |b: &mut [u8]| alice_out.send(b.to_vec()).is_ok(),
                 TEST_MTU,
                 bob_pubkey.clone(),
                 0,
@@ -181,9 +180,9 @@ fn alice_main(
                     let mut output_data = Vec::new();
                     match context.receive(
                         alice_app,
-                        |b| alice_out.send(b.to_vec()).is_ok(),
+                        |b: &mut [u8]| alice_out.send(b.to_vec()).is_ok(),
                         TEST_MTU,
-                        |_| Some((|b: &mut [u8]| alice_out.send(b.to_vec()).is_ok(), TEST_MTU)),
+                        |_: &Arc<Session>| Some((|b: &mut [u8]| alice_out.send(b.to_vec()).is_ok(), TEST_MTU)),
                         &0,
                         pkt,
                         &mut output_data,
@@ -191,7 +190,7 @@ fn alice_main(
                         Ok((Unassociated, _)) => {
                             //println!("[alice] ok");
                         }
-                        Ok((Session(_, event), _)) => match event {
+                        Ok((SessionEvent(_, event), _)) => match event {
                             Established => {
                                 up = true;
                             }
@@ -221,7 +220,7 @@ fn alice_main(
             context
                 .send(
                     alice_session.as_ref().unwrap(),
-                    |b| alice_out.send(b.to_vec()).is_ok(),
+                    |b: &mut [u8]| alice_out.send(b.to_vec()).is_ok(),
                     &mut [0u8; TEST_MTU],
                     &test_data[..1400 + ((OsRng.next_u64() as usize) % (test_data.len() - 1400))],
                 )
@@ -236,7 +235,7 @@ fn alice_main(
 
         if current_time >= next_service {
             next_service = current_time
-                + context.service(alice_app, |_| {
+                + context.service(alice_app, |_: &Arc<Session>| {
                     Some((|b: &mut [u8]| alice_out.send(b.to_vec()).is_ok(), TEST_MTU))
                 });
         }
@@ -272,15 +271,15 @@ fn bob_main(
                 let mut output_data = Vec::new();
                 match context.receive(
                     bob_app,
-                    |b| bob_out.send(b.to_vec()).is_ok(),
+                    |b: &mut [u8]| bob_out.send(b.to_vec()).is_ok(),
                     TEST_MTU,
-                    |_| Some((|b: &mut [u8]| bob_out.send(b.to_vec()).is_ok(), TEST_MTU)),
+                    |_: &Arc<Session>| Some((|b: &mut [u8]| bob_out.send(b.to_vec()).is_ok(), TEST_MTU)),
                     &0,
                     pkt,
                     &mut output_data,
                 ) {
                     Ok((Unassociated, _)) => {}
-                    Ok((Session(s, event), _)) => match event {
+                    Ok((SessionEvent(s, event), _)) => match event {
                         NewSession | NewDowngradedSession => {
                             println!("[bob] new session, took {}s", current_time as f32 / 1000.0);
                             let _ = bob_session.replace(s);
@@ -292,7 +291,7 @@ fn bob_main(
                             context
                                 .send(
                                     &s,
-                                    |b| bob_out.send(b.to_vec()).is_ok(),
+                                    |b: &mut [u8]| bob_out.send(b.to_vec()).is_ok(),
                                     &mut [0u8; TEST_MTU],
                                     &output_data,
                                 )
@@ -325,7 +324,7 @@ fn bob_main(
 
         if current_time >= next_service {
             next_service = current_time
-                + context.service(bob_app, |_| {
+                + context.service(bob_app, |_: &Arc<Session>| {
                     Some((|b: &mut [u8]| bob_out.send(b.to_vec()).is_ok(), TEST_MTU))
                 });
         }

@@ -13,7 +13,6 @@ use zssp::application::{
 use zssp::crypto::P384KeyPair;
 use zssp::crypto_impl::*;
 use zssp::result::ReceiveError;
-use zssp::Session;
 
 const TEST_MTU: usize = 1500;
 
@@ -56,10 +55,11 @@ impl DefaultCrypto for TestApplication {
     type SessionData = ();
     type IncomingPacketBuffer = PooledVec;
 }
-#[allow(unused)]
-impl ApplicationLayer for &TestApplication {
-    type Crypto = TestApplication;
 
+type Session = zssp::Session<TestApplication>;
+
+#[allow(unused)]
+impl ApplicationLayer<TestApplication> for &TestApplication {
     fn incoming_session(&mut self) -> IncomingSessionAction {
         IncomingSessionAction::Allow
     }
@@ -68,7 +68,7 @@ impl ApplicationLayer for &TestApplication {
         false
     }
 
-    fn initiator_disallows_downgrade(&mut self, session: &Arc<Session<TestApplication>>) -> bool {
+    fn initiator_disallows_downgrade(&mut self, session: &Arc<Session>) -> bool {
         false
     }
 
@@ -113,6 +113,7 @@ impl ApplicationLayer for &TestApplication {
     }
 }
 
+
 #[allow(unused)]
 fn alice_main(
     run: &AtomicBool,
@@ -131,7 +132,7 @@ fn alice_main(
 
     let result = context.open(
         alice_app,
-        |b| alice_out.send(alloc(b)).is_ok(),
+        |b: &mut [u8]| alice_out.send(alloc(b)).is_ok(),
         TEST_MTU,
         bob_pubkey.clone(),
         (),
@@ -149,9 +150,9 @@ fn alice_main(
                 output_data.clear();
                 match context.receive(
                     alice_app,
-                    |b| alice_out.send(alloc(b)).is_ok(),
+                    |b: &mut [u8]| alice_out.send(alloc(b)).is_ok(),
                     TEST_MTU,
-                    |_| Some((|b: &mut [u8]| alice_out.send(alloc(b)).is_ok(), TEST_MTU)),
+                    |_: &Arc<zssp::Session<TestApplication>>| Some((|b: &mut [u8]| alice_out.send(alloc(b)).is_ok(), TEST_MTU)),
                     &0,
                     pkt,
                     &mut output_data,
@@ -159,7 +160,7 @@ fn alice_main(
                     Ok((Unassociated, _)) => {
                         //println!("[alice] ok");
                     }
-                    Ok((Session(_, event), _)) => match event {
+                    Ok((SessionEvent(_, event), _)) => match event {
                         Established => {
                             up = true;
                         }
@@ -186,7 +187,7 @@ fn alice_main(
             context
                 .send(
                     alice_session.as_ref().unwrap(),
-                    |b| alice_out.send(alloc(b)).is_ok(),
+                    |b: &mut [u8]| alice_out.send(alloc(b)).is_ok(),
                     &mut [0u8; TEST_MTU],
                     &test_data[..1400 + ((OsRng.next_u64() as usize) % (test_data.len() - 1400))],
                 )
@@ -197,7 +198,7 @@ fn alice_main(
 
         if current_time >= next_service {
             next_service = current_time
-                + context.service(alice_app, |_| {
+                + context.service(alice_app, |_: &Arc<Session>| {
                     Some((|b: &mut [u8]| alice_out.send(alloc(b)).is_ok(), TEST_MTU))
                 });
         }
@@ -231,15 +232,15 @@ fn bob_main(
             output_data.clear();
             match context.receive(
                 bob_app,
-                |b| bob_out.send(alloc(b)).is_ok(),
+                |b: &mut [u8]| bob_out.send(alloc(b)).is_ok(),
                 TEST_MTU,
-                |_| Some((|b: &mut [u8]| bob_out.send(alloc(b)).is_ok(), TEST_MTU)),
+                |_: &Arc<Session>| Some((|b: &mut [u8]| bob_out.send(alloc(b)).is_ok(), TEST_MTU)),
                 &0,
                 pkt,
                 &mut output_data,
             ) {
                 Ok((Unassociated, _)) => {}
-                Ok((Session(s, event), _)) => match event {
+                Ok((SessionEvent(s, event), _)) => match event {
                     NewSession | NewDowngradedSession => {
                         println!("[bob] new session, took {}s", current_time as f32 / 1000.0);
                         let _ = bob_session.replace(s);
@@ -251,7 +252,7 @@ fn bob_main(
                         context
                             .send(
                                 &s,
-                                |b| bob_out.send(alloc(b)).is_ok(),
+                                |b: &mut [u8]| bob_out.send(alloc(b)).is_ok(),
                                 &mut [0u8; TEST_MTU],
                                 &output_data,
                             )
@@ -281,7 +282,7 @@ fn bob_main(
 
         if current_time >= next_service {
             next_service = current_time
-                + context.service(bob_app, |_| {
+                + context.service(bob_app, |_: &Arc<Session>| {
                     Some((|b: &mut [u8]| bob_out.send(alloc(b)).is_ok(), TEST_MTU))
                 });
         }

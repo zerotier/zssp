@@ -142,16 +142,20 @@ pub trait CryptoLayer: Sized {
     type IncomingPacketBuffer: AsRef<[u8]> + AsMut<[u8]>;
 }
 
-pub trait ApplicationLayer: Sized {
-    /// Specifies which concrete set of cryptography types will be used by this application.
-    type Crypto: CryptoLayer;
-
+pub trait ApplicationLayer<Crypto: CryptoLayer>: Sized {
     /// Should return the current time in milliseconds. Does not have to be monotonic, nor synced
     /// with remote peers (although both of these properties would help reliability slightly).
     /// Used to determine if any current handshakes should be resent or timed-out, or if a session
     /// should rekey.
     fn time(&mut self) -> i64;
 
+    /// This function will be called immediately after an anonymous Hello packet is received by Bob.
+    ///
+    /// Since the remote peer is anonymous at this stage of the handshake, this function is not
+    /// good for performing authentication and access control. Instead it should be used to mitigate
+    /// DDOS attacks by configuring it to return `Challenge` or `Drop` in response to an attacker's
+    /// Hello packet. If DDOS mitigation is not needed, this function can just be a single line that
+    /// returns `Allow`.
     fn incoming_session(&mut self) -> IncomingSessionAction;
     /// This function will be called whenever Alice's initial Hello packet contains the empty ratchet
     /// fingerprint. Brand new peers will always connect to Bob with the empty ratchet, but from
@@ -178,7 +182,7 @@ pub trait ApplicationLayer: Sized {
     /// least one party is misconfigured and got their ratchet keys corrupted or lost, or Bob has
     /// been compromised and is being impersonated. An attacker must at least have Bob's private
     /// static key to be able to ask Alice to downgrade.
-    fn initiator_disallows_downgrade(&mut self, session: &Arc<Session<Self::Crypto>>) -> bool;
+    fn initiator_disallows_downgrade(&mut self, session: &Arc<Session<Crypto>>) -> bool;
     /// Function to accept sessions after final negotiation.
     /// The second argument is the identity that the remote peer sent us. The application
     /// must verify this identity is associated with the remote peer's static key.
@@ -187,9 +191,9 @@ pub trait ApplicationLayer: Sized {
     /// before returning.
     fn check_accept_session(
         &mut self,
-        remote_static_key: &<Self::Crypto as CryptoLayer>::PublicKey,
+        remote_static_key: &Crypto::PublicKey,
         identity: &[u8],
-    ) -> AcceptAction<Self::Crypto>;
+    ) -> AcceptAction<Crypto>;
 
     /// Lookup a specific ratchet state based on its ratchet fingerprint.
     /// This function will be called whenever Alice attempts to connect to us with a non-empty
@@ -217,8 +221,8 @@ pub trait ApplicationLayer: Sized {
     /// function `ApplicationLayer::check_accept_session`.
     fn restore_by_identity(
         &mut self,
-        remote_static_key: &<Self::Crypto as CryptoLayer>::PublicKey,
-        session_data: &<Self::Crypto as CryptoLayer>::SessionData,
+        remote_static_key: &Crypto::PublicKey,
+        session_data: &Crypto::SessionData,
     ) -> Result<Option<RatchetStates>, std::io::Error>;
     /// Atomically commit the update specified by `update_data` to storage, or return an error if
     /// the update could not be made.
@@ -238,8 +242,8 @@ pub trait ApplicationLayer: Sized {
     /// Otherwise, when we restart, we will not be allowed to reconnect.
     fn save_ratchet_state(
         &mut self,
-        remote_static_key: &<Self::Crypto as CryptoLayer>::PublicKey,
-        session_data: &<Self::Crypto as CryptoLayer>::SessionData,
+        remote_static_key: &Crypto::PublicKey,
+        session_data: &Crypto::SessionData,
         update_data: RatchetUpdate<'_>,
     ) -> Result<(), std::io::Error>;
 
@@ -248,13 +252,26 @@ pub trait ApplicationLayer: Sized {
     /// nothing else. Do not base protocol-level decisions upon the events passed to this function.
     #[cfg(feature = "logging")]
     #[allow(unused)]
-    fn event_log(&mut self, event: crate::LogEvent<'_, Self::Crypto>) {}
+    fn event_log(&mut self, event: crate::LogEvent<'_, Crypto>) {}
 }
 
+/// Possible responses that can be made to Hello packets from an anonymous peer.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum IncomingSessionAction {
+    /// Allow the anonymous peer to continue connecting.
+    ///
+    /// In a later step, once forward secrecy is established, the peer will be forced to reveal
+    /// their identity.
     Allow,
+    /// Challenge the anonymous peer to complete a proof of work and IP/Address ownership before
+    /// they are allowed to consume our CPU resources to process their Hello packet.
+    ///
+    /// The challenge will only be effective if `Challenge` is consistently returned in response to
+    /// new Hello packets from the same peer or set of peers.
+    ///
+    /// If they complete the challenge they will be allowed to continue connecting.
     Challenge,
+    /// Drop the anonymous peer's Hello packet, preventing them from connecting.
     Drop,
 }
 
@@ -275,4 +292,44 @@ pub struct AcceptAction<Crypto: CryptoLayer> {
     /// This field will not be used if `session_data` is `Some` and the remote peer passes all other
     /// authentication checks.
     pub responder_silently_rejects: bool,
+}
+
+/// A trait to genericize the process of repeatedly sending packet fragments on some socket or
+/// network interface.
+///
+/// Is implemented by `FnMut(&mut [u8]) -> bool` closures.
+pub trait Sender {
+    /// Send the given fragment on this interface and then return whether or not an error occured.
+    ///
+    /// If `true` is returned then sending is cancelled and this instance of `Sender` is dropped.
+    fn send_frag<'a>(&'a mut self, frag: &mut [u8]) -> bool;
+}
+
+/// A trait to genericize the process of borrowing the resources necessary to repeatedly
+/// send packet fragments on some socket or network interface.
+///
+/// Is implemented by `FnMut(&Arc<Session<Crypto>>) -> Option<(Sender, usize)>` closures.
+pub trait SendTo<Crypto: CryptoLayer, S: Sender> {
+    /// Attempt to process and borrow the resources necessary to repeatedly send fragments of a
+    /// packet to the given session.
+    ///
+    /// If no error occurs this function should return a `Sender` instance configured to send to the
+    /// remote peer specified by `session`. It should also return the MTU of this link. This MTU can
+    /// be `usize::MAX`, in which case the packet is not fragmented and the `Sender` instance is
+    /// only called once.
+    ///
+    /// If `None` is returned then sending to this session is cancelled.
+    fn init_send<'a>(&'a mut self, session: &'a Arc<Session<Crypto>>) -> Option<(S, usize)>;
+}
+
+impl<F: FnMut(&mut [u8]) -> bool> Sender for F {
+    fn send_frag<'a>(&'a mut self, frag: &mut [u8]) -> bool {
+        self(frag)
+    }
+}
+
+impl<Crypto: CryptoLayer, F: FnMut(&Arc<Session<Crypto>>) -> Option<(S, usize)>, S: Sender> SendTo<Crypto, S> for F {
+    fn init_send<'a>(&'a mut self, session: &'a Arc<Session<Crypto>>) -> Option<(S, usize)> {
+        self(session)
+    }
 }

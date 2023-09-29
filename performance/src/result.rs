@@ -191,7 +191,7 @@ pub enum ReceiveOk<Crypto: CryptoLayer> {
     /// or if it was a control packet that does not go through full Noise authentication.
     Unassociated,
     /// Packet was authentic and belongs to this specific session.
-    Session(Arc<Session<Crypto>>, SessionEvent),
+    SessionEvent(Arc<Session<Crypto>>, SessionEvent),
 }
 /// Something that can occur to an associated session when a packet is received successfully,
 /// including receiving a payload of decrypted, authenticated data.

@@ -82,7 +82,7 @@ fn parse_fragment_header(incoming_fragment: &[u8]) -> Result<(usize, usize, [u8;
 ///
 /// Corresponds to the fragmentation algorithm described in Section 6.
 fn send_with_fragmentation<PrpEnc: Aes256Enc>(
-    mut send: impl FnMut(&mut [u8]) -> bool,
+    mut send: impl Sender,
     mtu: usize,
     headered_packet: &mut [u8],
     hk_send: Option<&PrpEnc>,
@@ -108,7 +108,7 @@ fn send_with_fragmentation<PrpEnc: Aes256Enc>(
         if let Some(hk_send) = hk_send {
             hk_send.encrypt_in_place((&mut fragment[HEADER_AUTH_START..HEADER_AUTH_END]).try_into().unwrap());
         }
-        if !send(fragment) {
+        if !send.send_frag(fragment) {
             return false;
         }
         i = j;
@@ -151,10 +151,10 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
     ///   object
     /// * `identity` - Payload to be sent to Bob that contains the information necessary
     ///   for the upper protocol to authenticate and approve of Alice's identity.
-    pub fn open<App: ApplicationLayer<Crypto = Crypto>>(
+    pub fn open<App: ApplicationLayer<Crypto>>(
         &self,
         app: App,
-        send: impl FnMut(&mut [u8]) -> bool,
+        send: impl Sender,
         mut mtu: usize,
         static_remote_key: Crypto::PublicKey,
         session_data: Crypto::SessionData,
@@ -190,12 +190,12 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
     /// * `remote_address` - Whatever the remote address is, as long as you can Hash it
     /// * `incoming_fragment_buf` - Buffer containing incoming wire packet (the context takes ownership)
     /// * `output_buffer` - Buffer to receive decrypted and authenticated object data
-    pub fn receive<'a, App: ApplicationLayer<Crypto = Crypto>, SendFn: FnMut(&mut [u8]) -> bool>(
+    pub fn receive<'a, App: ApplicationLayer<Crypto>, S: Sender>(
         &self,
         mut app: App,
-        mut send_unassociated_reply: impl FnMut(&mut [u8]) -> bool,
+        mut send_unassociated_reply: impl Sender,
         mut send_unassociated_mtu: usize,
-        mut send_to: impl FnMut(&Arc<Session<Crypto>>) -> Option<(SendFn, usize)>,
+        mut send_to: impl SendTo<Crypto, S>,
         remote_address: &impl Hash,
         mut incoming_fragment_buf: Crypto::IncomingPacketBuffer,
         output_buffer: impl Write,
@@ -317,9 +317,9 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                     };
 
                     let send_associated = |packet: &mut [u8], hk_send: Option<&Crypto::PrpEnc>| {
-                        if let Some((send_fragment, mut mtu)) = send_to(&session) {
+                        if let Some((sender, mut mtu)) = send_to.init_send(&session) {
                             mtu = mtu.max(MIN_TRANSPORT_MTU);
-                            send_with_fragmentation(send_fragment, mtu, packet, hk_send);
+                            send_with_fragmentation(sender, mtu, packet, hk_send);
                         }
                     };
                     match packet_type {
@@ -403,7 +403,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                         _ => return Err(fault!(InvalidPacket, true)), // This is unreachable.
                     }
                 };
-                Ok((ReceiveOk::Session(session, ret.0), ret.1))
+                Ok((ReceiveOk::SessionEvent(session, ret.0), ret.1))
             } else {
                 // Check for and handle PACKET_TYPE_ALICE_NOISE_XK_PATTERN_3
                 let zeta = self.0.unassociated_handshake_states.get(kid_recv);
@@ -463,7 +463,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                         })?;
                     log!(app, X3IsAuthSentKeyConfirm(&session));
                     Ok((
-                        ReceiveOk::Session(
+                        ReceiveOk::SessionEvent(
                             session,
                             if should_warn_missing_ratchet {
                                 SessionEvent::NewDowngradedSession
@@ -552,7 +552,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                                 .copy_from_slice(&nonce[..PACKET_NONCE_SIZE]);
                             set_header(&mut challenge_packet, 0, &nonce);
 
-                            send_unassociated_reply(&mut challenge_packet);
+                            send_unassociated_reply.send_frag(&mut challenge_packet);
                             // If we issue a challenge the first hello packet will always fail.
                             return Err(fault!(FailedAuth, false));
                         } else {
@@ -611,7 +611,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
     pub fn send(
         &self,
         session: &Session<Crypto>,
-        send: impl FnMut(&mut [u8]) -> bool,
+        send: impl Sender,
         mtu_sized_buffer: &mut [u8],
         data: &[u8],
     ) -> Result<bool, SendError> {
@@ -625,10 +625,10 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
     ///
     /// * `app` - Interface to application using ZSSP
     /// * `send_to` - Function to get a sender and an MTU to send something over an active session
-    pub fn service<App: ApplicationLayer<Crypto = Crypto>, SendFn: FnMut(&mut [u8]) -> bool>(
+    pub fn service<App: ApplicationLayer<Crypto>, S: Sender>(
         &self,
         mut app: App,
-        send_to: impl FnMut(&Arc<Session<Crypto>>) -> Option<(SendFn, usize)>,
+        send_to: impl SendTo<Crypto, S>,
     ) -> i64 {
         let current_time = app.time();
         let next_service_time = self.service_inner(app, send_to, current_time);
@@ -649,18 +649,18 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
     ///
     /// * `app` - Interface to application using ZSSP
     /// * `send_to` - Function to get a sender and an MTU to send something over an active session
-    pub fn service_scheduled<App: ApplicationLayer<Crypto = Crypto>, SendFn: FnMut(&mut [u8]) -> bool>(
+    pub fn service_scheduled<App: ApplicationLayer<Crypto>, S: Sender>(
         &self,
         mut app: App,
-        send_to: impl FnMut(&Arc<Session<Crypto>>) -> Option<(SendFn, usize)>,
+        send_to: impl SendTo<Crypto, S>
     ) -> i64 {
         let current_time = app.time();
         self.service_inner(app, send_to, current_time)
     }
-    fn service_inner<App: ApplicationLayer<Crypto = Crypto>, SendFn: FnMut(&mut [u8]) -> bool>(
+    fn service_inner<App: ApplicationLayer<Crypto>, S: Sender>(
         &self,
         mut app: App,
-        mut send_to: impl FnMut(&Arc<Session<Crypto>>) -> Option<(SendFn, usize)>,
+        mut send_to: impl SendTo<Crypto, S>,
         current_time: i64,
     ) -> i64 {
         let ctx = &self.0;
@@ -682,9 +682,9 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                 }
             };
             let result = process_timers(&mut app, ctx, &session, current_time, |packet, hk_send| {
-                if let Some((send_fragment, mut mtu)) = send_to(&session) {
+                if let Some((sender, mut mtu)) = send_to.init_send(&session) {
                     mtu = mtu.max(MIN_TRANSPORT_MTU);
-                    send_with_fragmentation(send_fragment, mtu, packet, hk_send);
+                    send_with_fragmentation(sender, mtu, packet, hk_send);
                 }
             });
             if let Some(next_timer) = result {
