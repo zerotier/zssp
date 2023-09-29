@@ -190,12 +190,12 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
     /// * `remote_address` - Whatever the remote address is, as long as you can Hash it
     /// * `incoming_fragment_buf` - Buffer containing incoming wire packet (the context takes ownership)
     /// * `output_buffer` - Buffer to receive decrypted and authenticated object data
-    pub fn receive<'a, App: ApplicationLayer<Crypto>, S: Sender>(
+    pub fn receive<'a, App: ApplicationLayer<Crypto>>(
         &self,
         mut app: App,
         mut send_unassociated_reply: impl Sender,
         mut send_unassociated_mtu: usize,
-        mut send_to: impl SendTo<Crypto, S>,
+        mut send_to: impl SendTo<Crypto>,
         remote_address: &impl Hash,
         mut incoming_fragment_buf: Crypto::IncomingPacketBuffer,
         output_buffer: impl Write,
@@ -625,10 +625,10 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
     ///
     /// * `app` - Interface to application using ZSSP
     /// * `send_to` - Function to get a sender and an MTU to send something over an active session
-    pub fn service<App: ApplicationLayer<Crypto>, S: Sender>(
+    pub fn service<App: ApplicationLayer<Crypto>>(
         &self,
         mut app: App,
-        send_to: impl SendTo<Crypto, S>,
+        send_to: impl SendTo<Crypto>,
     ) -> i64 {
         let current_time = app.time();
         let next_service_time = self.service_inner(app, send_to, current_time);
@@ -652,18 +652,18 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
     ///
     /// * `app` - Interface to application using ZSSP
     /// * `send_to` - Function to get a sender and an MTU to send something over an active session
-    pub fn service_scheduled<App: ApplicationLayer<Crypto>, S: Sender>(
+    pub fn service_scheduled<App: ApplicationLayer<Crypto>>(
         &self,
         mut app: App,
-        send_to: impl SendTo<Crypto, S>,
+        send_to: impl SendTo<Crypto>,
     ) -> i64 {
         let current_time = app.time();
         self.service_inner(app, send_to, current_time)
     }
-    fn service_inner<App: ApplicationLayer<Crypto>, S: Sender>(
+    fn service_inner<App: ApplicationLayer<Crypto>>(
         &self,
         mut app: App,
-        mut send_to: impl SendTo<Crypto, S>,
+        mut send_to: impl SendTo<Crypto>,
         current_time: i64,
     ) -> i64 {
         let ctx = &self.0;
