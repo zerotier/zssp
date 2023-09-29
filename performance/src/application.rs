@@ -305,7 +305,8 @@ pub trait Sender {
 /// send packet fragments on some socket or network interface.
 ///
 /// Is implemented by `FnMut(&Arc<Session<Crypto>>) -> Option<(Sender, usize)>` closures.
-pub trait SendTo<Crypto: CryptoLayer, S: Sender> {
+pub trait SendTo<Crypto: CryptoLayer> {
+    type Sender<'a>: Sender where Crypto: 'a, Self: 'a;
     /// Attempt to process and borrow the resources necessary to repeatedly send fragments of a
     /// packet to the given session.
     ///
@@ -315,7 +316,7 @@ pub trait SendTo<Crypto: CryptoLayer, S: Sender> {
     /// only called once.
     ///
     /// If `None` is returned then sending to this session is cancelled.
-    fn init_send<'a>(&'a mut self, session: &'a Arc<Session<Crypto>>) -> Option<(S, usize)>;
+    fn init_send<'a>(&'a mut self, session: &'a Arc<Session<Crypto>>) -> Option<(Self::Sender<'a>, usize)>;
 }
 
 impl<F: FnMut(&mut [u8]) -> bool> Sender for F {
@@ -324,7 +325,8 @@ impl<F: FnMut(&mut [u8]) -> bool> Sender for F {
     }
 }
 
-impl<Crypto: CryptoLayer, F: FnMut(&Arc<Session<Crypto>>) -> Option<(S, usize)>, S: Sender> SendTo<Crypto, S> for F {
+impl<Crypto: CryptoLayer, F: FnMut(&Arc<Session<Crypto>>) -> Option<(S, usize)>, S: Sender> SendTo<Crypto> for F {
+    type Sender<'a> = S where Crypto: 'a, F: 'a;
     fn init_send<'a>(&'a mut self, session: &'a Arc<Session<Crypto>>) -> Option<(S, usize)> {
         self(session)
     }
