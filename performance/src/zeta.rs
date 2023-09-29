@@ -343,7 +343,7 @@ fn create_a1_state<Crypto: CryptoLayer>(
     Some(Box::new(StateA1 { noise, e_secret, e1_secret, identity, x1 }))
 }
 /// Corresponds to Transition Algorithm 1 found in Section 4.3.
-pub(crate) fn trans_to_a1<Crypto: CryptoLayer, App: ApplicationLayer<Crypto = Crypto>>(
+pub(crate) fn trans_to_a1<Crypto: CryptoLayer, App: ApplicationLayer<Crypto>>(
     mut app: App,
     ctx: &Arc<ContextInner<Crypto>>,
     s_remote: Crypto::PublicKey,
@@ -443,7 +443,7 @@ pub(crate) fn respond_to_challenge<Crypto: CryptoLayer>(
     }
 }
 /// Corresponds to Transition Algorithm 2 found in Section 4.3.
-pub(crate) fn received_x1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypto = Crypto>>(
+pub(crate) fn received_x1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypto>>(
     app: &mut App,
     ctx: &ContextInner<Crypto>,
     hash: &mut Crypto::Hash,
@@ -595,7 +595,7 @@ pub(crate) fn received_x1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     Ok(reduced_service_time)
 }
 /// Corresponds to Transition Algorithm 3 found in Section 4.3.
-pub(crate) fn received_x2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypto = Crypto>>(
+pub(crate) fn received_x2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypto>>(
     app: &mut App,
     ctx: &Arc<ContextInner<Crypto>>,
     session: &Arc<Session<Crypto>>,
@@ -817,7 +817,7 @@ fn send_control<Crypto: CryptoLayer, const CAP: usize>(
     }
 }
 /// Corresponds to Transition Algorithm 4 found in Section 4.3.
-pub(crate) fn received_x3_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypto = Crypto>>(
+pub(crate) fn received_x3_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypto>>(
     app: &mut App,
     ctx: &Arc<ContextInner<Crypto>>,
     zeta: Arc<StateB2<Crypto>>,
@@ -994,7 +994,7 @@ pub(crate) fn received_x3_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     }
 }
 /// Corresponds to Transition Algorithm 5 found in Section 4.3.
-pub(crate) fn received_c1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypto = Crypto>>(
+pub(crate) fn received_c1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypto>>(
     app: &mut App,
     ctx: &Arc<ContextInner<Crypto>>,
     session: &Arc<Session<Crypto>>,
@@ -1082,7 +1082,7 @@ pub(crate) fn received_c1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
 }
 /// Corresponds to the trivial Transition Algorithm described for processing C_2 packets found in
 /// Section 4.3.
-pub(crate) fn received_c2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypto = Crypto>>(
+pub(crate) fn received_c2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypto>>(
     app: &mut App,
     ctx: &Arc<ContextInner<Crypto>>,
     session: &Arc<Session<Crypto>>,
@@ -1169,7 +1169,7 @@ pub(crate) fn received_d_trans<Crypto: CryptoLayer>(
     Ok(())
 }
 // Corresponds to the timeout timer Transition Algorithm described in Section 4.1 - Definition 3.
-fn timeout_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypto = Crypto>>(
+fn timeout_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypto>>(
     app: &mut App,
     ctx: &Arc<ContextInner<Crypto>>,
     session: &Arc<Session<Crypto>>,
@@ -1294,7 +1294,7 @@ fn timeout_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypto = Crypto>>(
     }
 }
 /// Corresponds to the timer rules of the Zeta State Machine found in Section 4.1 - Definition 3.
-pub(crate) fn process_timers<Crypto: CryptoLayer, App: ApplicationLayer<Crypto = Crypto>>(
+pub(crate) fn process_timers<Crypto: CryptoLayer, App: ApplicationLayer<Crypto>>(
     app: &mut App,
     ctx: &Arc<ContextInner<Crypto>>,
     session: &Arc<Session<Crypto>>,
@@ -1349,7 +1349,7 @@ pub(crate) fn process_timers<Crypto: CryptoLayer, App: ApplicationLayer<Crypto =
     }
 }
 /// Corresponds to Transition Algorithm 7 found in Section 4.3.
-pub(crate) fn received_k1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypto = Crypto>>(
+pub(crate) fn received_k1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypto>>(
     app: &mut App,
     ctx: &Arc<ContextInner<Crypto>>,
     session: &Arc<Session<Crypto>>,
@@ -1505,7 +1505,7 @@ pub(crate) fn received_k1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     result
 }
 /// Corresponds to Transition Algorithm 8 found in Section 4.3.
-pub(crate) fn received_k2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypto = Crypto>>(
+pub(crate) fn received_k2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypto>>(
     app: &mut App,
     ctx: &Arc<ContextInner<Crypto>>,
     session: &Arc<Session<Crypto>>,
@@ -1638,7 +1638,7 @@ pub(crate) fn send_payload<Crypto: CryptoLayer>(
     ctx: &Arc<ContextInner<Crypto>>,
     session: &Session<Crypto>,
     payload: &[u8],
-    mut send: impl FnMut(&mut [u8]) -> bool,
+    mut send: impl Sender,
     mtu_sized_buffer: &mut [u8],
 ) -> Result<bool, SendError> {
     use SendError::*;
@@ -1685,7 +1685,7 @@ pub(crate) fn send_payload<Crypto: CryptoLayer>(
         let header_auth = &mut mtu_sized_buffer[HEADER_AUTH_START..HEADER_AUTH_END];
         state.hk_send.encrypt_in_place(header_auth.try_into().unwrap());
 
-        if !send(&mut mtu_sized_buffer[..HEADER_SIZE + fragment_len]) {
+        if !send.send_frag(&mut mtu_sized_buffer[..HEADER_SIZE + fragment_len]) {
             return Ok(false);
         }
         i = j;
@@ -1704,7 +1704,7 @@ pub(crate) fn send_payload<Crypto: CryptoLayer>(
     let header_auth = &mut mtu_sized_buffer[HEADER_AUTH_START..HEADER_AUTH_END];
     state.hk_send.encrypt_in_place(header_auth.try_into().unwrap());
 
-    if !send(&mut mtu_sized_buffer[..HEADER_SIZE + fragment_len]) {
+    if !send.send_frag(&mut mtu_sized_buffer[..HEADER_SIZE + fragment_len]) {
         return Ok(false);
     }
 
