@@ -403,7 +403,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                         _ => return Err(fault!(InvalidPacket, true)), // This is unreachable.
                     }
                 };
-                Ok((ReceiveOk::SessionEvent(session, ret.0), ret.1))
+                Ok((ReceiveOk::Associated(session, ret.0), ret.1))
             } else {
                 // Check for and handle PACKET_TYPE_ALICE_NOISE_XK_PATTERN_3
                 let zeta = self.0.unassociated_handshake_states.get(kid_recv);
@@ -463,7 +463,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                         })?;
                     log!(app, X3IsAuthSentKeyConfirm(&session));
                     Ok((
-                        ReceiveOk::SessionEvent(
+                        ReceiveOk::Associated(
                             session,
                             if should_warn_missing_ratchet {
                                 SessionEvent::NewDowngradedSession

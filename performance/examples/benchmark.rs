@@ -159,7 +159,7 @@ fn alice_main(
                     Ok((Unassociated, _)) => {
                         //println!("[alice] ok");
                     }
-                    Ok((SessionEvent(_, event), _)) => match event {
+                    Ok((Associated(_, event), _)) => match event {
                         Established => {
                             up = true;
                         }
@@ -239,7 +239,7 @@ fn bob_main(
                 &mut output_data,
             ) {
                 Ok((Unassociated, _)) => {}
-                Ok((SessionEvent(s, event), _)) => match event {
+                Ok((Associated(s, event), _)) => match event {
                     NewSession | NewDowngradedSession => {
                         println!("[bob] new session, took {}s", current_time as f32 / 1000.0);
                         let _ = bob_session.replace(s);
