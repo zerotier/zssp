@@ -234,9 +234,9 @@ pub enum SessionEvent {
     /// The received packet was some authentic protocol control packet. No action needs to be taken.
     Control,
     /// In the process of establishing a session with Bob, Bob did not have the correct ratchet key.
-    /// Bob has partially failed authentication, but we as Alice configured to only emit a warning
-    /// and still allow Bob to connect.
-    /// See `ApplicationLayer::initiator_disallows_downgrade` to alert this configuration.
+    /// Bob has partially failed authentication, but we as Alice are configured to only emit a
+    /// warning and still allow Bob to connect.
+    /// See `ApplicationLayer::initiator_disallows_downgrade` to alter this configuration.
     DowngradedRatchetKey,
 }
 
