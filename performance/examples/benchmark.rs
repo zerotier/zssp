@@ -113,7 +113,6 @@ impl ApplicationLayer<TestApplication> for &TestApplication {
     }
 }
 
-
 #[allow(unused)]
 fn alice_main(
     run: &AtomicBool,
@@ -152,7 +151,7 @@ fn alice_main(
                     alice_app,
                     |b: &mut [u8]| alice_out.send(alloc(b)).is_ok(),
                     TEST_MTU,
-                    |_: &Arc<zssp::Session<TestApplication>>| Some((|b: &mut [u8]| alice_out.send(alloc(b)).is_ok(), TEST_MTU)),
+                    |_: &Arc<Session>| Some((|b: &mut [u8]| alice_out.send(alloc(b)).is_ok(), TEST_MTU)),
                     &0,
                     pkt,
                     &mut output_data,

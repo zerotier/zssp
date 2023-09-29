@@ -632,7 +632,10 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
     ) -> i64 {
         let current_time = app.time();
         let next_service_time = self.service_inner(app, send_to, current_time);
-        let max_interval = Crypto::SETTINGS.fragment_assembly_timeout.min(Crypto::SETTINGS.rekey_timeout).min(Crypto::SETTINGS.initial_offer_timeout);
+        let max_interval = Crypto::SETTINGS
+            .fragment_assembly_timeout
+            .min(Crypto::SETTINGS.rekey_timeout)
+            .min(Crypto::SETTINGS.initial_offer_timeout);
 
         (next_service_time - current_time).min(max_interval as i64)
     }
@@ -652,7 +655,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
     pub fn service_scheduled<App: ApplicationLayer<Crypto>, S: Sender>(
         &self,
         mut app: App,
-        send_to: impl SendTo<Crypto, S>
+        send_to: impl SendTo<Crypto, S>,
     ) -> i64 {
         let current_time = app.time();
         self.service_inner(app, send_to, current_time)

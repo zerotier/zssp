@@ -189,11 +189,7 @@ pub trait ApplicationLayer<Crypto: CryptoLayer>: Sized {
     /// To prevent desync, if this function specifies that we should connect, no other open session
     /// with the same remote peer must exist. Drop or call expire on any pre-existing sessions
     /// before returning.
-    fn check_accept_session(
-        &mut self,
-        remote_static_key: &Crypto::PublicKey,
-        identity: &[u8],
-    ) -> AcceptAction<Crypto>;
+    fn check_accept_session(&mut self, remote_static_key: &Crypto::PublicKey, identity: &[u8]) -> AcceptAction<Crypto>;
 
     /// Lookup a specific ratchet state based on its ratchet fingerprint.
     /// This function will be called whenever Alice attempts to connect to us with a non-empty
