@@ -35,12 +35,15 @@ pub fn send_with_fragmentation<Crypto: CryptoLayer>(
     packet_nonce: &[u8; PACKET_NONCE_SIZE],
     packet: &[u8],
     hk_send: Option<&[u8; AES_256_KEY_SIZE]>,
-) -> bool {
+) -> Result<(), bool> {
     let payload_mtu = mtu - HEADER_SIZE;
     debug_assert!(payload_mtu >= 4);
     let fragment_count = packet.len().saturating_add(payload_mtu - 1) / payload_mtu; // Ceiling div.
     let fragment_base_size = packet.len() / fragment_count;
     let fragment_size_remainder = packet.len() % fragment_count;
+    if fragment_count > MAX_FRAGMENTS {
+        return Err(true);
+    }
 
     let mut i = 0;
     for fragment_no in 0..fragment_count {
@@ -58,11 +61,11 @@ pub fn send_with_fragmentation<Crypto: CryptoLayer>(
             );
         }
         if !send(fragment) {
-            return false;
+            return Err(false);
         }
         i = j;
     }
-    true
+    Ok(())
 }
 
 pub struct DefragBuffer {

@@ -120,7 +120,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
             identity,
             |Packet(kid, nonce, payload): &Packet| {
                 // Process fragmentation layer.
-                send_with_fragmentation::<Crypto>(send, mtu, *kid, to_packet_nonce(&nonce), payload, None);
+                let _ = send_with_fragmentation::<Crypto>(send, mtu, *kid, to_packet_nonce(&nonce), payload, None);
             },
         )
     }
@@ -193,7 +193,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                         |Packet(kid, nonce, payload): &Packet, hk: Option<&[u8; AES_256_KEY_SIZE]>| {
                             if let Some((send_fragment, mut mtu)) = send_to(&session) {
                                 mtu = mtu.max(MIN_TRANSPORT_MTU);
-                                send_with_fragmentation::<Crypto>(
+                                let _ = send_with_fragmentation::<Crypto>(
                                     send_fragment,
                                     mtu,
                                     *kid,
@@ -334,7 +334,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                             kid_recv,
                             assembled_packet,
                             |Packet(kid, nonce, payload), hk| {
-                                send_with_fragmentation::<Crypto>(
+                                let _ = send_with_fragmentation::<Crypto>(
                                     send_unassociated_reply,
                                     send_unassociated_mtu,
                                     *kid,
@@ -391,7 +391,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                         challenge_packet.extend(&assembled_packet[..KID_SIZE]);
                         challenge_packet.extend(&challenge);
                         let nonce = to_nonce(PACKET_TYPE_CHALLENGE, ctx.rng.borrow_mut().next_u64());
-                        send_with_fragmentation::<Crypto>(
+                        let _ = send_with_fragmentation::<Crypto>(
                             send_unassociated_reply,
                             send_unassociated_mtu,
                             0,
@@ -413,7 +413,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                         to_aes_nonce(&n),
                         assembled_packet,
                         |Packet(kid, nonce, payload), hk| {
-                            send_with_fragmentation::<Crypto>(
+                            let _ = send_with_fragmentation::<Crypto>(
                                 send_unassociated_reply,
                                 send_unassociated_mtu,
                                 *kid,
@@ -475,7 +475,11 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
         mtu = mtu.max(MIN_TRANSPORT_MTU);
         let mut zeta = session.0.borrow_mut();
         send_payload::<Crypto>(&mut zeta, payload, |Packet(kid, nonce, payload), hk| {
-            send_with_fragmentation::<Crypto>(send, mtu, *kid, to_packet_nonce(nonce), &payload, hk);
+            let result = send_with_fragmentation::<Crypto>(send, mtu, *kid, to_packet_nonce(nonce), &payload, hk);
+            if matches!(result, Err(true)) {
+                return Err(SendError::DataTooLarge);
+            }
+            Ok(())
         })
     }
 
@@ -510,7 +514,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                     |Packet(kid, nonce, payload): &Packet, hk| {
                         if let Some((send_fragment, mut mtu)) = send_to(&session) {
                             mtu = mtu.max(MIN_TRANSPORT_MTU);
-                            send_with_fragmentation::<Crypto>(
+                            let _ = send_with_fragmentation::<Crypto>(
                                 send_fragment,
                                 mtu,
                                 *kid,
