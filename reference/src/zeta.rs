@@ -1375,7 +1375,7 @@ pub(crate) fn received_k2_trans<App: ApplicationLayer>(
 pub(crate) fn send_payload<Crypto: CryptoLayer>(
     zeta: &mut Zeta<Crypto>,
     mut payload: Vec<u8>,
-    send: impl FnOnce(&Packet, Option<&[u8; AES_256_KEY_SIZE]>),
+    send: impl FnOnce(&Packet, Option<&[u8; AES_256_KEY_SIZE]>) -> Result<(), SendError>,
 ) -> Result<(), SendError> {
     use SendError::*;
 
@@ -1401,8 +1401,7 @@ pub(crate) fn send_payload<Crypto: CryptoLayer>(
         send(
             &Packet(zeta.key_ref(false).send.kid.unwrap().get(), n, payload),
             Some(&zeta.hk_send),
-        );
-        Ok(())
+        )
     } else {
         zeta.expire();
         Err(SessionExpired)

@@ -1666,6 +1666,9 @@ pub(crate) fn send_payload<Crypto: CryptoLayer>(
     let fragment_count = tagged_payload_len.saturating_add(payload_mtu - 1) / payload_mtu; // Ceiling div.
     let fragment_base_size = tagged_payload_len / fragment_count;
     let fragment_size_remainder = tagged_payload_len % fragment_count;
+    if fragment_count > MAX_FRAGMENTS {
+        return Err(DataTooLarge);
+    }
 
     let mut header = [0u8; HEADER_SIZE];
     header[..KID_SIZE].copy_from_slice(&kid_send);

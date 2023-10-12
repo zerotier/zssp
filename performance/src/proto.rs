@@ -8,6 +8,13 @@ pub const MIN_PACKET_SIZE: usize = HEADER_SIZE + AES_GCM_TAG_SIZE;
 /// If an MTU is passed to ZSSP that is lower than this, it will be ignored and instead this value
 /// will be used.
 pub const MIN_TRANSPORT_MTU: usize = 128;
+/// Returns the maximum length of `data` that can be passed to `Context::send` before it starts to
+/// return `Err(SendError::DataTooLarge)`. Must be provided with the same `mtu`,
+/// the maximum transmission unit, that is passed to `Context::send`. Keep in mind that `mtu` must
+/// be above `MIN_TRANSPORT_MTU` or else `Context::send` would return `Err(SendError::MtuTooSmall).
+pub const fn max_sendable_len(mtu: usize) -> usize {
+    (mtu - HEADER_SIZE)*MAX_FRAGMENTS - AES_GCM_TAG_SIZE
+}
 
 pub(crate) const KID_SIZE: usize = 4;
 
