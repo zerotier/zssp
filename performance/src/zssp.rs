@@ -711,6 +711,9 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
     }
     /// Returns the exact timestamp at which either `Context::service` or
     /// `Context::service_scheduled` should be called again.
+    ///
+    /// This can return `i64::MAX` if there is *currently* nothing to service,
+    /// or `i64::MIN` if `Context::send` returns `Ok(true)` and ZSSP needs to be serviced right away.
     pub fn next_service_time(&self) -> i64 {
         self.0.next_service_time.load(Ordering::Relaxed)
     }
