@@ -306,7 +306,10 @@ pub trait Sender {
 ///
 /// Is implemented by `FnMut(&Arc<Session<Crypto>>) -> Option<(Sender, usize)>` closures.
 pub trait SendTo<Crypto: CryptoLayer> {
-    type Sender<'a>: Sender where Crypto: 'a, Self: 'a;
+    type Sender<'a>: Sender
+    where
+        Crypto: 'a,
+        Self: 'a;
     /// Attempt to process and borrow the resources necessary to repeatedly send fragments of a
     /// packet to the given session.
     ///

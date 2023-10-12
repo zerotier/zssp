@@ -625,11 +625,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
     ///
     /// * `app` - Interface to application using ZSSP
     /// * `send_to` - Function to get a sender and an MTU to send something over an active session
-    pub fn service<App: ApplicationLayer<Crypto>>(
-        &self,
-        mut app: App,
-        send_to: impl SendTo<Crypto>,
-    ) -> i64 {
+    pub fn service<App: ApplicationLayer<Crypto>>(&self, mut app: App, send_to: impl SendTo<Crypto>) -> i64 {
         let current_time = app.time();
         let next_service_time = self.service_inner(app, send_to, current_time);
         let max_interval = Crypto::SETTINGS
@@ -652,11 +648,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
     ///
     /// * `app` - Interface to application using ZSSP
     /// * `send_to` - Function to get a sender and an MTU to send something over an active session
-    pub fn service_scheduled<App: ApplicationLayer<Crypto>>(
-        &self,
-        mut app: App,
-        send_to: impl SendTo<Crypto>,
-    ) -> i64 {
+    pub fn service_scheduled<App: ApplicationLayer<Crypto>>(&self, mut app: App, send_to: impl SendTo<Crypto>) -> i64 {
         let current_time = app.time();
         self.service_inner(app, send_to, current_time)
     }
