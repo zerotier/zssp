@@ -142,6 +142,9 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
     /// `Context::service_scheduled`. `Context::service_scheduled` contains documentation on how to
     /// handle the return value.
     ///
+    /// To prevent desync, when this function is called, no other open session with the same remote
+    /// peer must exist. Drop or call expire on any pre-existing sessions before calling.
+    ///
     /// * `app` - Application layer instance
     /// * `send` - Function to be called to send one or more initial packets to the remote being
     ///   contacted
@@ -625,11 +628,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
     ///
     /// * `app` - Interface to application using ZSSP
     /// * `send_to` - Function to get a sender and an MTU to send something over an active session
-    pub fn service<App: ApplicationLayer<Crypto>>(
-        &self,
-        mut app: App,
-        send_to: impl SendTo<Crypto>,
-    ) -> i64 {
+    pub fn service<App: ApplicationLayer<Crypto>>(&self, mut app: App, send_to: impl SendTo<Crypto>) -> i64 {
         let current_time = app.time();
         let next_service_time = self.service_inner(app, send_to, current_time);
         let max_interval = Crypto::SETTINGS
@@ -652,11 +651,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
     ///
     /// * `app` - Interface to application using ZSSP
     /// * `send_to` - Function to get a sender and an MTU to send something over an active session
-    pub fn service_scheduled<App: ApplicationLayer<Crypto>>(
-        &self,
-        mut app: App,
-        send_to: impl SendTo<Crypto>,
-    ) -> i64 {
+    pub fn service_scheduled<App: ApplicationLayer<Crypto>>(&self, mut app: App, send_to: impl SendTo<Crypto>) -> i64 {
         let current_time = app.time();
         self.service_inner(app, send_to, current_time)
     }
@@ -719,6 +714,9 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
     }
     /// Returns the exact timestamp at which either `Context::service` or
     /// `Context::service_scheduled` should be called again.
+    ///
+    /// This can return `i64::MAX` if there is *currently* nothing to service,
+    /// or `i64::MIN` if `Context::send` returns `Ok(true)` and ZSSP needs to be serviced right away.
     pub fn next_service_time(&self) -> i64 {
         self.0.next_service_time.load(Ordering::Relaxed)
     }

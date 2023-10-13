@@ -186,6 +186,7 @@ pub trait ApplicationLayer<Crypto: CryptoLayer>: Sized {
     /// Function to accept sessions after final negotiation.
     /// The second argument is the identity that the remote peer sent us. The application
     /// must verify this identity is associated with the remote peer's static key.
+    ///
     /// To prevent desync, if this function specifies that we should connect, no other open session
     /// with the same remote peer must exist. Drop or call expire on any pre-existing sessions
     /// before returning.
@@ -306,7 +307,10 @@ pub trait Sender {
 ///
 /// Is implemented by `FnMut(&Arc<Session<Crypto>>) -> Option<(Sender, usize)>` closures.
 pub trait SendTo<Crypto: CryptoLayer> {
-    type Sender<'a>: Sender where Crypto: 'a, Self: 'a;
+    type Sender<'a>: Sender
+    where
+        Crypto: 'a,
+        Self: 'a;
     /// Attempt to process and borrow the resources necessary to repeatedly send fragments of a
     /// packet to the given session.
     ///

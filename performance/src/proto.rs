@@ -13,7 +13,7 @@ pub const MIN_TRANSPORT_MTU: usize = 128;
 /// the maximum transmission unit, that is passed to `Context::send`. Keep in mind that `mtu` must
 /// be above `MIN_TRANSPORT_MTU` or else `Context::send` would return `Err(SendError::MtuTooSmall).
 pub const fn max_sendable_len(mtu: usize) -> usize {
-    (mtu - HEADER_SIZE)*MAX_FRAGMENTS - AES_GCM_TAG_SIZE
+    (mtu - HEADER_SIZE) * MAX_FRAGMENTS - AES_GCM_TAG_SIZE
 }
 
 pub(crate) const KID_SIZE: usize = 4;
