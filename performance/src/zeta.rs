@@ -869,7 +869,6 @@ pub(crate) fn received_x3_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     let action = app.check_accept_session(&s_remote, &x3[identity_start..identity_end]);
     let responder_disallows_downgrade = action.responder_disallows_downgrade;
     let responder_silently_rejects = action.responder_silently_rejects;
-    let session_data = action.session_data;
     let create_reject = || {
         // We just used a counter with this key, but we are not storing
         // the fact we used it in memory. This is currently ok because the
@@ -882,7 +881,7 @@ pub(crate) fn received_x3_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
         set_header(&mut d, zeta.kid_send.get(), &nonce);
         d
     };
-    if let Some(session_data) = session_data {
+    if let Some(session_data) = action.session_data {
         let result = app.restore_by_identity(&s_remote, &session_data);
         match result {
             Ok(rss) => {
@@ -1832,9 +1831,8 @@ impl<Crypto: CryptoLayer> Session<Crypto> {
             }
         }
     }
-    ///
-    ///// The current ratchet state of this session.
-    ///// The returned values are sensitive and should be securely erased before being dropped.
+    /// The current ratchet state of this session.
+    /// The returned values are sensitive and should be securely erased before being dropped.
     pub fn ratchet_states(&self) -> RatchetStates {
         let state = self.state.read().unwrap();
         RatchetStates::new(state.ratchet_state1.clone(), state.ratchet_state2.clone())
@@ -1843,13 +1841,25 @@ impl<Crypto: CryptoLayer> Session<Crypto> {
     pub fn ratchet_count(&self) -> u64 {
         self.state.read().unwrap().ratchet_state1.chain_len
     }
-    /// Check whether this session is established.
+    /// Check whether this session is established and can send data.
+    /// Expired sessions will return false.
     pub fn established(&self) -> bool {
-        let state = self.state.read().unwrap();
         !matches!(
-            &state.beta,
+            &self.state.read().unwrap().beta,
             ZetaAutomata::A1(_) | ZetaAutomata::A3 { .. } | ZetaAutomata::Null
         )
+    }
+    /// Check whether this session is still in the establishing phase of the handshake.
+    /// Expired sessions will return false.
+    pub fn establishing(&self) -> bool {
+        matches!(
+            &self.state.read().unwrap().beta,
+            ZetaAutomata::A1(_) | ZetaAutomata::A3 { .. }
+        )
+    }
+    /// Check whether this session is expired and can no longer be used.
+    pub fn expired(&self) -> bool {
+        matches!(&self.state.read().unwrap().beta, ZetaAutomata::Null)
     }
     /// The static public key of the remote peer.
     pub fn remote_static_key(&self) -> &Crypto::PublicKey {
