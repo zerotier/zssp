@@ -142,6 +142,9 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
     /// `Context::service_scheduled`. `Context::service_scheduled` contains documentation on how to
     /// handle the return value.
     ///
+    /// To prevent desync, when this function is called, no other open session with the same remote
+    /// peer must exist. Drop or call expire on any pre-existing sessions before calling.
+    ///
     /// * `app` - Application layer instance
     /// * `send` - Function to be called to send one or more initial packets to the remote being
     ///   contacted
