@@ -1797,6 +1797,7 @@ impl<Crypto: CryptoLayer> Session<Crypto> {
         self.state.read().unwrap().ratchet_state1.chain_len
     }
     /// Check whether this session is established and can send data.
+    ///
     /// Expired sessions will return false.
     pub fn established(&self) -> bool {
         !matches!(
@@ -1805,6 +1806,8 @@ impl<Crypto: CryptoLayer> Session<Crypto> {
         )
     }
     /// Check whether this session is still in the establishing phase of the handshake.
+    /// Sessions that are establishing are not capable of sending data.
+    ///
     /// Expired sessions will return false.
     pub fn establishing(&self) -> bool {
         matches!(
@@ -1813,7 +1816,7 @@ impl<Crypto: CryptoLayer> Session<Crypto> {
         )
     }
     /// Check whether this session is expired and can no longer be used.
-    pub fn expired(&self) -> bool {
+    pub fn is_expired(&self) -> bool {
         matches!(&self.state.read().unwrap().beta, ZetaAutomata::Null)
     }
     /// The static public key of the remote peer.
