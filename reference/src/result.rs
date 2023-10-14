@@ -13,7 +13,7 @@ pub enum OpenError {
     IdentityTooLarge,
 
     /// An error was returned by one of the ratchet state `ApplicationLayer` callbacks.
-    /// The received packet was dropped.
+    /// The session could not be openned as a result.
     StorageError(std::io::Error),
 }
 
