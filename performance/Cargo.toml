@@ -10,9 +10,6 @@ name = "zssp"
 path = "src/lib.rs"
 doc = true
 
-[profile.bench]
-debug = true
-
 [dependencies]
 rand_core = { version = "0.6.4" }
 zeroize = { version = "1.6.0" }

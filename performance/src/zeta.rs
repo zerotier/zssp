@@ -180,30 +180,15 @@ impl<Crypto: CryptoLayer> SymmetricState<Crypto> {
         *i = j;
         Crypto::PublicKey::from_bytes((pub_key).try_into().unwrap())
     }
-    #[must_use]
-    fn mix_dh(&mut self, hmac: &mut Crypto::Hmac, secret: &Crypto::KeyPair, remote: &Crypto::PublicKey) -> Option<()> {
+    fn mix_dh(&mut self, hmac: &mut Crypto::Hmac, secret: &Crypto::KeyPair, remote: &Crypto::PublicKey) {
         let mut ecdh_secret = Zeroizing::new([0u8; P384_ECDH_SHARED_SECRET_SIZE]);
-        if secret.agree(&remote, &mut ecdh_secret) {
-            self.mix_key(hmac, ecdh_secret.as_ref());
-            Some(())
-        } else {
-            None
-        }
+        secret.agree(&remote, &mut ecdh_secret);
+        self.mix_key(hmac, ecdh_secret.as_ref());
     }
-    #[must_use]
-    fn mix_dh_no_init(
-        &mut self,
-        hmac: &mut Crypto::Hmac,
-        secret: &Crypto::KeyPair,
-        remote: &Crypto::PublicKey,
-    ) -> Option<()> {
+    fn mix_dh_no_init(&mut self, hmac: &mut Crypto::Hmac, secret: &Crypto::KeyPair, remote: &Crypto::PublicKey) {
         let mut ecdh_secret = Zeroizing::new([0u8; P384_ECDH_SHARED_SECRET_SIZE]);
-        if secret.agree(&remote, &mut ecdh_secret) {
-            self.mix_key_no_init(hmac, ecdh_secret.as_ref());
-            Some(())
-        } else {
-            None
-        }
+        secret.agree(&remote, &mut ecdh_secret);
+        self.mix_key_no_init(hmac, ecdh_secret.as_ref());
     }
 }
 
@@ -299,7 +284,7 @@ fn create_a1_state<Crypto: CryptoLayer>(
     ratchet_state1: &RatchetState,
     ratchet_state2: Option<&RatchetState>,
     identity: &[u8],
-) -> Option<Box<StateA1<Crypto>>> {
+) -> Box<StateA1<Crypto>> {
     //    <- s
     //    ...
     //    -> e, es, e1
@@ -314,7 +299,7 @@ fn create_a1_state<Crypto: CryptoLayer>(
     // Process message pattern 1 e token.
     let e_secret = noise.write_e_no_init(hash, hmac, rng, &mut x1);
     // Process message pattern 1 es token.
-    noise.mix_dh(hmac, &e_secret, s_remote)?;
+    noise.mix_dh(hmac, &e_secret, s_remote);
     // Process message pattern 1 e1 token.
     let i = x1.len();
     let (e1_secret, e1_public) = Crypto::Kem::generate(rng.lock().unwrap().deref_mut());
@@ -340,7 +325,7 @@ fn create_a1_state<Crypto: CryptoLayer>(
     set_header(&mut x1, 0, &to_nonce(PACKET_TYPE_HANDSHAKE_HELLO, c));
 
     let identity = identity.try_into().unwrap();
-    Some(Box::new(StateA1 { noise, e_secret, e1_secret, identity, x1 }))
+    Box::new(StateA1 { noise, e_secret, e1_secret, identity, x1 })
 }
 /// Corresponds to Transition Algorithm 1 found in Section 4.3.
 pub(crate) fn trans_to_a1<Crypto: CryptoLayer, App: ApplicationLayer<Crypto>>(
@@ -371,13 +356,10 @@ pub(crate) fn trans_to_a1<Crypto: CryptoLayer, App: ApplicationLayer<Crypto>>(
         &state1,
         state2.as_ref(),
         identity,
-    )
-    .ok_or(OpenError::InvalidPublicKey)?;
+    );
 
     let mut noise_kk_ss = Zeroizing::new([0u8; P384_ECDH_SHARED_SECRET_SIZE]);
-    if !ctx.s_secret.agree(&s_remote, &mut noise_kk_ss) {
-        return Err(OpenError::InvalidPublicKey);
-    }
+    ctx.s_secret.agree(&s_remote, &mut noise_kk_ss);
 
     let mut hk_recv = Zeroizing::new([0u8; HASHLEN]);
     let mut hk_send = Zeroizing::new([0u8; HASHLEN]);
@@ -478,9 +460,7 @@ pub(crate) fn received_x1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
         .read_e_no_init(hash, hmac, &mut i, &x1)
         .ok_or(fault!(FailedAuth, true))?;
     // Process message pattern 1 es token.
-    noise
-        .mix_dh(hmac, &ctx.s_secret, &e_remote)
-        .ok_or(fault!(FailedAuth, true))?;
+    noise.mix_dh(hmac, &ctx.s_secret, &e_remote);
     // Process message pattern 1 e1 token.
     let j = i + KYBER_PUBLIC_KEY_SIZE;
     let k = j + AES_GCM_TAG_SIZE;
@@ -529,9 +509,7 @@ pub(crate) fn received_x1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     // Process message pattern 2 e token.
     let e_secret = noise.write_e_no_init(hash, hmac, &ctx.rng, &mut x2);
     // Process message pattern 2 ee token.
-    noise
-        .mix_dh(hmac, &e_secret, &e_remote)
-        .ok_or(fault!(FailedAuth, true))?;
+    noise.mix_dh(hmac, &e_secret, &e_remote);
     // Process message pattern 2 ekem1 token.
     {
         let i = x2.len();
@@ -637,9 +615,7 @@ pub(crate) fn received_x2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
             .read_e_no_init(hash, hmac, &mut i, &x2)
             .ok_or(fault!(FailedAuth, true))?;
         // Process message pattern 2 ee token.
-        noise
-            .mix_dh(hmac, &a1.e_secret, &e_remote)
-            .ok_or(fault!(FailedAuth, true))?;
+        noise.mix_dh(hmac, &a1.e_secret, &e_remote);
         // Process message pattern 2 ekem1 token.
         let j = i + KYBER_CIPHERTEXT_SIZE;
         let k = j + AES_GCM_TAG_SIZE;
@@ -710,9 +686,7 @@ pub(crate) fn received_x2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
         let tag = noise.encrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_HANDSHAKE_COMPLETION, 1), &mut x3[i..]);
         x3.extend(tag);
         // Process message pattern 3 se token.
-        noise
-            .mix_dh(hmac, &ctx.s_secret, &e_remote)
-            .ok_or(fault!(FailedAuth, true))?;
+        noise.mix_dh(hmac, &ctx.s_secret, &e_remote);
         // Process message pattern 3 payload.
         let i = x3.len();
         x3.try_extend_from_slice(&a1.identity).unwrap();
@@ -848,9 +822,7 @@ pub(crate) fn received_x3_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     let s_remote = Crypto::PublicKey::from_bytes((&x3[i..j]).try_into().unwrap()).ok_or(fault!(FailedAuth, true))?;
     i = k;
     // Process message pattern 3 se token.
-    noise
-        .mix_dh(hmac, &zeta.e_secret, &s_remote)
-        .ok_or(fault!(FailedAuth, true))?;
+    noise.mix_dh(hmac, &zeta.e_secret, &s_remote);
     // Process message pattern 3 payload.
     let k = x3.len();
     let j = k - AES_GCM_TAG_SIZE;
@@ -900,9 +872,7 @@ pub(crate) fn received_x3_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
                 }
 
                 let mut noise_kk_ss = Zeroizing::new([0u8; P384_ECDH_SHARED_SECRET_SIZE]);
-                if !ctx.s_secret.agree(&s_remote, &mut noise_kk_ss) {
-                    return Err(fault!(FailedAuth, true));
-                }
+                ctx.s_secret.agree(&s_remote, &mut noise_kk_ss);
 
                 let new_ratchet_state = create_ratchet_state(hmac, &mut noise, zeta.ratchet_state.chain_len);
                 let mut nk_recv = Zeroizing::new([0u8; HASHLEN]);
@@ -1194,7 +1164,7 @@ fn timeout_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypto>>(
 
             let hash = &mut Crypto::Hash::new();
             let hmac = &mut Crypto::Hmac::new();
-            if let Some(a1) = create_a1_state(
+            let a1 = create_a1_state(
                 hash,
                 hmac,
                 &ctx.rng,
@@ -1203,32 +1173,29 @@ fn timeout_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypto>>(
                 &state.ratchet_state1,
                 state.ratchet_state2.as_ref(),
                 identity,
-            ) {
-                let mut hk_recv = Zeroizing::new([0u8; HASHLEN]);
-                let mut hk_send = Zeroizing::new([0u8; HASHLEN]);
-                a1.noise.get_ask(hmac, LABEL_HEADER_KEY, &mut hk_recv, &mut hk_send);
-                let mut x1 = a1.x1.clone();
+            );
+            let mut hk_recv = Zeroizing::new([0u8; HASHLEN]);
+            let mut hk_send = Zeroizing::new([0u8; HASHLEN]);
+            a1.noise.get_ask(hmac, LABEL_HEADER_KEY, &mut hk_recv, &mut hk_send);
+            let mut x1 = a1.x1.clone();
 
-                drop(state);
-                let resend_timer = {
-                    let mut state = session.state.write().unwrap();
-                    state.hk_recv.reset((&hk_recv[..AES_256_KEY_SIZE]).try_into().unwrap());
-                    state.hk_send.reset((&hk_send[..AES_256_KEY_SIZE]).try_into().unwrap());
-                    *state.key_mut(true) = DuplexKey::default();
-                    state.key_mut(true).recv.kid = Some(new_kid_recv);
-                    let resend_timer = current_time + Crypto::SETTINGS.resend_time as i64;
-                    state.resend_timer = AtomicI64::new(resend_timer);
-                    state.timeout_timer = current_time + Crypto::SETTINGS.initial_offer_timeout as i64;
-                    state.beta = ZetaAutomata::A1(a1);
-                    resend_timer
-                };
-                drop(kex_lock);
+            drop(state);
+            let resend_timer = {
+                let mut state = session.state.write().unwrap();
+                state.hk_recv.reset((&hk_recv[..AES_256_KEY_SIZE]).try_into().unwrap());
+                state.hk_send.reset((&hk_send[..AES_256_KEY_SIZE]).try_into().unwrap());
+                *state.key_mut(true) = DuplexKey::default();
+                state.key_mut(true).recv.kid = Some(new_kid_recv);
+                let resend_timer = current_time + Crypto::SETTINGS.resend_time as i64;
+                state.resend_timer = AtomicI64::new(resend_timer);
+                state.timeout_timer = current_time + Crypto::SETTINGS.initial_offer_timeout as i64;
+                state.beta = ZetaAutomata::A1(a1);
+                resend_timer
+            };
+            drop(kex_lock);
 
-                send(&mut x1, None);
-                Some(resend_timer)
-            } else {
-                None
-            }
+            send(&mut x1, None);
+            Some(resend_timer)
         }
         ZetaAutomata::S2 => {
             // Corresponds to Transition Algorithm 6 found in Section 4.3.
@@ -1251,9 +1218,7 @@ fn timeout_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypto>>(
             // Process message pattern 1 e token.
             let e_secret = noise.write_e_no_init(hash, hmac, &ctx.rng, &mut k1);
             // Process message pattern 1 es token.
-            if noise.mix_dh_no_init(hmac, &e_secret, &session.s_remote).is_none() {
-                return None;
-            }
+            noise.mix_dh_no_init(hmac, &e_secret, &session.s_remote);
             // Process message pattern 1 ss token.
             noise.mix_key(hmac, session.noise_kk_ss.as_ref());
             // Process message pattern 1 payload.
@@ -1410,9 +1375,7 @@ pub(crate) fn received_k1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
             .read_e_no_init(hash, hmac, &mut i, &k1)
             .ok_or(fault!(FailedAuth, true))?;
         // Process message pattern 1 es token.
-        noise
-            .mix_dh_no_init(hmac, &ctx.s_secret, &e_remote)
-            .ok_or(fault!(FailedAuth, true))?;
+        noise.mix_dh_no_init(hmac, &ctx.s_secret, &e_remote);
         // Process message pattern 1 ss token.
         noise.mix_key(hmac, session.noise_kk_ss.as_ref());
         // Process message pattern 1 payload.
@@ -1430,13 +1393,9 @@ pub(crate) fn received_k1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
         // Process message pattern 2 e token.
         let e_secret = noise.write_e_no_init(hash, hmac, &ctx.rng, &mut k2);
         // Process message pattern 2 ee token.
-        noise
-            .mix_dh_no_init(hmac, &e_secret, &e_remote)
-            .ok_or(fault!(FailedAuth, true))?;
+        noise.mix_dh_no_init(hmac, &e_secret, &e_remote);
         // Process message pattern 2 se token.
-        noise
-            .mix_dh(hmac, &ctx.s_secret, &e_remote)
-            .ok_or(fault!(FailedAuth, true))?;
+        noise.mix_dh(hmac, &ctx.s_secret, &e_remote);
         // Process message pattern 2 payload.
         let i = k2.len();
         let new_kid_recv = remap(ctx, session, &state);
@@ -1552,13 +1511,9 @@ pub(crate) fn received_k2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
                 .read_e_no_init(hash, hmac, &mut i, &k2)
                 .ok_or(fault!(FailedAuth, true))?;
             // Process message pattern 2 ee token.
-            noise
-                .mix_dh_no_init(hmac, e_secret, &e_remote)
-                .ok_or(fault!(FailedAuth, true))?;
+            noise.mix_dh_no_init(hmac, e_secret, &e_remote);
             // Process message pattern 2 se token.
-            noise
-                .mix_dh(hmac, e_secret, &session.s_remote)
-                .ok_or(fault!(FailedAuth, true))?;
+            noise.mix_dh(hmac, e_secret, &session.s_remote);
             // Process message pattern 2 payload.
             let j = i + KID_SIZE;
             let k = j + AES_GCM_TAG_SIZE;

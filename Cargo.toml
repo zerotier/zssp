@@ -4,3 +4,10 @@ members = [
     "reference",
 ]
 resolver = "2"
+
+[profile.bench]
+opt-level = 3
+strip = true
+debug = true
+codegen-units = 1
+lto = true

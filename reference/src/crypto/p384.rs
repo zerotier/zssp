@@ -41,5 +41,5 @@ pub trait P384KeyPair<Rng: RngCore + CryptoRng> {
     /// the input `public_key` key would result in an invalid, non-standard or predictable ECDH secret.
     /// Please refer to the NIST spec for P-384 ECDH key agreement, or better yet use a peer reviewed
     /// library that has already implemented this correctly.
-    fn agree(&self, public_key: &Self::PublicKey) -> Option<[u8; P384_ECDH_SHARED_SECRET_SIZE]>;
+    fn agree(&self, public_key: &Self::PublicKey) -> [u8; P384_ECDH_SHARED_SECRET_SIZE];
 }

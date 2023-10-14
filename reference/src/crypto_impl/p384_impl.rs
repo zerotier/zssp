@@ -29,13 +29,11 @@ impl<Rng: RngCore + CryptoRng> P384KeyPair<Rng> for P384CrateKeyPair {
         CompressedPoint::from(self.public_key()).as_slice().try_into().unwrap()
     }
 
-    fn agree(&self, public_key: &Self::PublicKey) -> Option<[u8; P384_ECDH_SHARED_SECRET_SIZE]> {
-        Some(
-            self.diffie_hellman(public_key)
-                .raw_secret_bytes()
-                .as_slice()
-                .try_into()
-                .unwrap(),
-        )
+    fn agree(&self, public_key: &Self::PublicKey) -> [u8; P384_ECDH_SHARED_SECRET_SIZE] {
+        self.diffie_hellman(public_key)
+            .raw_secret_bytes()
+            .as_slice()
+            .try_into()
+            .unwrap()
     }
 }
