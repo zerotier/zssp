@@ -123,13 +123,9 @@ impl<Crypto: CryptoLayer> SymmetricState<Crypto> {
         *i = j;
         Crypto::PublicKey::from_bytes((pub_key).try_into().unwrap())
     }
-    fn mix_dh(&mut self, secret: &Crypto::KeyPair, remote: &Crypto::PublicKey) -> Option<()> {
-        if let Some(ecdh) = secret.agree(&remote).map(Zeroizing::new) {
-            self.mix_key(ecdh.as_ref());
-            Some(())
-        } else {
-            None
-        }
+    fn mix_dh(&mut self, secret: &Crypto::KeyPair, remote: &Crypto::PublicKey) {
+        let ecdh = Zeroizing::new(secret.agree(&remote));
+        self.mix_key(ecdh.as_ref());
     }
 }
 
@@ -247,7 +243,7 @@ fn create_a1_state<App: ApplicationLayer>(
     ratchet_state1: &RatchetState,
     ratchet_state2: Option<&RatchetState>,
     identity: Vec<u8>,
-) -> Option<StateA1<App::Crypto>> {
+) -> StateA1<App::Crypto> {
     //    <- s
     //    ...
     //    -> e, es, e1
@@ -261,7 +257,7 @@ fn create_a1_state<App: ApplicationLayer>(
     // Process message pattern 1 e token.
     let e_secret = noise.write_e(rng, &mut x1);
     // Process message pattern 1 es token.
-    noise.mix_dh(&e_secret, s_remote)?;
+    noise.mix_dh(&e_secret, s_remote);
     // Process message pattern 1 e1 token.
     let i = x1.len();
     let (e1_secret, e1_public) = <App::Crypto as CryptoLayer>::Kem::generate(rng.borrow_mut().deref_mut());
@@ -280,13 +276,13 @@ fn create_a1_state<App: ApplicationLayer>(
     let c = u64::from_be_bytes(x1[x1.len() - 8..].try_into().unwrap());
 
     x1.extend(&gen_null_response(rng.borrow_mut().deref_mut()));
-    Some(StateA1 {
+    StateA1 {
         noise,
         e_secret,
         e1_secret,
         identity,
         packet: Packet(0, to_nonce(PACKET_TYPE_HANDSHAKE_HELLO, c), x1),
-    })
+    }
 }
 /// Corresponds to Transition Algorithm 1 found in Section 4.3.
 pub(crate) fn trans_to_a1<App: ApplicationLayer>(
@@ -305,8 +301,7 @@ pub(crate) fn trans_to_a1<App: ApplicationLayer>(
     let mut session_map = ctx.session_map.borrow_mut();
     let kid_recv = gen_kid(session_map.deref(), ctx.rng.borrow_mut().deref_mut());
 
-    let a1 = create_a1_state::<App>(&ctx.rng, &s_remote, kid_recv, &state1, state2.as_ref(), identity)
-        .ok_or(OpenError::InvalidPublicKey)?;
+    let a1 = create_a1_state::<App>(&ctx.rng, &s_remote, kid_recv, &state1, state2.as_ref(), identity);
     let packet = a1.packet.clone();
 
     let (hk_recv, hk_send) = a1.noise.get_ask(LABEL_HEADER_KEY);
@@ -388,9 +383,7 @@ pub(crate) fn received_x1_trans<App: ApplicationLayer>(
     // Process message pattern 1 e token.
     let e_remote = noise.read_e(&mut i, &x1).ok_or(byzantine_fault!(FailedAuth, true))?;
     // Process message pattern 1 es token.
-    noise
-        .mix_dh(&ctx.s_secret, &e_remote)
-        .ok_or(byzantine_fault!(FailedAuth, true))?;
+    noise.mix_dh(&ctx.s_secret, &e_remote);
     // Process message pattern 1 e1 token.
     let j = i + KYBER_PUBLIC_KEY_SIZE;
     let k = j + AES_GCM_TAG_SIZE;
@@ -436,9 +429,7 @@ pub(crate) fn received_x1_trans<App: ApplicationLayer>(
     // Process message pattern 2 e token.
     let e_secret = noise.write_e(&ctx.rng, &mut x2);
     // Process message pattern 2 ee token.
-    noise
-        .mix_dh(&e_secret, &e_remote)
-        .ok_or(byzantine_fault!(FailedAuth, true))?;
+    noise.mix_dh(&e_secret, &e_remote);
     // Process message pattern 2 ekem1 token.
     let i = x2.len();
     let (ekem1, ekem1_secret) = <App::Crypto as CryptoLayer>::Kem::encapsulate(
@@ -519,9 +510,7 @@ pub(crate) fn received_x2_trans<App: ApplicationLayer>(
             // Process message pattern 2 e token.
             let e_remote = noise.read_e(&mut i, &x2).ok_or(byzantine_fault!(FailedAuth, true))?;
             // Process message pattern 2 ee token.
-            noise
-                .mix_dh(e_secret, &e_remote)
-                .ok_or(byzantine_fault!(FailedAuth, true))?;
+            noise.mix_dh(e_secret, &e_remote);
             // Process message pattern 2 ekem1 token.
             let j = i + KYBER_CIPHERTEXT_SIZE;
             let k = j + AES_GCM_TAG_SIZE;
@@ -587,9 +576,7 @@ pub(crate) fn received_x2_trans<App: ApplicationLayer>(
             x3.extend(&ctx.s_secret.public_key_bytes());
             noise.encrypt_and_hash_in_place(to_nonce(PACKET_TYPE_HANDSHAKE_COMPLETION, 1), i, &mut x3);
             // Process message pattern 3 se token.
-            noise
-                .mix_dh(&ctx.s_secret, &e_remote)
-                .ok_or(byzantine_fault!(FailedAuth, true))?;
+            noise.mix_dh(&ctx.s_secret, &e_remote);
             // Process message pattern 3 payload.
             let i = x3.len();
             x3.extend(identity);
@@ -704,9 +691,7 @@ pub(crate) fn received_x3_trans<App: ApplicationLayer>(
         .ok_or(byzantine_fault!(FailedAuth, true))?;
     i = k;
     // Process message pattern 3 se token.
-    noise
-        .mix_dh(&zeta.e_secret, &s_remote)
-        .ok_or(byzantine_fault!(FailedAuth, true))?;
+    noise.mix_dh(&zeta.e_secret, &s_remote);
     // Process message pattern 3 payload.
     let k = x3.len();
     let j = k - AES_GCM_TAG_SIZE;
@@ -1048,29 +1033,26 @@ fn timeout_trans<App: ApplicationLayer>(
             }
             let new_kid_recv = remap(session, &zeta, &ctx.rng, &ctx.session_map);
 
-            if let Some(a1) = create_a1_state::<App>(
+            let a1 = create_a1_state::<App>(
                 &ctx.rng,
                 &zeta.s_remote,
                 new_kid_recv,
                 &zeta.ratchet_state1,
                 zeta.ratchet_state2.as_ref(),
                 identity.clone(),
-            ) {
-                let (hk_recv, hk_send) = a1.noise.get_ask(LABEL_HEADER_KEY);
-                let packet = a1.packet.clone();
+            );
+            let (hk_recv, hk_send) = a1.noise.get_ask(LABEL_HEADER_KEY);
+            let packet = a1.packet.clone();
 
-                zeta.hk_send = hk_send;
-                *zeta.key_mut(true) = DuplexKey::default();
-                zeta.key_mut(true).recv.kid = Some(new_kid_recv);
-                zeta.resend_timer = current_time + <App::Crypto as CryptoLayer>::SETTINGS.resend_time as i64;
-                zeta.timeout_timer = current_time + <App::Crypto as CryptoLayer>::SETTINGS.initial_offer_timeout as i64;
-                zeta.beta = ZetaAutomata::A1(a1);
-                zeta.defrag = DefragBuffer::new(Some(hk_recv));
+            zeta.hk_send = hk_send;
+            *zeta.key_mut(true) = DuplexKey::default();
+            zeta.key_mut(true).recv.kid = Some(new_kid_recv);
+            zeta.resend_timer = current_time + <App::Crypto as CryptoLayer>::SETTINGS.resend_time as i64;
+            zeta.timeout_timer = current_time + <App::Crypto as CryptoLayer>::SETTINGS.initial_offer_timeout as i64;
+            zeta.beta = ZetaAutomata::A1(a1);
+            zeta.defrag = DefragBuffer::new(Some(hk_recv));
 
-                send(&packet, None);
-            } else {
-                zeta.expire();
-            }
+            send(&packet, None);
         }
         ZetaAutomata::S2 => {
             // Corresponds to Transition Algorithm 6 found in Section 4.3.
@@ -1090,15 +1072,9 @@ fn timeout_trans<App: ApplicationLayer>(
             // Process message pattern 1 e token.
             let e_secret = noise.write_e(&ctx.rng, &mut k1);
             // Process message pattern 1 es token.
-            if noise.mix_dh(&e_secret, &zeta.s_remote).is_none() {
-                zeta.expire();
-                return;
-            }
+            noise.mix_dh(&e_secret, &zeta.s_remote);
             // Process message pattern 1 ss token.
-            if noise.mix_dh(&ctx.s_secret, &zeta.s_remote).is_none() {
-                zeta.expire();
-                return;
-            }
+            noise.mix_dh(&ctx.s_secret, &zeta.s_remote);
             // Process message pattern 1 payload.
             let i = k1.len();
             k1.extend(&new_kid_recv.get().to_be_bytes());
@@ -1189,13 +1165,9 @@ pub(crate) fn received_k1_trans<App: ApplicationLayer>(
         // Process message pattern 1 e token.
         let e_remote = noise.read_e(&mut i, &k1).ok_or(byzantine_fault!(FailedAuth, true))?;
         // Process message pattern 1 es token.
-        noise
-            .mix_dh(s_secret, &e_remote)
-            .ok_or(byzantine_fault!(FailedAuth, true))?;
+        noise.mix_dh(s_secret, &e_remote);
         // Process message pattern 1 ss token.
-        noise
-            .mix_dh(s_secret, &zeta.s_remote)
-            .ok_or(byzantine_fault!(FailedAuth, true))?;
+        noise.mix_dh(s_secret, &zeta.s_remote);
         // Process message pattern 1 payload.
         let j = i + KID_SIZE;
         let k = j + AES_GCM_TAG_SIZE;
@@ -1210,13 +1182,9 @@ pub(crate) fn received_k1_trans<App: ApplicationLayer>(
         // Process message pattern 2 e token.
         let e_secret = noise.write_e(rng, &mut k2);
         // Process message pattern 2 ee token.
-        noise
-            .mix_dh(&e_secret, &e_remote)
-            .ok_or(byzantine_fault!(FailedAuth, true))?;
+        noise.mix_dh(&e_secret, &e_remote);
         // Process message pattern 2 se token.
-        noise
-            .mix_dh(&s_secret, &e_remote)
-            .ok_or(byzantine_fault!(FailedAuth, true))?;
+        noise.mix_dh(&s_secret, &e_remote);
         // Process message pattern 2 payload.
         let i = k2.len();
         let new_kid_recv = remap(session, &zeta, rng, session_map);
@@ -1310,13 +1278,9 @@ pub(crate) fn received_k2_trans<App: ApplicationLayer>(
             // Process message pattern 2 e token.
             let e_remote = noise.read_e(&mut i, &k2).ok_or(byzantine_fault!(FailedAuth, true))?;
             // Process message pattern 2 ee token.
-            noise
-                .mix_dh(e_secret, &e_remote)
-                .ok_or(byzantine_fault!(FailedAuth, true))?;
+            noise.mix_dh(e_secret, &e_remote);
             // Process message pattern 2 se token.
-            noise
-                .mix_dh(e_secret, &zeta.s_remote)
-                .ok_or(byzantine_fault!(FailedAuth, true))?;
+            noise.mix_dh(e_secret, &zeta.s_remote);
             // Process message pattern 2 payload.
             let j = i + KID_SIZE;
             let k = j + AES_GCM_TAG_SIZE;

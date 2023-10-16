@@ -10,7 +10,7 @@ pub trait P384PublicKey: Sized + Send + Sync {
     /// Create a P-384 public key from raw bytes.
     ///
     /// **CRITICAL**: This function must return `None` if the input `raw_key` is not on the P-384
-    /// curve, or if it breaks the P-384 spec in any other way.
+    /// curve, or if it breaks the P-384 spec in any other way. `P384KeyPair::agree` must never fail.
     fn from_bytes(raw_key: &[u8; P384_PUBLIC_KEY_SIZE]) -> Option<Self>;
 
     /// Get the raw bytes that uniquely define the public key.
@@ -25,7 +25,7 @@ pub trait P384PublicKey: Sized + Send + Sync {
 pub trait P384KeyPair<Rng: RngCore + CryptoRng> {
     /// The `PublicKeyP384` implementation which matches this `KeyPairP384` implementation.
     type PublicKey: P384PublicKey;
-    /// Randomly generate a new P-384 keypair.
+    /// Randomly generate a new P-384 keypair. This keypair must be fully valid.
     ///
     /// This function may use the provided RNG or its own, so long as the output is cryptographically random.
     fn generate(rng: &mut Rng) -> Self;
@@ -37,10 +37,6 @@ pub trait P384KeyPair<Rng: RngCore + CryptoRng> {
 
     /// Perform ECDH key agreement, writing the raw (un-hashed!) ECDH secret to `ecdh_out`.
     ///
-    /// **CRITICAL**: This function must return `false` if key agreement between this private key and
-    /// the input `public_key` key would result in an invalid, non-standard or predictable ECDH secret.
-    /// Please refer to the NIST spec for P-384 ECDH key agreement, or better yet use a peer reviewed
-    /// library that has already implemented this correctly.
-    #[must_use]
-    fn agree(&self, public_key: &Self::PublicKey, ecdh_out: &mut [u8; P384_ECDH_SHARED_SECRET_SIZE]) -> bool;
+    /// If there is any possibility of this function failing, panic instead of returning.
+    fn agree(&self, public_key: &Self::PublicKey, ecdh_out: &mut [u8; P384_ECDH_SHARED_SECRET_SIZE]);
 }

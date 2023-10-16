@@ -9,14 +9,11 @@ use crate::zeta::Session;
 /// Depending on the error type trying again may not work.
 #[derive(Debug)]
 pub enum OpenError {
-    /// An invalid parameter was supplied to the function.
-    InvalidPublicKey,
-
     /// The given identity string was larger than `IDENTITY_MAX_SIZE`, a.k.a. 4096 bytes.
     IdentityTooLarge,
 
     /// An error was returned by one of the ratchet state `ApplicationLayer` callbacks.
-    /// The received packet was dropped.
+    /// The session could not be openned as a result.
     StorageError(std::io::Error),
 }
 
@@ -243,7 +240,6 @@ pub enum SessionEvent {
 impl Display for OpenError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            OpenError::InvalidPublicKey => f.write_str("invalid public key"),
             OpenError::IdentityTooLarge => f.write_str("identity too large"),
             OpenError::StorageError(e) => e.fmt(f),
         }
