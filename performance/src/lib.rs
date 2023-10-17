@@ -14,7 +14,7 @@ mod challenge;
 mod frag_cache;
 mod fragged;
 mod handshake_cache;
-mod indexed_heap;
+pub mod indexed_heap;
 mod log_event;
 mod ratchet_state;
 mod symmetric_state;
