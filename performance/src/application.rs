@@ -96,24 +96,44 @@ pub trait CryptoLayer: Sized {
     /// the protocol will tend to default to the smaller constants.
     const SETTINGS: Settings = Settings::new_ms();
 
+    /// The random number generator that ZSSP should use.
+    /// It is used infrequently, but should still be cryptographically secure.
+    ///
+    /// FIPS compliance requires use of a FIPS certified implementation.
     type Rng: CryptoRng + RngCore;
 
-    /// The implementation of AES-256 Encryption that ZSSP should use.
+    /// The implementation of AES-256 block encryption that ZSSP should use.
     ///
     /// FIPS compliance requires use of a FIPS certified implementation.
     type PrpEnc: Aes256Enc;
-    /// The implementation of AES-256 Decryption that ZSSP should use.
+    /// The implementation of AES-256 block decryption that ZSSP should use.
     ///
     /// FIPS compliance requires use of a FIPS certified implementation.
     type PrpDec: Aes256Dec;
 
+    /// An implementation of AES-GCM-256 that ZSSP should use, with a simpler interface and lower
+    /// throughput requirements.
+    /// This is used for one-off encryption or decryption using one of the extremely short-lived
+    /// temporary keys within Noise. The Noise encryption keys are never used with this.
+    ///
+    /// FIPS compliance requires a FIPS certified implementation.
     type Aead: LowThroughputAesGcm;
+    /// The primary implementation of AES-GCM-256 that ZSSP should use.
+    /// One of these is created every time a new pair of Noise encryption keys is generated, and it
+    /// handles all encryption and decryption for data packets.
+    /// The efficiency and security of ZSSP is very closely tied to the efficiency and security of
+    /// this implementation.
+    ///
+    /// FIPS compliance requires a FIPS certified implementation.
     type AeadPool: HighThroughputAesGcmPool;
 
     /// The implementation of SHA-512 that ZSSP should use.
     ///
     /// FIPS compliance requires use of a FIPS certified implementation.
     type Hash: Sha512Hash;
+    /// The implementation of HMAC-SHA-512 that ZSSP should use.
+    ///
+    /// FIPS compliance requires use of a FIPS certified implementation.
     type Hmac: Sha512Hmac;
     /// The implementation of P-384 public keys that ZSSP should use.
     ///
@@ -142,6 +162,10 @@ pub trait CryptoLayer: Sized {
     type IncomingPacketBuffer: AsRef<[u8]> + AsMut<[u8]>;
 }
 
+/// Trait to implement to integrate ZSSP into an application.
+///
+/// Templating ZSSP on this trait lets the code here be almost entirely transport, OS,
+/// and use case independent.
 pub trait ApplicationLayer<Crypto: CryptoLayer>: Sized {
     /// Should return the current time in milliseconds. Does not have to be monotonic, nor synced
     /// with remote peers (although both of these properties would help reliability slightly).
@@ -307,6 +331,11 @@ pub trait Sender {
 ///
 /// Is implemented by `FnMut(&Arc<Session<Crypto>>) -> Option<(Sender, usize)>` closures.
 pub trait SendTo<Crypto: CryptoLayer> {
+    /// The `Sender` implementation that this `SendTo` implementation will return.
+    ///
+    /// It is allowed to have a lifetime that is borrowed from the `SendTo` instance
+    /// which created it. This allows it to potentially contain references or lock guards
+    /// in situations where that is more efficient.
     type Sender<'a>: Sender
     where
         Crypto: 'a,

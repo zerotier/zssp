@@ -94,6 +94,7 @@ pub trait CryptoLayer: Sized {
     const SETTINGS: Settings = Settings::new_ms();
 
     /// The random number generator that ZSSP should use.
+    /// It is used infrequently, but should still be cryptographically secure.
     ///
     /// FIPS compliance requires use of a FIPS certified implementation.
     type Rng: CryptoRng + RngCore;
