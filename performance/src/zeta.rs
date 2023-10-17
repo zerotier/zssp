@@ -27,9 +27,12 @@ use crate::LogEvent::*;
 /// Corresponds to the Zeta State Machine found in Section 4.1.
 pub struct Session<Crypto: CryptoLayer> {
     ctx: Weak<ContextInner<Crypto>>,
-    /// An arbitrary application defined object associated with each session.
+    /// An arbitrary, application defined object allocated with each session.
+    ///
+    /// Users of ZSSP are encouraged to use this field extensively to associate ZSSP sessions with
+    /// whatever your application's notion of a "remote peer" is.
     pub session_data: Crypto::SessionData,
-    /// Is true if the local peer acted as Bob, the responder in the initial key exchange.
+    /// This field is true if the local peer acted as Bob, the responder in the initial key exchange.
     pub was_bob: bool,
     queue_idx: BinaryHeapIndex,
 
@@ -37,7 +40,7 @@ pub struct Session<Crypto: CryptoLayer> {
     send_counter: AtomicU64,
     session_has_expired: AtomicBool,
 
-    pub window: Window<COUNTER_WINDOW_MAX_OOO, COUNTER_WINDOW_MAX_SKIP_AHEAD>,
+    pub(crate) window: Window<COUNTER_WINDOW_MAX_OOO, COUNTER_WINDOW_MAX_SKIP_AHEAD>,
     pub(crate) defrag: [Mutex<Fragged<Crypto::IncomingPacketBuffer, MAX_FRAGMENTS>>; SESSION_MAX_FRAGMENTS_OOO],
 
     /// `session_queue -> state_machine_lock -> state -> session_map`

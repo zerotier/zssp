@@ -1,8 +1,10 @@
-// (c) 2020-2022 ZeroTier, Inc. -- currently proprietary pending actual release and licensing. See LICENSE.md.
 
+/// The size of a SHA512 hash, which is always 64 bytes
 pub const SHA512_HASH_SIZE: usize = 64;
 
 /// A SHA-512 implementation.
+/// Its interface was designed to make this ZSSP implementation reasonably efficient.
+/// Does not need to be threadsafe.
 pub trait Sha512Hash {
     /// Create a new instance of SHA-512 for streaming data to.
     fn new() -> Self;
@@ -10,10 +12,14 @@ pub trait Sha512Hash {
     /// This must update the state of SHA-512 as if `data` was appended to the previous input.
     fn update(&mut self, data: &[u8]);
     /// Finish streaming input and output the final hash.
+    /// The hash must be written to `output`.
+    ///
+    /// This instance should be reset so that a new, independent hash can be generated.
     fn finish_and_reset(&mut self, output: &mut [u8; SHA512_HASH_SIZE]);
 }
 
-/// Opaque HMAC-SHA-512 implementation.
+/// A HMAC-SHA-512 implementation.
+/// Its interface was designed to make this ZSSP implementation reasonably efficient.
 /// Does not need to be threadsafe.
 pub trait Sha512Hmac {
     /// Allocate space on the stack or heap for repeated Hmac invocations.

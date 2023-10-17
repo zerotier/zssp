@@ -48,9 +48,13 @@ pub(crate) type SessionMap<Crypto> = RwLock<HashMap<NonZeroU32, Weak<Session<Cry
 
 pub(crate) type SessionQueue<Crypto> = IndexedBinaryHeap<Weak<Session<Crypto>>, Reverse<i64>>;
 
+/// The internal memory of the ZSSP context.
+/// One of these is allocated as an `Arc` to initialize this implementation of ZSSP.
+/// See `Context::new`.
 pub struct ContextInner<Crypto: CryptoLayer> {
+    /// The `CryptoRng` instance that was passed to ZSSP when this context was created.
     pub rng: Mutex<Crypto::Rng>,
-    pub next_service_time: AtomicI64,
+    pub(crate) next_service_time: AtomicI64,
     pub(crate) s_secret: Crypto::KeyPair,
     /// `session_queue -> state_machine_lock -> state -> session_map`
     pub(crate) session_queue: Mutex<SessionQueue<Crypto>>,

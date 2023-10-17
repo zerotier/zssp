@@ -4,6 +4,7 @@ use crate::application::CryptoLayer;
 use crate::zeta::Session;
 
 /// ZSSP events that might be interesting to log or aggregate into metrics.
+#[allow(missing_docs)]
 pub enum LogEvent<'a, Crypto: CryptoLayer> {
     ResentX1(&'a Arc<Session<Crypto>>),
     TimeoutX1(&'a Arc<Session<Crypto>>),
