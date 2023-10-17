@@ -1,4 +1,3 @@
-
 /// The specified size of an AES-256 key.
 pub const AES_256_KEY_SIZE: usize = 32;
 /// The specified size of an AES block.

@@ -19,9 +19,12 @@ pub struct BinaryHeapIndex(usize, u64);
 const RESERVED_MARKER: u64 = 1;
 const EMPTY_MARKER: u64 = 0;
 
-/// A simple Priority Queue built from a binary heap and a generational array.
+/// A simple priority queue built from a binary heap and a generational array.
 /// Entries in the queue are accessed and updated by their generational index.
 /// This allows for extremely simple memory management and fast queue updates.
+///
+/// The item with the greatest priority will be sorted to the start of the queue.
+/// Use `std::cmp::Reverse` if you need items sorted in the opposite order.
 pub struct IndexedBinaryHeap<T, P> {
     generation: u64,
     free_list_head: usize,
@@ -179,27 +182,38 @@ impl<T, P: Ord> IndexedBinaryHeap<T, P> {
             false
         }
     }
+    /// Retrieve the priority of an item stored at the given index of the binary heap.
+    /// Then apply the given function that returns an optional new priority.
+    ///
+    /// Returns an option containing the item's previous priority if the item was successfully
+    /// found in the heap and the function returned `Some(_)`, choosing to replace it.
+    ///
+    /// Amortized runtime: O(log(n)).
+    #[inline]
+    pub fn update_priority(&mut self, idx: BinaryHeapIndex, f: impl FnOnce(&P) -> Option<P>) -> Option<P> {
+        if let Some(data_idx) = self.deref_index(idx) {
+            if let Some(new_priority) = f(&self.data[data_idx].1) {
+                let lesser = self.data[data_idx].1 > new_priority;
+                let old_priority = std::mem::replace(&mut self.data[data_idx].1, new_priority);
+                if lesser {
+                    self.bubble_down(data_idx);
+                } else {
+                    self.bubble_up(data_idx);
+                }
+                Some(old_priority)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
     /// Change the priority of the item stored at the given index of the binary heap.
     /// Returns the item's previous priority, or `None` if the item does not exist in the heap.
     ///
     /// Amortized runtime: O(log(n)).
     pub fn change_priority(&mut self, idx: BinaryHeapIndex, new_priority: P) -> Option<P> {
-        self.deref_index(idx).map(|data_idx| {
-            let c = if self.data[data_idx].1 < new_priority {
-                1
-            } else if self.data[data_idx].1 > new_priority {
-                2
-            } else {
-                3
-            };
-            let old_priority = std::mem::replace(&mut self.data[data_idx].1, new_priority);
-            if c == 1 {
-                self.bubble_up(data_idx);
-            } else if c == 2 {
-                self.bubble_down(data_idx);
-            }
-            old_priority
-        })
+        self.update_priority(idx, |_| Some(new_priority))
     }
     /// Change the item stored at the given index of the binary heap.
     /// Returns previously stored item, or `None` if it does not exist in the heap.

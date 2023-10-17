@@ -210,7 +210,7 @@ impl HighThroughputAesGcmPool for OpenSSLAesGcmPool {
         }
     }
 
-    fn start_enc<'a>(&'a self, nonce: &[u8; AES_GCM_NONCE_SIZE]) -> OpenSSLAesGcmEnc {
+    fn start_enc<'a>(&'a self, nonce: &[u8; AES_GCM_NONCE_SIZE]) -> OpenSSLAesGcmEnc<'a> {
         let i = u64::from_be_bytes(nonce[4..].try_into().unwrap());
         let g = self.enc[(i as usize) % self.enc.len()].lock().unwrap();
         unsafe {
@@ -219,7 +219,7 @@ impl HighThroughputAesGcmPool for OpenSSLAesGcmPool {
         OpenSSLAesGcmEnc(g)
     }
 
-    fn start_dec<'a>(&'a self, nonce: &[u8; AES_GCM_NONCE_SIZE]) -> OpenSSLAesGcmDec {
+    fn start_dec<'a>(&'a self, nonce: &[u8; AES_GCM_NONCE_SIZE]) -> OpenSSLAesGcmDec<'a> {
         let i = u64::from_be_bytes(nonce[4..].try_into().unwrap());
         let g = self.dec[(i as usize) % self.enc.len()].lock().unwrap();
         unsafe {

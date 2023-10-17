@@ -1,4 +1,3 @@
-
 /// The size of a SHA512 hash, which is always 64 bytes
 pub const SHA512_HASH_SIZE: usize = 64;
 

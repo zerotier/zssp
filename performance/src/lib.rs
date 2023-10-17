@@ -36,21 +36,21 @@
 //!  - **KBKDF**: Key mixing, sub-key derivation
 //!  - **AES-256**: Single block encryption of header to harden packet fragmentation protocol
 //!  - **AES-256-GCM**: Authenticated encryption
-#![warn(missing_docs, rust_2018_idioms)]
+//#![warn(missing_docs, rust_2018_idioms)]
 pub mod crypto;
 pub mod crypto_impl;
 
+mod antireplay;
+mod challenge;
+mod frag_cache;
+mod fragged;
+mod handshake_cache;
 /// A module that implements a priority queue using a binary heap.
 /// Generational indexing is used to improve performance and simplify lifetime management.
 ///
 /// This module is used by this implementation of ZSSP, but it isn't a core component of the protocol.
 /// Rather, it is a reuseable component that you may find useful on its own.
 pub mod indexed_heap;
-mod antireplay;
-mod challenge;
-mod frag_cache;
-mod fragged;
-mod handshake_cache;
 mod log_event;
 mod ratchet_state;
 mod symmetric_state;
