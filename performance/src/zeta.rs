@@ -1827,3 +1827,22 @@ impl<Crypto: CryptoLayer> Session<Crypto> {
         &self.s_remote
     }
 }
+
+impl<Crypto: CryptoLayer> std::fmt::Debug for Session<Crypto> where Crypto::SessionData: std::fmt::Debug {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Session").field("session_data", &self.session_data).field("was_bob", &self.was_bob).field("state", &self.state.read().unwrap().beta).finish()
+    }
+}
+impl<Crypto: CryptoLayer> std::fmt::Debug for ZetaAutomata<Crypto> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Null => write!(f, "Expired"),
+            Self::A1(..) => write!(f, "A1"),
+            Self::A3(..) => write!(f, "A3"),
+            Self::S1 => write!(f, "S1"),
+            Self::S2 => write!(f, "S2"),
+            Self::R1 { .. } => write!(f, "R1"),
+            Self::R2 { .. } => write!(f, "R2"),
+        }
+    }
+}
