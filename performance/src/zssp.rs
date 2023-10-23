@@ -275,7 +275,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                     let fragments = if fragment_count > 1 {
                         let idx = incoming_counter as usize % session.defrag.len();
                         session.defrag[idx].lock().unwrap().assemble(
-                            &nonce,
+                            incoming_counter,
                             incoming_fragment_buf,
                             fragment_no,
                             fragment_count,
@@ -301,7 +301,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                     let assembled_packet = if fragment_count > 1 {
                         let idx = incoming_counter as usize % session.defrag.len();
                         session.defrag[idx].lock().unwrap().assemble(
-                            &nonce,
+                            incoming_counter,
                             incoming_fragment_buf,
                             fragment_no,
                             fragment_count,
@@ -438,7 +438,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                     let mut buffer = ArrayVec::<u8, HANDSHAKE_COMPLETION_MAX_SIZE>::new();
                     let assembled_packet = if fragment_count > 1 {
                         zeta.defrag.lock().unwrap().assemble(
-                            &nonce,
+                            incoming_counter,
                             incoming_fragment_buf,
                             fragment_no,
                             fragment_count,
