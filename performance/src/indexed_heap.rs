@@ -32,7 +32,6 @@ pub struct IndexedBinaryHeap<T, P> {
     map: Vec<(usize, u64)>,
 }
 
-#[allow(unused)]
 impl<T, P: Ord> IndexedBinaryHeap<T, P> {
     /// Create a new, empty binary heap.
     pub fn new() -> Self {
@@ -189,7 +188,6 @@ impl<T, P: Ord> IndexedBinaryHeap<T, P> {
     /// found in the heap and the function returned `Some(_)`, choosing to replace it.
     ///
     /// Amortized runtime: O(log(n)).
-    #[inline]
     pub fn update_priority(&mut self, idx: BinaryHeapIndex, f: impl FnOnce(&P) -> Option<P>) -> Option<P> {
         if let Some(data_idx) = self.deref_index(idx) {
             if let Some(new_priority) = f(&self.data[data_idx].1) {
