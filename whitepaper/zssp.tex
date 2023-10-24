@@ -200,7 +200,7 @@ If we disable all security features, we get \emph{Opportunistic Mode} ZSSP. This
 
 Opportunistic mode ZSSP is vulnerable to Compromise-and-Impersonate and Double Key-Compromise MitM because an attacker can perform a downgrade attack to reset one or both peer's ratchet keys to zero. Howeve because such a downgrade should not normally happen between honest peers, if one does occur we can warn the user it has occurred, allowing them to investigate out-of-band whether them or their peer has corrupted or lost their persistent storage. If both peers have not corrupted their persistent storage a downgrade attack has almost certainly occurred, and one or more static keys are compromised.
 
-Compromise-and-Impersonate and Double Key-Compromise MitM attacks are possible against persistent mode ZSSP for a brief window of time. When an attacker compromises a peer, and steals their ratchet keys along with their static private keys, they have a limited time during with they can perform an impersonation attack. Otherwise the peer will engage in new key exchanges and rotate out the compromised ratchet keys. Furthermore, if the attacker commits to an impersonation attack, this will permanently desynchronize the compromised peer's ratchet keys from the peer being impersonated to. If the attacker does not commit to becoming a permanent MitM from that point onwards, their impersonation attack will be detected.
+Compromise-and-Impersonate and Double Key-Compromise MitM attacks are possible against persistent mode ZSSP for a brief window of time. When an attacker compromises a peer, and steals their ratchet keys along with their static private keys, they have a limited time during which they can perform an impersonation attack. Otherwise the peer will engage in new key exchanges and rotate out the compromised ratchet keys. Furthermore, if the attacker commits to an impersonation attack, this will permanently desynchronize the compromised peer's ratchet keys from the peer being impersonated to. If the attacker does not commit to becoming a permanent MitM from that point onwards, their impersonation attack will be detected.
 
 For peers actively communicating with each other, the attacker's window of opportunity is at most an hour. For peers not actively communicating, the attacker has until those peers contact each other again.
 
@@ -559,7 +559,7 @@ With the necessary background established, we can now define the final component
 	\item Ephemeral Noise handshake hashes, $h$ and $h'$
 	\item Temporary ratchet key and fingerprint $\texttt{rk}'\andb \texttt{rf}'$, used so Bob can complete Noise XK before knowing Alice's identity.
 	\item Role identifier $\texttt{r}$, used so peers are aware whether they were Alice or Bob in Noise XK
-	\item Comfirmed key index $\texttt{i}$, used so peers know the most recently confirmed Noise key.
+	\item Confirmed key index $\texttt{i}$, used so peers know the most recently confirmed Noise key.
 \end{itemize}
 
 All of these variables are independent \emph{per instance of} $\zeta$. So each instance of $\zeta$ stores a unique and independent set of these variables, and they are never shared between separate instances of $\zeta$. The persistent state variables $\texttt{rk}$ and $\texttt{rf}$ are a partial exception to this rule, as they can be accessed by multiple instances of $\zeta$ over time. However each of these instances must be associated with a single, unique remote peer, and two instances of $\zeta$ must never access the same set of persistent state variables at the same time.
@@ -1084,7 +1084,7 @@ We are going to prove that the ZSSP header authentication algorithm is existenti
 \end{definition}
 
 \begin{definition}[Pseudorandom Permutation \cite{modern_crypto}]
-	Given the security paramter $n$, a keyed permutation, $F$, and a probabilistic poly-time distinguishers $D$, define the advantage of $D$ to be:
+	Given the security parameter $n$, a keyed permutation, $F$, and a probabilistic poly-time distinguishers $D$, define the advantage of $D$ to be:
 	$$\mathbf{Adv}^\text{ind-prp}_{D,\,F}(n) = |\prob[D^{F_k(\cdot), F_k^{-1}(\cdot)}(1^n) = 1] - \prob[D^{f(\cdot), f^{-1}(\cdot)}(1^n) = 1]|,$$
 	where $k\gets\$\,\{0,1\}^n$ and $f$ is a truly random permutation.
 
@@ -1103,7 +1103,7 @@ We are going to prove that the ZSSP header authentication algorithm is existenti
 \end{algorithm}
 
 \begin{algorithm}
-	\caption{$\algn{EncMac}_k(m)$ of the ZSSP header authentication algorithm -- Input $m$ is bytes 4 to 20 of a fragment. Function $F$ is AES-256. For the sake of the security proof we will assume $m$ grows porportionally to $n$.}\label{alg:header_encmac}
+	\caption{$\algn{EncMac}_k(m)$ of the ZSSP header authentication algorithm -- Input $m$ is bytes 4 to 20 of a fragment. Function $F$ is AES-256. For the sake of the security proof we will assume $m$ grows proportionally to $n$.}\label{alg:header_encmac}
 	\begin{algorithmic}
 		\Require $m$
 		\Ensure $F_k(m)$
@@ -1111,7 +1111,7 @@ We are going to prove that the ZSSP header authentication algorithm is existenti
 \end{algorithm}
 
 \begin{algorithm}
-	\caption{$\algn{Dec}_k(c)$ of the ZSSP header authentication algorithm -- Function $F^{-1}$ is inverse of AES-256. Function $\algn{Vrfy}$ is some algorithm provided by the upper protocol for verifying that the packet nonce is valid. For the sake of the security proof we will be assuming that the size of the packet nonce $N$ is porportional to the security parameter $n$. The version of $\algn{Vrfy}$ used by ZSSP is described by \algorithmref{alg:header_vrfy}.}\label{alg:header_dec}
+	\caption{$\algn{Dec}_k(c)$ of the ZSSP header authentication algorithm -- Function $F^{-1}$ is inverse of AES-256. Function $\algn{Vrfy}$ is some algorithm provided by the upper protocol for verifying that the packet nonce is valid. For the sake of the security proof we will be assuming that the size of the packet nonce $N$ is proportional to the security parameter $n$. The version of $\algn{Vrfy}$ used by ZSSP is described by \algorithmref{alg:header_vrfy}.}\label{alg:header_dec}
 	\begin{algorithmic}
 		\Require $c$
 		\State $m \gets F_k^{-1}(c)$
@@ -1171,7 +1171,7 @@ We are going to prove that the ZSSP header authentication algorithm is existenti
 \end{proof}
 
 \begin{algorithm}
-	\caption{The implementation of $\algn{Vrfy}(N)$ for ZSSP -- We are assuming that the input $N$ is being interpretted as $p||c$, the packet nonce construction of \figureref{fig:header_nonce}. $D$ is a stateful, finite array of integers, initialized to -1, that stores the value of previously authenticated counters. $D$ is updated after ZSSP decrypts a received packet. ZSSP explicitly does not verify that the padding is zero, for the sake of possible future revisions.}\label{alg:header_vrfy}
+	\caption{The implementation of $\algn{Vrfy}(N)$ for ZSSP -- We are assuming that the input $N$ is being interpreted as $p||c$, the packet nonce construction of \figureref{fig:header_nonce}. $D$ is a stateful, finite array of integers, initialized to -1, that stores the value of previously authenticated counters. $D$ is updated after ZSSP decrypts a received packet. ZSSP explicitly does not verify that the padding is zero, for the sake of possible future revisions.}\label{alg:header_vrfy}
 	\begin{algorithmic}
 		\Require $p||c$
 		\State $b \gets 0$
