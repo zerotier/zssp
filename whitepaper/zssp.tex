@@ -1103,7 +1103,7 @@ We are going to prove that the ZSSP header authentication algorithm is existenti
 \end{algorithm}
 
 \begin{algorithm}
-	\caption{$\algn{EncMac}_k(m)$ of the ZSSP header authentication algorithm -- Input $m$ is bytes 4 to 20 of a fragment. Function $F$ is AES-256. For the sake of the security proof we will assume $m$ grows proportionally to $n$.}\label{alg:header_encmac}
+	\caption{$\algn{EncMac}_k(m)$ of the ZSSP header authentication algorithm -- Input $m$ is bytes 4 to 20 of a fragment, which is the portion of the fragment that ZFP encrypts. Function $F$ is AES-256. For the sake of the security proof we will assume that the input block size of AES-256 is not constant, but instead is equal to $n$. For this reason we also assume $m$ is able to grow to be of size $n$.}\label{alg:header_encmac}
 	\begin{algorithmic}
 		\Require $m$
 		\Ensure $F_k(m)$
@@ -1111,7 +1111,7 @@ We are going to prove that the ZSSP header authentication algorithm is existenti
 \end{algorithm}
 
 \begin{algorithm}
-	\caption{$\algn{Dec}_k(c)$ of the ZSSP header authentication algorithm -- Function $F^{-1}$ is inverse of AES-256. Function $\algn{Vrfy}$ is some algorithm provided by the upper protocol for verifying that the packet nonce is valid. For the sake of the security proof we will be assuming that the size of the packet nonce $N$ is proportional to the security parameter $n$. The version of $\algn{Vrfy}$ used by ZSSP is described by \algorithmref{alg:header_vrfy}.}\label{alg:header_dec}
+	\caption{$\algn{Dec}_k(c)$ of the ZSSP header authentication algorithm -- Function $F^{-1}$ is inverse of AES-256. Function $\algn{Vrfy}$ is some algorithm provided by the upper protocol for verifying that the packet nonce is valid. For the sake of the security proof we assume that the size of the packet nonce $N$ is able to grow proportionally to $n$. The version of $\algn{Vrfy}$ used by ZSSP is described by \algorithmref{alg:header_vrfy}.}\label{alg:header_dec}
 	\begin{algorithmic}
 		\Require $c$
 		\State $m \gets F_k^{-1}(c)$
