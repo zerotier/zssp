@@ -1060,7 +1060,7 @@ The Noise XK handshake packets, as specified by Noise, do not use a unique count
 We are going to prove that the ZSSP header authentication algorithm is existentially unforgeable under an adaptive chosen message attack. However our algorithm does not fit the standard syntax of message authentication codes. This means we must prove security under a different security experiment than the standard message authentication code experiment. We choose to use the syntax of a message transmission scheme \cite{modern_crypto}, and prove authenticated communication under the secure message transmission experiment, \algorithmref{alg:header_auth}.
 
 \begin{definition}[Message Transmission Scheme \cite{modern_crypto}]
-	A message transmission scheme is tuple of algorithms $\Pi = (\algn{Gen}, \algn{EncMac}, \algn{Dec})$. \algn{Gen} is the key generation algorithm, \algn{EncMac} is the authenticated encryption algorithm, and \algn{Dec} is the decryption and verification algorithm.
+	A message transmission scheme is a tuple of algorithms $\Pi = (\algn{Gen}, \algn{EncMac}, \algn{Dec})$. \algn{Gen} is the key generation algorithm, \algn{EncMac} is the authenticated encryption algorithm, and \algn{Dec} is the decryption and verification algorithm.
 
 	A message transmission scheme is \emph{correct} if for all keys $k\gets \algn{Gen}(1^n)$ and messages $m$,
 	$$\algn{Dec}_k(\algn{EncMac}_k(m)) = m.$$
