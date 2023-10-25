@@ -400,10 +400,10 @@ At the end of this section we will have defined $\zeta$, which is the high-level
 			\item $\delta(R_2, \tau)=\bot$.
 		\end{itemize}
 	\end{multicols}
-	In addition, for all states $q\in Q,\ \delta(q, \chi) = \bot$, which is to say the process restart symbol $\chi$, transitions all states to the initial state, $\bot$.
+	In addition, for all states $q\in Q,\ \delta(q, \chi) = \bot$, which in other words means that the process restart symbol, $\chi$, transitions all states to the initial state, $\bot$.
 	For all transitions of $\delta$ that are not yet specified, they are the identity transition, as in a transition that maps a state to itself.
 
-	We added the transition $\delta(\bot, \tau)=A_1$, but it is important to note $\bot$, being the initial state, does not have any attached timer within ZKE, and will not be triggered automatically. This transition simply represents the upper protocol initiating a session through ZKE. Most upper protocols will attempt to restart sessions on a timer, which is why we chose to represent this unique transition with the $\tau$ symbol.
+	$\beta$ contains the transition $\delta(\bot, \tau)=A_1$, but it is important to note $\bot$, being the initial state, does not have any attached timer within ZKE, and will not be triggered automatically. This transition simply represents the upper protocol initiating a session through ZKE. Most upper protocols will attempt to restart sessions on a timer, which is why we chose to represent this unique transition with the $\tau$ symbol.
 
 	Let $\beta=(Q, \Sigma, \delta, \bot, \{S_2\})$ be the ZKE Automata.
 \end{definition}
