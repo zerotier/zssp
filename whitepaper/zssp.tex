@@ -56,7 +56,7 @@ Within ZSSP, initial contact between an initiator, Alice, and a responder, Bob, 
 $$\texttt{Noise\_XKhfs+psk2\_P384+Kyber1024\_AESGCM\_SHA512}.$$
 \texttt{Noise\_XK} specifies we are implementing Noise XK. \texttt{psk2} specifies we are using a preshared symmetric key (PSK) used on the second message of the handshake. \texttt{P384} specifies we are using elliptic curve P384 as our FIPS compliant Diffie-Helman (DH) primitive \cite{fips_p384}. \texttt{AESGCM} specifies we are using the AES block cipher in Galois/Counter Mode as our symmetric primitive \cite{fips_aesgcm}. \texttt{SHA512} is our FIPS compliant hash function \cite{fips_sha2}. And finally, \texttt{hfs} and \texttt{+Kyber1024} specifies we are adding hybrid forward secrecy onto Noise using an ephemeral Kyber1024 handshake \cite{kyber}.
 
-ZSSP is cryptographically opinionated, as in ZSSP is only implemented in terms of the P385, Kyber1024, AES, and SHA-512 cryptographic primitives. There is no cipher suite negotiation within ZSSP, if one of the cryptographic primitives of ZSSP contains a critical weakness a new version of ZSSP will have to be created. We believe that in the modern era, with strong, standardized cryptographic algorithms available, this is a strict advantage to security. Importantly, this will simplify tremendously any future mathematical analysis of ZSSP.
+ZSSP is cryptographically opinionated, as in ZSSP is only implemented in terms of the P384, Kyber1024, AES, and SHA-512 cryptographic primitives. There is no cipher suite negotiation within ZSSP, if one of the cryptographic primitives of ZSSP contains a critical weakness a new version of ZSSP will have to be created. We believe that in the modern era, with strong, standardized cryptographic algorithms available, this is a strict advantage to security. Importantly, this will simplify tremendously any future mathematical analysis of ZSSP.
 
 \subsection{Federal Information Processing Standards}
 
@@ -198,9 +198,9 @@ If we disable all security features, we get \emph{Opportunistic Mode} ZSSP. This
 	\item Double Key-Compromise MitM -- The attacker has the static private keys of two peers, and attempts to become a Man-in-the-Middle between them.
 \end{itemize}
 
-Opportunistic mode ZSSP is vulnerable to Compromise-and-Impersonate and Double Key-Compromise MitM because an attacker can perform a downgrade attack to reset one or both peer's ratchet keys to zero. Howeve because such a downgrade should not normally happen between honest peers, if one does occur we can warn the user it has occurred, allowing them to investigate out-of-band whether them or their peer has corrupted or lost their persistent storage. If both peers have not corrupted their persistent storage a downgrade attack has almost certainly occurred, and one or more static keys are compromised.
+Opportunistic mode ZSSP is vulnerable to Compromise-and-Impersonate and Double Key-Compromise MitM because an attacker can perform a downgrade attack to reset one or both peer's ratchet keys to zero. However because such a downgrade should not normally happen between honest peers, if one does occur we can warn the user it has occurred, allowing them to investigate out-of-band whether them or their peer has corrupted or lost their persistent storage. If both peers have not corrupted their persistent storage a downgrade attack has almost certainly occurred, and one or more static keys are compromised.
 
-Compromise-and-Impersonate and Double Key-Compromise MitM attacks are possible against persistent mode ZSSP for a brief window of time. When an attacker compromises a peer, and steals their ratchet keys along with their static private keys, they have a limited time during with they can perform an impersonation attack. Otherwise the peer will engage in new key exchanges and rotate out the compromised ratchet keys. Furthermore, if the attacker commits to an impersonation attack, this will permanently desynchronize the compromised peer's ratchet keys from the peer being impersonated to. If the attacker does not commit to becoming a permanent MitM from that point onwards, their impersonation attack will be detected.
+Compromise-and-Impersonate and Double Key-Compromise MitM attacks are possible against persistent mode ZSSP for a brief window of time. When an attacker compromises a peer, and steals their ratchet keys along with their static private keys, they have a limited time during which they can perform an impersonation attack. Otherwise the peer will engage in new key exchanges and rotate out the compromised ratchet keys. Furthermore, if the attacker commits to an impersonation attack, this will permanently desynchronize the compromised peer's ratchet keys from the peer being impersonated to. If the attacker does not commit to becoming a permanent MitM from that point onwards, their impersonation attack will be detected.
 
 For peers actively communicating with each other, the attacker's window of opportunity is at most an hour. For peers not actively communicating, the attacker has until those peers contact each other again.
 
@@ -227,7 +227,7 @@ If Alice has corrupted their storage, Alice can either send the empty string or 
 ZSSP is a stack of three closely related, but independent protocols. These are the \emph{Zeta Key Exchange} (ZKE), the \emph{ZeroTier Challenge Protocol} (ZCP) and the \emph{ZeroTier Fragmentation Protocol} (ZFP), described in \figureref{fig:protocol_stack}. The Zeta Key Exchange is the most complex and most essential from this stack: It is the part of ZSSP that implements Noise XK and Noise KK and directly interfaces with the upper protocol. For that reason we are going to describe it first, in isolation from the lower protocols.
 
 \begin{figure}
-	\caption{The protocol stack of ZSSP. When the upper protocol sends a packet, it must pass down the protocol stack from the top to the bottom, where each layer may modify or adds to the packet in some way. When the datagram protocol receives a packet, it passes is up towards the top of the protocol stack. Any layer may consume the incoming packet and not pass it upwards. The Zeta Key Exchange performs key exchanges to provide authenticated encryption to packets. The ZCP protects any key exchange protocol above it from CPU exhaustion DOS attacks. And the ZeroTier Fragmentation Protocol fragments packets to fit within the MTU of the protocol below it, in a way that mitigates common fragmentation DOS attacks.}\label{fig:protocol_stack}
+	\caption{The protocol stack of ZSSP. When the upper protocol sends a packet, it must pass down the protocol stack from the top to the bottom, where each layer may modify or adds to the packet in some way. When the datagram protocol receives a packet, it passes it up towards the top of the protocol stack. Any layer may consume the incoming packet and not pass it upwards. The Zeta Key Exchange performs key exchanges to provide authenticated encryption to packets. The ZCP protects any key exchange protocol above it from CPU exhaustion DOS attacks. And the ZeroTier Fragmentation Protocol fragments packets to fit within the MTU of the protocol below it, in a way that mitigates common fragmentation DOS attacks.}\label{fig:protocol_stack}
 	\centering
 	\begin{tikzpicture}[stack/.style={rectangle split, rectangle split parts=#1,draw, anchor=center}]
 		\node[stack=5]  {
@@ -243,7 +243,7 @@ ZSSP is a stack of three closely related, but independent protocols. These are t
 The next section will be dedicated to describing ZKE in explicit detail. We will be making heavy use of common mathematical notions and notation surrounding Deterministic Finite Automata, State Machines and AKE security. The goal with this section is to describe ZKE at a level of detail necessary both to allow someone to implement ZKE, and to aide future mathematical analysis of ZKE.
 
 \begin{definition}[ZKE packet types]
-	We define 8 different packet types that essential for the functioning of ZKE.
+	We define 8 different packet types that are essential for the functioning of ZKE.
 	\begin{itemize}
 		\item $X_1$: This packet type contains the first message of Noise XK. It is identified internally with packet type number `0'.
 		\item $X_2$: This packet type contains the second message of Noise XK. It is identified internally with packet type number `1'.
@@ -462,7 +462,7 @@ At the end of this section we will have defined $\zeta$, which is the high-level
 	\end{itemize}
 	\sectionref{sec:trans_alg} discusses how these packets are structured, and what algorithms are used to create and process each packet.
 
-	$\zeta$ has a timer system to automatically and locally trigger state transitions or packet resends. This system exists primarily as a solution to the ``two generals problem''. Since ZKE assumes a out-of-order, lossy transport environment it is necessary to have a system of resending lost messages and timing out those resends, similar to TCP. The ZKE timer system is designed to be lightweight, security focused, and simple. It provides strong guarantees about the maximum amount of time that may pass until certain security critical events, such as completing a handshake or ratcheting a session key, must occur.
+	$\zeta$ has a timer system to automatically and locally trigger state transitions or packet resends. This system exists primarily as a solution to the ``two generals problem''. Since ZKE assumes an out-of-order, lossy transport environment it is necessary to have a system of resending lost messages and timing out those resends, similar to TCP. The ZKE timer system is designed to be lightweight, security focused, and simple. It provides strong guarantees about the maximum amount of time that may pass until certain security critical events, such as completing a handshake or ratcheting a session key, must occur.
 
 	We assume that the underlying computer running $\zeta$ exposes some mechanism for creating a \emph{timer} which can be \emph{set} to some amount of time, and the computer will \emph{trigger} the timer after approximately that amount of real time has passed.
 	\begin{itemize}
@@ -470,7 +470,7 @@ At the end of this section we will have defined $\zeta$, which is the high-level
 		\item States $A_1$, $B_2$ and $A_3$ always set their timeout timer to 10 seconds.
 		\item States $S_1$, $R_1$ and $R_2$ always set their timeout timer to 1 minute.
 		\item State $S_2$ sets its timeout timer to a uniform random number in the range 50 minutes to 1 hour. This amount of time is randomly generated each time $\zeta$ enters state $S_2$.
-		\item In states $A_1$, $A_3$, $S_1$, $R_1$ and $R_2$, $\zeta$ runs an additional ``resend timer''. Whenever this timer triggers, a copy of the respective packet this state generated is sent, and the resend timer is reset. Packets $C_1$, $K_1$ and $K_2$ are re-encrypted under the key exchange key \texttt{kek}, and a fresh encryption counter. States $B_2$ and $S_2$ do not have a resend timer and do not resend packets. The resend timer is always set to 1 second.
+		\item In states $A_1$, $A_3$, $S_1$, $R_1$ and $R_2$, $\zeta$ runs an additional ``resend timer''. Whenever this timer triggers, a copy of the respective packet that this state generated is sent, and the resend timer is reset. Packets $C_1$, $K_1$ and $K_2$ are re-encrypted under the key exchange key \texttt{kek}, and a fresh encryption counter. States $B_2$ and $S_2$ do not have a resend timer and do not resend packets. The resend timer is always set to 1 second.
 		\item Any state may trigger timeout early for any reason. In particular it is recommended to timeout state $B_2$ early if memory is being filled with unfinished handshakes. This prevents memory exhaustion attacks.
 	\end{itemize}
 	The timer system has the property that all timers are generated locally, checked locally, and are never sent ``over the wire''. This has the advantage of making it difficult to impossible for a remote attacker to manipulate a peer's timers. The system has also been intentionally designed to make it impossible for $\zeta$ to ever get indefinitely stuck in one state. If it could, it would open up the possibility that an attacker could intentionally cause this to happen, which would be a form of a DOS attack. The rekeying timer for state $S_1$ is randomized to  deter traffic analysis of ZSSP, and to prevent peers from simultaneously entering state $R_1$, which would be redundant and inefficient.
@@ -559,7 +559,7 @@ With the necessary background established, we can now define the final component
 	\item Ephemeral Noise handshake hashes, $h$ and $h'$
 	\item Temporary ratchet key and fingerprint $\texttt{rk}'\andb \texttt{rf}'$, used so Bob can complete Noise XK before knowing Alice's identity.
 	\item Role identifier $\texttt{r}$, used so peers are aware whether they were Alice or Bob in Noise XK
-	\item Comfirmed key index $\texttt{i}$, used so peers know the most recently confirmed Noise key.
+	\item Confirmed key index $\texttt{i}$, used so peers know the most recently confirmed Noise key.
 \end{itemize}
 
 All of these variables are independent \emph{per instance of} $\zeta$. So each instance of $\zeta$ stores a unique and independent set of these variables, and they are never shared between separate instances of $\zeta$. The persistent state variables $\texttt{rk}$ and $\texttt{rf}$ are a partial exception to this rule, as they can be accessed by multiple instances of $\zeta$ over time. However each of these instances must be associated with a single, unique remote peer, and two instances of $\zeta$ must never access the same set of persistent state variables at the same time.
@@ -1084,7 +1084,7 @@ We are going to prove that the ZSSP header authentication algorithm is existenti
 \end{definition}
 
 \begin{definition}[Pseudorandom Permutation \cite{modern_crypto}]
-	Given the security paramter $n$, a keyed permutation, $F$, and a probabilistic poly-time distinguishers $D$, define the advantage of $D$ to be:
+	Given the security parameter $n$, a keyed permutation, $F$, and a probabilistic poly-time distinguishers $D$, define the advantage of $D$ to be:
 	$$\mathbf{Adv}^\text{ind-prp}_{D,\,F}(n) = |\prob[D^{F_k(\cdot), F_k^{-1}(\cdot)}(1^n) = 1] - \prob[D^{f(\cdot), f^{-1}(\cdot)}(1^n) = 1]|,$$
 	where $k\gets\$\,\{0,1\}^n$ and $f$ is a truly random permutation.
 
@@ -1103,7 +1103,7 @@ We are going to prove that the ZSSP header authentication algorithm is existenti
 \end{algorithm}
 
 \begin{algorithm}
-	\caption{$\algn{EncMac}_k(m)$ of the ZSSP header authentication algorithm -- Input $m$ is bytes 4 to 20 of a fragment. Function $F$ is AES-256. For the sake of the security proof we will assume $m$ grows porportionally to $n$.}\label{alg:header_encmac}
+	\caption{$\algn{EncMac}_k(m)$ of the ZSSP header authentication algorithm -- Input $m$ is bytes 4 to 20 of a fragment. Function $F$ is AES-256. For the sake of the security proof we will assume $m$ grows proportionally to $n$.}\label{alg:header_encmac}
 	\begin{algorithmic}
 		\Require $m$
 		\Ensure $F_k(m)$
@@ -1111,7 +1111,7 @@ We are going to prove that the ZSSP header authentication algorithm is existenti
 \end{algorithm}
 
 \begin{algorithm}
-	\caption{$\algn{Dec}_k(c)$ of the ZSSP header authentication algorithm -- Function $F^{-1}$ is inverse of AES-256. Function $\algn{Vrfy}$ is some algorithm provided by the upper protocol for verifying that the packet nonce is valid. For the sake of the security proof we will be assuming that the size of the packet nonce $N$ is porportional to the security parameter $n$. The version of $\algn{Vrfy}$ used by ZSSP is described by \algorithmref{alg:header_vrfy}.}\label{alg:header_dec}
+	\caption{$\algn{Dec}_k(c)$ of the ZSSP header authentication algorithm -- Function $F^{-1}$ is inverse of AES-256. Function $\algn{Vrfy}$ is some algorithm provided by the upper protocol for verifying that the packet nonce is valid. For the sake of the security proof we will be assuming that the size of the packet nonce $N$ is proportional to the security parameter $n$. The version of $\algn{Vrfy}$ used by ZSSP is described by \algorithmref{alg:header_vrfy}.}\label{alg:header_dec}
 	\begin{algorithmic}
 		\Require $c$
 		\State $m \gets F_k^{-1}(c)$
@@ -1171,7 +1171,7 @@ We are going to prove that the ZSSP header authentication algorithm is existenti
 \end{proof}
 
 \begin{algorithm}
-	\caption{The implementation of $\algn{Vrfy}(N)$ for ZSSP -- We are assuming that the input $N$ is being interpretted as $p||c$, the packet nonce construction of \figureref{fig:header_nonce}. $D$ is a stateful, finite array of integers, initialized to -1, that stores the value of previously authenticated counters. $D$ is updated after ZSSP decrypts a received packet. ZSSP explicitly does not verify that the padding is zero, for the sake of possible future revisions.}\label{alg:header_vrfy}
+	\caption{The implementation of $\algn{Vrfy}(N)$ for ZSSP -- We are assuming that the input $N$ is being interpreted as $p||c$, the packet nonce construction of \figureref{fig:header_nonce}. $D$ is a stateful, finite array of integers, initialized to -1, that stores the value of previously authenticated counters. $D$ is updated after ZSSP decrypts a received packet. ZSSP explicitly does not verify that the padding is zero, for the sake of possible future revisions.}\label{alg:header_vrfy}
 	\begin{algorithmic}
 		\Require $p||c$
 		\State $b \gets 0$
