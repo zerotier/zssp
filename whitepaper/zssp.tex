@@ -1197,7 +1197,7 @@ We are going to prove that the ZSSP header authentication algorithm is existenti
 \begin{flalign*}
 	\prob[\algn{Auth}_{\mathcal{A},\, \Pi}(n) = 1] &\leq \mathbf{Adv}^\text{ind-prp}_{D,\,F}(n) + \prob[\algn{Vrfy}(N) = 1] \\
 	&\leq \algn{negl}(n) + \frac{8}{2^8}\cdot\frac{2^{24}}{2^{64}} \\
-	&\leq \algn{negl}(n) + 2^{-5}\cdot 2^{-40} \\
+	&= \algn{negl}(n) + 2^{-5}\cdot 2^{-40} \\
 	&= \algn{negl}(n) + 2^{-45}.
 \end{flalign*}
 If we assume the adversary does make oracle queries, then their advantage bound is only negligibly larger than the advantage above.
