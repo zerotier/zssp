@@ -1,24 +1,27 @@
 use arrayvec::ArrayVec;
-use std::mem::{needs_drop, zeroed, MaybeUninit};
+use std::mem::{needs_drop, MaybeUninit};
 
-use crate::crypto::AES_GCM_NONCE_SIZE;
-use crate::proto::{MAX_FRAGMENTS, NONCE_SIZE_DIFF};
+use crate::proto::MAX_FRAGMENTS;
 
 pub type Assembled<Fragment> = ArrayVec<Fragment, MAX_FRAGMENTS>;
 
-/// Fast packet defragmenter
+/// Fast packet defragmenter.
 pub struct Fragged<Fragment, const MAX_FRAGMENTS: usize> {
-    nonce: [u8; 10],
-    count: u8,
+    nonce: u64,
+    count: u32,
     have: u64,
-    size: usize,
     frags: [MaybeUninit<Fragment>; MAX_FRAGMENTS],
 }
 
 impl<Fragment, const MAX_FRAGMENTS: usize> Fragged<Fragment, MAX_FRAGMENTS> {
     pub fn new() -> Self {
         debug_assert!(MAX_FRAGMENTS <= 64);
-        unsafe { zeroed() }
+        Self {
+            nonce: u64::MAX,
+            count: 0,
+            have: 0,
+            frags: core::array::from_fn(|_| MaybeUninit::zeroed()),
+        }
     }
 
     /// Add a fragment and return an assembled packet container if all fragments have been received.
@@ -27,39 +30,37 @@ impl<Fragment, const MAX_FRAGMENTS: usize> Fragged<Fragment, MAX_FRAGMENTS> {
     /// be reused to assemble another packet.
     ///
     /// Will check that aad is the same for all fragments.
+    ///
+    /// This function only takes the 8 byte counter rather than the full 10 byte packet nonce,
+    /// because it is used in places where that is the only value we expect to always change in ZSSP.
     pub(crate) fn assemble(
         &mut self,
-        nonce: &[u8; AES_GCM_NONCE_SIZE],
+        nonce: u64,
         fragment: Fragment,
         fragment_no: usize,
         fragment_count: usize,
         ret_assembled: &mut Assembled<Fragment>,
     ) {
         if fragment_no < fragment_count && fragment_count <= MAX_FRAGMENTS {
-            let nonce = nonce[NONCE_SIZE_DIFF..].try_into().unwrap();
             // If the counter has changed, reset the structure to receive a new packet.
             if nonce != self.nonce {
                 self.drop_in_place();
-                self.count = fragment_count as u8;
+                self.count = fragment_count as u32;
                 self.nonce = nonce;
-                self.size = 0;
             }
 
             let got = 1u64.wrapping_shl(fragment_no as u32);
-            if got & self.have == 0 && self.count == fragment_count as u8 {
+            if got & self.have == 0 && self.count == fragment_count as u32 {
                 self.have |= got;
                 unsafe {
                     self.frags.get_unchecked_mut(fragment_no as usize).write(fragment);
-                }
-                if self.have == 1u64.wrapping_shl(self.count as u32) - 1 {
-                    self.have = 0;
-                    self.count = 0;
-                    self.nonce = [0; 10];
-                    self.size = 0;
-                    // Setting 'have' to 0 resets the state of this object, and the fragments
-                    // are effectively moved into the Assembled<> container and returned. That
-                    // container will drop them when it is dropped.
-                    unsafe {
+                    if self.have == 1u64.wrapping_shl(self.count as u32) - 1 {
+                        self.have = 0;
+                        self.count = 0;
+                        self.nonce = u64::MAX;
+                        // Setting 'have' to 0 resets the state of this object, and the fragments
+                        // are effectively moved into the Assembled<> container and returned. That
+                        // container will drop them when it is dropped.
                         for i in 0..fragment_count {
                             ret_assembled.push(self.frags[i].assume_init_read());
                         }
@@ -85,8 +86,7 @@ impl<Fragment, const MAX_FRAGMENTS: usize> Fragged<Fragment, MAX_FRAGMENTS> {
         }
         self.have = 0;
         self.count = 0;
-        self.nonce = [0; 10];
-        self.size = 0;
+        self.nonce = u64::MAX;
     }
 }
 

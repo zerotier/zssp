@@ -1828,9 +1828,16 @@ impl<Crypto: CryptoLayer> Session<Crypto> {
     }
 }
 
-impl<Crypto: CryptoLayer> std::fmt::Debug for Session<Crypto> where Crypto::SessionData: std::fmt::Debug {
+impl<Crypto: CryptoLayer> std::fmt::Debug for Session<Crypto>
+where
+    Crypto::SessionData: std::fmt::Debug,
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Session").field("session_data", &self.session_data).field("was_bob", &self.was_bob).field("state", &self.state.read().unwrap().beta).finish()
+        f.debug_struct("Session")
+            .field("session_data", &self.session_data)
+            .field("was_bob", &self.was_bob)
+            .field("state", &self.state.read().unwrap().beta)
+            .finish()
     }
 }
 impl<Crypto: CryptoLayer> std::fmt::Debug for ZetaAutomata<Crypto> {

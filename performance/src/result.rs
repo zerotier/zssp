@@ -227,6 +227,10 @@ pub enum SessionEvent {
     /// This return value cannot occur after a session is fully established.
     Rejected,
     /// The received packet was valid and a data payload was decoded and authenticated.
+    ///
+    /// Keep in mind that due to out-of-order transport, Alice can receive data payloads before
+    /// their session is "established", and the `Established` event is returned.
+    /// Users are free to either treat such payloads as they would any other, or drop them.
     Data,
     /// The received packet was some authentic protocol control packet. No action needs to be taken.
     Control,
