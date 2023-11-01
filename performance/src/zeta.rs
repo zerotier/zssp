@@ -38,7 +38,6 @@ pub struct Session<Crypto: CryptoLayer> {
 
     pub(crate) s_remote: Crypto::PublicKey,
     send_counter: AtomicU64,
-    session_has_expired: AtomicBool,
 
     pub(crate) window: Window<COUNTER_WINDOW_MAX_OOO, COUNTER_WINDOW_MAX_SKIP_AHEAD>,
     pub(crate) defrag: [Mutex<Fragged<Crypto::IncomingPacketBuffer, MAX_FRAGMENTS>>; SESSION_MAX_FRAGMENTS_OOO],
@@ -236,20 +235,12 @@ fn create_ratchet_state<Crypto: CryptoLayer>(
     )
 }
 fn get_counter<Crypto: CryptoLayer>(session: &Session<Crypto>, state: &MutableState<Crypto>) -> Option<(u64, bool)> {
-    if session.session_has_expired.load(Ordering::Relaxed) {
-        None
-    } else {
-        let c = session.send_counter.fetch_add(1, Ordering::Relaxed);
-        if c > THREAD_SAFE_COUNTER_HARD_EXPIRE {
-            session.session_has_expired.store(true, Ordering::SeqCst);
-        }
-        if c > state.key_creation_counter + EXPIRE_AFTER_USES {
-            session.session_has_expired.store(true, Ordering::SeqCst);
-            return None;
-        }
-        let rekey_at = state.key_creation_counter + Crypto::SETTINGS.rekey_after_key_uses;
-        Some((c, c > rekey_at))
+    let c = session.send_counter.fetch_add(1, Ordering::Relaxed);
+    if c > THREAD_SAFE_COUNTER_HARD_EXPIRE || c > state.key_creation_counter + EXPIRE_AFTER_USES {
+        return None;
     }
+    let rekey_at = state.key_creation_counter + Crypto::SETTINGS.rekey_after_key_uses;
+    Some((c, c > rekey_at))
 }
 
 /// Generate a random local key id that is currently unused.
@@ -380,7 +371,6 @@ pub(crate) fn trans_to_a1<Crypto: CryptoLayer, App: ApplicationLayer<Crypto>>(
         queue_idx,
         s_remote,
         send_counter: AtomicU64::new(0),
-        session_has_expired: AtomicBool::new(false),
         window: Window::new(),
         state_machine_lock: Mutex::new(()),
         state: RwLock::new(MutableState {
@@ -771,13 +761,14 @@ pub(crate) fn received_x2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     }
     result.map(|(_, reduced_service_time)| (should_warn_missing_ratchet, reduced_service_time))
 }
+/// Returns `Err(true)` if the counter expired.
 fn send_control<Crypto: CryptoLayer, const CAP: usize>(
     session: &Arc<Session<Crypto>>,
     state: &MutableState<Crypto>,
     packet_type: u8,
     mut payload: ArrayVec<u8, CAP>,
     send: impl FnOnce(&mut [u8], Option<&Crypto::PrpEnc>),
-) -> bool {
+) -> Result<(), bool> {
     if let Some((c, _)) = get_counter(session, &state) {
         if let (Some(kek), Some(kid)) = (state.key_ref(false).send.kek.as_ref(), state.key_ref(false).send.kid) {
             let nonce = to_nonce(packet_type, c);
@@ -785,12 +776,12 @@ fn send_control<Crypto: CryptoLayer, const CAP: usize>(
             payload.extend(tag);
             set_header(&mut payload, kid.get(), &nonce);
             send(&mut payload, Some(&state.hk_send));
-            true
+            Ok(())
         } else {
-            false
+            Err(false)
         }
     } else {
-        false
+        Err(true)
     }
 }
 /// Corresponds to Transition Algorithm 4 found in Section 4.3.
@@ -915,7 +906,6 @@ pub(crate) fn received_x3_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
                         was_bob: true,
                         s_remote,
                         send_counter: AtomicU64::new(c + 1),
-                        session_has_expired: AtomicBool::new(false),
                         state_machine_lock: Mutex::new(()),
                         state: RwLock::new(MutableState {
                             ratchet_state1: new_ratchet_state.clone(),
@@ -951,7 +941,8 @@ pub(crate) fn received_x3_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
                 let state = session.state.read().unwrap();
                 let mut c1 = ArrayVec::<u8, HEADERED_KEY_CONFIRMATION_SIZE>::new();
                 c1.extend([0u8; HEADER_SIZE]);
-                send_control(&session, &state, PACKET_TYPE_KEY_CONFIRM, c1, send);
+                // This session is new so the result is overwhelmingly likely to be `Ok(())`.
+                let _ = send_control(&session, &state, PACKET_TYPE_KEY_CONFIRM, c1, send);
                 drop(state);
 
                 Ok((session, should_warn_missing_ratchet, reduced_service_time))
@@ -1041,16 +1032,24 @@ pub(crate) fn received_c1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
                 .change_priority(session.queue_idx, Reverse(timeout_timer));
             reduced_service_time = ctx.reduce_next_service_time(timeout_timer);
             state = session.state.read().unwrap();
+        } else {
+            drop(kex_lock);
         }
+    } else {
+        drop(kex_lock);
     }
 
     let mut c2 = ArrayVec::<u8, HEADERED_ACKNOWLEDGEMENT_SIZE>::new();
     c2.extend([0u8; HEADER_SIZE]);
-    if !send_control(session, &state, PACKET_TYPE_ACK, c2, send) {
-        return Err(fault!(OutOfSequence, true));
+    match send_control(session, &state, PACKET_TYPE_ACK, c2, send) {
+        Ok(()) => Ok((just_establised, reduced_service_time)),
+        Err(true) => {
+            drop(state);
+            session.expire();
+            Err(fault!(ExpiredCounter, true))
+        }
+        Err(false) => Err(fault!(OutOfSequence, true)),
     }
-
-    Ok((just_establised, reduced_service_time))
 }
 /// Corresponds to the trivial Transition Algorithm described for processing C_2 packets found in
 /// Section 4.3.
@@ -1140,7 +1139,8 @@ pub(crate) fn received_d_trans<Crypto: CryptoLayer>(
     session.expire();
     Ok(())
 }
-// Corresponds to the timeout timer Transition Algorithm described in Section 4.1 - Definition 3.
+/// Corresponds to the timeout timer Transition Algorithm described in Section 4.1 - Definition 3.
+/// Returns `None` if this session should be expired.
 fn timeout_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypto>>(
     app: &mut App,
     ctx: &Arc<ContextInner<Crypto>>,
@@ -1243,8 +1243,10 @@ fn timeout_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypto>>(
             drop(kex_lock);
             let state = session.state.read().unwrap();
 
-            send_control(session, &state, PACKET_TYPE_REKEY_INIT, k1, send);
-            Some(resend_timer)
+            match send_control(session, &state, PACKET_TYPE_REKEY_INIT, k1, send) {
+                Err(true) => None,
+                _ => Some(resend_timer),
+            }
         }
         ZetaAutomata::S1 { .. } => {
             log!(app, TimeoutKeyConfirm(session));
@@ -1261,6 +1263,7 @@ fn timeout_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypto>>(
     }
 }
 /// Corresponds to the timer rules of the Zeta State Machine found in Section 4.1 - Definition 3.
+/// Returns `None` if this session should be expired.
 pub(crate) fn process_timers<Crypto: CryptoLayer, App: ApplicationLayer<Crypto>>(
     app: &mut App,
     ctx: &Arc<ContextInner<Crypto>>,
@@ -1308,8 +1311,10 @@ pub(crate) fn process_timers<Crypto: CryptoLayer, App: ApplicationLayer<Crypto>>
                 }
             };
 
-            send_control(session, &state, packet_type, control_payload, send);
-            Some(resend_next)
+            match send_control(session, &state, packet_type, control_payload, send) {
+                Err(true) => None,
+                _ => Some(resend_next),
+            }
         } else {
             Some(ts)
         }
@@ -1363,7 +1368,7 @@ pub(crate) fn received_k1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
         return Err(fault!(ExpiredCounter, true));
     }
 
-    let result = (|| {
+    let result = (move || {
         let mut i = 0;
         let mut noise = SymmetricState::<Crypto>::initialize(PROTOCOL_NAME_NOISE_KK);
         let hash = &mut Crypto::Hash::new();
@@ -1452,12 +1457,11 @@ pub(crate) fn received_k1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
             .change_priority(session.queue_idx, Reverse(resend_timer));
         let reduced_service_time = ctx.reduce_next_service_time(resend_timer);
         let state = session.state.read().unwrap();
-
-        if !send_control(session, &state, PACKET_TYPE_REKEY_COMPLETE, k2, send) {
-            return Err(fault!(OutOfSequence, true));
+        match send_control(session, &state, PACKET_TYPE_REKEY_COMPLETE, k2, send) {
+            Ok(()) => Ok(reduced_service_time),
+            Err(false) => Err(fault!(OutOfSequence, true)),
+            Err(true) => Err(fault!(ExpiredCounter, true)),
         }
-
-        Ok(reduced_service_time)
     })();
 
     if matches!(result, Err(ReceiveError::ByzantineFault { .. })) {
@@ -1503,7 +1507,7 @@ pub(crate) fn received_k2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     if !session.window.update(c) {
         return Err(fault!(ExpiredCounter, true));
     }
-    let result = (|| {
+    let result = (move || {
         if let ZetaAutomata::R1 { noise, e_secret, .. } = &state.beta {
             let mut noise = noise.clone();
             let mut i = 0;
@@ -1575,11 +1579,11 @@ pub(crate) fn received_k2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
 
             let mut c1 = ArrayVec::<u8, HEADERED_KEY_CONFIRMATION_SIZE>::new();
             c1.extend([0u8; HEADER_SIZE]);
-            if !send_control(&session, &state, PACKET_TYPE_KEY_CONFIRM, c1, send) {
-                return Err(fault!(OutOfSequence, true));
+            match send_control(&session, &state, PACKET_TYPE_KEY_CONFIRM, c1, send) {
+                Ok(()) => Ok(reduced_service_time),
+                Err(false) => Err(fault!(OutOfSequence, true)),
+                Err(true) => Err(fault!(ExpiredCounter, true)),
             }
-
-            Ok(reduced_service_time)
         } else {
             unreachable!()
         }
@@ -1605,7 +1609,17 @@ pub(crate) fn send_payload<Crypto: CryptoLayer>(
     }
 
     let state = session.state.read().unwrap();
-    let (c, mut should_rekey) = get_counter(session, &state).ok_or(SessionExpired)?;
+    if matches!(&state.beta, ZetaAutomata::Null) {
+        return Err(SessionExpired);
+    }
+    let (c, mut should_rekey) = match get_counter(session, &state) {
+        Some(c) => c,
+        None => {
+            drop(state);
+            session.expire();
+            return Err(SessionExpired);
+        }
+    };
     let nonce = to_nonce(PACKET_TYPE_DATA, c);
 
     let key = state.key_ref(false);
@@ -1770,22 +1784,22 @@ impl<Crypto: CryptoLayer> Session<Crypto> {
     ) {
         let _kex_lock = self.state_machine_lock.lock().unwrap();
         let mut state = self.state.write().unwrap();
-        let mut kids_to_remove = None;
         if !matches!(&state.beta, ZetaAutomata::Null) {
-            self.session_has_expired.store(true, Ordering::Relaxed);
-            kids_to_remove = Some([state.keys[0].recv.kid, state.keys[1].recv.kid]);
+            state.beta = ZetaAutomata::Null;
+
+            let kids_to_remove = [state.keys[0].recv.kid, state.keys[1].recv.kid];
             state.keys = [DuplexKey::default(), DuplexKey::default()];
             state.resend_timer = AtomicI64::new(i64::MAX);
             state.timeout_timer = i64::MAX;
-            state.beta = ZetaAutomata::Null;
-        }
-        if let Some(session_queue) = session_queue {
-            session_queue.remove(self.queue_idx);
-        }
-        if let (Some(ctx), Some(kids_to_remove)) = (ctx, kids_to_remove) {
-            let mut session_map = ctx.session_map.write().unwrap();
-            for kid_recv in kids_to_remove.iter().flatten() {
-                session_map.remove(kid_recv);
+
+            if let Some(session_queue) = session_queue {
+                session_queue.remove(self.queue_idx);
+            }
+            if let Some(ctx) = ctx {
+                let mut session_map = ctx.session_map.write().unwrap();
+                for kid_recv in kids_to_remove.iter().flatten() {
+                    session_map.remove(kid_recv);
+                }
             }
         }
     }
