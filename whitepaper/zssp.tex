@@ -1203,7 +1203,7 @@ Algorithms \algorithmref{alg:header_gen}, \algorithmref{alg:header_encmac}, and 
 \end{flalign*}
 If we assume the adversary does make oracle queries, then their advantage bound is only negligibly larger than the advantage above.
 
-The range $2^{24}$ was chosen because changing its value makes the protocol worst. One byte less of range, $2^{16}$, makes it possible for one peer to have $2^{16}$ of their packets dropped. This would put their counter out of the allowed range, and cause all future packets to be dropped. One byte more of range, $2^{32}$, makes it easier than it need to be for an attacker to forge a valid header.
+The range $2^{24}$ was chosen because changing its value makes the protocol worse. One byte less of range, $2^{16}$, makes it possible for one peer to have $2^{16}$ of their packets dropped. This would put their counter out of the allowed range, and cause all future packets to be dropped. One byte more of range, $2^{32}$, makes it easier than it need to be for an attacker to forge a valid header.
 
 The security experiment we have used does not consider replay protection, however it should be clear that \algorithmref{alg:header_vrfy} does indeed provide replay protection. Once any packet is fully authenticated by ZSSP, and its counter is added to array $D$, it is the case that its packet nonce will no longer be valid according to \algorithmref{alg:header_vrfy}. If a packet is dropped or corrupted, its fragments could only be replayed until some other received packet updated the relevant index of $D$. This prevents a type of DOS attack where the attacker simply replays valid fragments to keep the defragmentation buffer full.
 
