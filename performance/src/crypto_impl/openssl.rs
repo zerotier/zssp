@@ -177,6 +177,7 @@ impl<'a> AesGcmDecContext for OpenSSLAesGcmDec<'a> {
     }
 }
 
+/// A pool of OpenSSL AES-GCM ciphers.
 pub struct OpenSSLAesGcmPool {
     enc: [Mutex<OpenSSLCtx>; 8],
     dec: [Mutex<OpenSSLCtx>; 8],

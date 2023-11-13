@@ -3,6 +3,7 @@ use rand_core::{CryptoRng, RngCore};
 
 use crate::crypto::*;
 
+/// An alias for the P384PublicKey type from the p384 crate.
 pub type CrateP384PublicKey = PublicKey;
 impl P384PublicKey for CrateP384PublicKey {
     fn from_bytes(raw_key: &[u8; P384_PUBLIC_KEY_SIZE]) -> Option<Self> {
@@ -15,6 +16,7 @@ impl P384PublicKey for CrateP384PublicKey {
     }
 }
 
+/// An alias for the P384KeyPair type from the p384 crate.
 pub type CrateP384KeyPair = EphemeralSecret;
 impl<Rng: RngCore + CryptoRng> P384KeyPair<Rng> for CrateP384KeyPair {
     type PublicKey = PublicKey;
