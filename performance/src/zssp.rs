@@ -71,7 +71,9 @@ impl<Crypto: CryptoLayer> ContextInner<Crypto> {
     }
 }
 
-fn parse_fragment_header(incoming_fragment: &[u8]) -> Result<(usize, usize, [u8; AES_GCM_NONCE_SIZE]), ReceiveError> {
+fn parse_fragment_header<Crypto: CryptoLayer>(
+    incoming_fragment: &[u8],
+) -> Result<(usize, usize, [u8; AES_GCM_NONCE_SIZE]), ReceiveError<Crypto>> {
     let fragment_no = incoming_fragment[FRAGMENT_NO_IDX] as usize;
     let fragment_count = incoming_fragment[FRAGMENT_COUNT_IDX] as usize;
     if fragment_no >= fragment_count || fragment_count > MAX_FRAGMENTS {
@@ -206,7 +208,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
         remote_address: &impl Hash,
         mut incoming_fragment_buf: Crypto::IncomingPacketBuffer,
         output_buffer: impl Write,
-    ) -> Result<(ReceiveOk<Crypto>, Option<i64>), ReceiveError> {
+    ) -> Result<(ReceiveOk<Crypto>, Option<i64>), ReceiveError<Crypto>> {
         use crate::result::FaultType::*;
         let ctx = &self.0;
         send_unassociated_mtu = send_unassociated_mtu.max(MIN_TRANSPORT_MTU);
@@ -234,40 +236,38 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                     );
                 }
 
-                {
-                    //vrfy
-                    if packet_type == PACKET_TYPE_HANDSHAKE_RESPONSE {
-                        if !matches!(&state.beta, ZetaAutomata::A1(_)) {
-                            // A resent handshake response from Bob may have arrived out of order,
-                            // after we already received one.
-                            return Err(fault!(OutOfSequence, false));
-                        }
-                        if incoming_counter >= COUNTER_WINDOW_MAX_SKIP_AHEAD {
-                            return Err(fault!(ExpiredCounter, true));
-                        }
-                    } else if PACKET_TYPE_USES_COUNTER_RANGE.contains(&packet_type) {
-                        // For DOS resistant reply-protection we need to check that the given counter is
-                        // in the window of valid counters immediately.
-                        // But for packets larger than 1 fragment we can't actually record the
-                        // counter as received until we've authenticated the packet.
-                        // So we check the counter window twice, and only update it the second time
-                        // after the packet has been authenticated.
-                        if !session.window.check(incoming_counter) {
-                            // This can occur naturally if packets arrive way out of order, or
-                            // if they are duplicates.
-                            // This can also be naturally triggered if Bob has just successfully
-                            // received the first session key and is reject all of Alice's resends.
-                            // This can also occur if a session was manually expired, but not
-                            // dropped, and the remote party is still sending us data.
-                            return Err(fault!(ExpiredCounter, false));
-                        }
-                    } else if packet_type == PACKET_TYPE_HANDSHAKE_COMPLETION {
-                        // This can be triggered if Bob successfully received a session key and
-                        // needs to reject all of Alice's resends of PACKET_TYPE_NOISE_XK_PATTERN_3.
-                        return Err(fault!(InvalidPacket, false));
-                    } else {
-                        return Err(fault!(InvalidPacket, true));
+                //vrfy
+                if packet_type == PACKET_TYPE_HANDSHAKE_RESPONSE {
+                    if !matches!(&state.beta, ZetaAutomata::A1(_)) {
+                        // A resent handshake response from Bob may have arrived out of order,
+                        // after we already received one.
+                        return Err(fault!(OutOfSequence, false, session));
                     }
+                    if incoming_counter >= COUNTER_WINDOW_MAX_SKIP_AHEAD {
+                        return Err(fault!(ExpiredCounter, true, session));
+                    }
+                } else if PACKET_TYPE_USES_COUNTER_RANGE.contains(&packet_type) {
+                    // For DOS resistant reply-protection we need to check that the given counter is
+                    // in the window of valid counters immediately.
+                    // But for packets larger than 1 fragment we can't actually record the
+                    // counter as received until we've authenticated the packet.
+                    // So we check the counter window twice, and only update it the second time
+                    // after the packet has been authenticated.
+                    if !session.window.check(incoming_counter) {
+                        // This can occur naturally if packets arrive way out of order, or
+                        // if they are duplicates.
+                        // This can also be naturally triggered if Bob has just successfully
+                        // received the first session key and is reject all of Alice's resends.
+                        // This can also occur if a session was manually expired, but not
+                        // dropped, and the remote party is still sending us data.
+                        return Err(fault!(ExpiredCounter, false, session));
+                    }
+                } else if packet_type == PACKET_TYPE_HANDSHAKE_COMPLETION {
+                    // This can be triggered if Bob successfully received a session key and
+                    // needs to reject all of Alice's resends of PACKET_TYPE_NOISE_XK_PATTERN_3.
+                    return Err(fault!(InvalidPacket, false, session));
+                } else {
+                    return Err(fault!(InvalidPacket, true, session));
                 }
 
                 // Handle defragmentation.
@@ -282,7 +282,8 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                             &mut fragment_buffer,
                         );
                         if fragment_buffer.is_empty() {
-                            return Ok((ReceiveOk::Unassociated, None));
+                            drop(state);
+                            return Ok((ReceiveOk::Fragment(session), None));
                         } else {
                             // We have not yet authenticated the sender so we do not report
                             // receiving a packet from them.
@@ -308,12 +309,12 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                             &mut fragment_buffer,
                         );
                         if fragment_buffer.is_empty() {
-                            return Ok((ReceiveOk::Unassociated, None));
+                            return Ok((ReceiveOk::Fragment(session), None));
                         } else {
                             for fragment in fragment_buffer.as_ref() {
                                 buffer
                                     .try_extend_from_slice(&fragment.as_ref()[HEADER_SIZE..])
-                                    .map_err(|_| fault!(InvalidPacket, true))?;
+                                    .map_err(|_| fault!(InvalidPacket, true, session))?;
                             }
                             // We have not yet authenticated the sender so we do not report
                             // receiving a packet from them.
@@ -407,7 +408,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                             log!(app, DIsAuthClosedSession(&session));
                             (SessionEvent::Rejected, None)
                         }
-                        _ => return Err(fault!(InvalidPacket, true)), // This is unreachable.
+                        _ => return Err(fault!(InvalidPacket, true, session)), // This is unreachable.
                     }
                 };
                 Ok((ReceiveOk::Associated(session, ret.0), ret.1))
@@ -428,11 +429,9 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                         ReceivedRawFragment(packet_type, incoming_counter, fragment_no, fragment_count)
                     );
 
-                    {
-                        //vrfy
-                        if packet_type != PACKET_TYPE_HANDSHAKE_COMPLETION || incoming_counter != 0 {
-                            return Err(fault!(InvalidPacket, true));
-                        }
+                    //vrfy
+                    if packet_type != PACKET_TYPE_HANDSHAKE_COMPLETION || incoming_counter != 0 {
+                        return Err(fault!(InvalidPacket, true));
                     }
 
                     let mut buffer = ArrayVec::<u8, HANDSHAKE_COMPLETION_MAX_SIZE>::new();

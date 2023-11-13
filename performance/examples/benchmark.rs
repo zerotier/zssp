@@ -156,9 +156,6 @@ fn alice_main(
                     pkt,
                     &mut output_data,
                 ) {
-                    Ok((Unassociated, _)) => {
-                        //println!("[alice] ok");
-                    }
                     Ok((Associated(_, event), _)) => match event {
                         Established => {
                             up = true;
@@ -170,9 +167,10 @@ fn alice_main(
                         Control => (),
                         _ => panic!(),
                     },
+                    Ok(_) => {}
                     Err(e) => {
                         println!("[alice] ERROR {:?}", e);
-                        if let ReceiveError::ByzantineFault(e) = e {
+                        if let ReceiveError::ByzantineFault(e, _) = e {
                             assert!(!e.unnatural())
                         }
                     }
@@ -238,7 +236,6 @@ fn bob_main(
                 pkt,
                 &mut output_data,
             ) {
-                Ok((Unassociated, _)) => {}
                 Ok((Associated(s, event), _)) => match event {
                     NewSession | NewDowngradedSession => {
                         println!("[bob] new session, took {}s", current_time as f32 / 1000.0);
@@ -260,9 +257,10 @@ fn bob_main(
                     Control => (),
                     _ => panic!(),
                 },
+                Ok(_) => {}
                 Err(e) => {
                     println!("[bob] ERROR {:?}", e);
-                    if let ReceiveError::ByzantineFault(e) = e {
+                    if let ReceiveError::ByzantineFault(e, _) = e {
                         assert!(!e.unnatural())
                     }
                 }
