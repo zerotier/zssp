@@ -47,12 +47,7 @@ impl AesGcmAead for AesGcmCrate {
         let key = Key::<Aes256Gcm>::from_slice(key);
         let mut cipher = Aes256Gcm::new(key);
         cipher
-            .decrypt_in_place_detached(
-                Nonce::from_slice(iv),
-                aad.unwrap_or(&[]),
-                buffer,
-                Tag::from_slice(tag),
-            )
+            .decrypt_in_place_detached(Nonce::from_slice(iv), aad.unwrap_or(&[]), buffer, Tag::from_slice(tag))
             .is_ok()
     }
 }

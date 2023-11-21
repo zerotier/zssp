@@ -307,19 +307,17 @@ impl<C: CryptoLayer> Context<C> {
                 if let Entry::Occupied(mut entry) = b2_map.entry(kid_recv) {
                     let zeta = entry.get_mut();
                     // Process recv fragmentation layer.
-                    let result = zeta.defrag.received_fragment::<C>(
-                        raw_fragment,
-                        app.time(),
-                        |n, frag_no, frag_count| {
-                            let (p, c) = from_nonce(n);
-                            log!(app, ReceivedRawFragment(p, c, frag_no, frag_count));
-                            if p == PACKET_TYPE_HANDSHAKE_COMPLETION && c == 0 {
-                                Ok(())
-                            } else {
-                                Err(byzantine_fault!(InvalidPacket, true))
-                            }
-                        },
-                    )?;
+                    let result =
+                        zeta.defrag
+                            .received_fragment::<C>(raw_fragment, app.time(), |n, frag_no, frag_count| {
+                                let (p, c) = from_nonce(n);
+                                log!(app, ReceivedRawFragment(p, c, frag_no, frag_count));
+                                if p == PACKET_TYPE_HANDSHAKE_COMPLETION && c == 0 {
+                                    Ok(())
+                                } else {
+                                    Err(byzantine_fault!(InvalidPacket, true))
+                                }
+                            })?;
                     if let Some((_, assembled_packet)) = result {
                         log!(app, ReceivedRawX3);
                         let zeta = entry.remove();
