@@ -317,38 +317,36 @@ fn test_cache() {
                 assert!(assembled.is_empty(), "Cache returned an incomplete packet");
             }
         }
-        if r > 200 {
-            if in_progress.len() > 0 {
-                let to_remain = (xorshift64_random() as usize % in_progress_fragments) + 16;
-                while in_progress_fragments > to_remain {
-                    let (id, fragment_count, mut packet) =
-                        in_progress.swap_remove(xorshift64_random() as usize % in_progress.len());
-                    for _ in 0..((xorshift64_random() as usize % packet.len()) + 1) {
-                        let (no, fragment) = packet.swap_remove(xorshift64_random() as usize % packet.len());
+        if r > 200 && !in_progress.is_empty() {
+            let to_remain = (xorshift64_random() as usize % in_progress_fragments) + 16;
+            while in_progress_fragments > to_remain {
+                let (id, fragment_count, mut packet) =
+                    in_progress.swap_remove(xorshift64_random() as usize % in_progress.len());
+                for _ in 0..((xorshift64_random() as usize % packet.len()) + 1) {
+                    let (no, fragment) = packet.swap_remove(xorshift64_random() as usize % packet.len());
 
-                        assembled.clear();
-                        let mut nonce = [0; 12];
-                        nonce[..4].copy_from_slice(&id.to_be_bytes());
-                        cache.assemble(
-                            &nonce,
-                            0,
-                            fragment.len(),
-                            fragment,
-                            no as usize,
-                            fragment_count as usize,
-                            time,
-                            &mut assembled,
-                        );
-                        time += 200;
-                        in_progress_fragments -= 1;
+                    assembled.clear();
+                    let mut nonce = [0; 12];
+                    nonce[..4].copy_from_slice(&id.to_be_bytes());
+                    cache.assemble(
+                        &nonce,
+                        0,
+                        fragment.len(),
+                        fragment,
+                        no as usize,
+                        fragment_count as usize,
+                        time,
+                        &mut assembled,
+                    );
+                    time += 200;
+                    in_progress_fragments -= 1;
 
-                        if packet.len() > 0 {
-                            assert!(assembled.is_empty(), "Cache returned an incomplete packet");
-                        }
+                    if !packet.is_empty() {
+                        assert!(assembled.is_empty(), "Cache returned an incomplete packet");
                     }
-                    if packet.len() > 0 {
-                        in_progress.push((id, fragment_count, packet));
-                    }
+                }
+                if !packet.is_empty() {
+                    in_progress.push((id, fragment_count, packet));
                 }
             }
         }

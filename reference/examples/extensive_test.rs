@@ -157,7 +157,7 @@ fn alice_main(
                         &mut alice_app,
                         |b| alice_out.send(b).is_ok(),
                         TEST_MTU,
-                        bob_pubkey.clone(),
+                        bob_pubkey,
                         0,
                         Vec::new(),
                     )
