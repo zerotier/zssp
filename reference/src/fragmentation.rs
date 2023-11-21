@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use zeroize::Zeroizing;
 
-use crate::application::{ApplicationLayer, CryptoLayer};
+use crate::application::CryptoLayer;
 use crate::crypto::{Aes256Prp, AES_256_KEY_SIZE};
 use crate::proto::*;
 use crate::result::{byzantine_fault, ReceiveError};
@@ -86,7 +86,7 @@ impl DefragBuffer {
     }
 
     /// Corresponds to the authentication and defragmentation algorithm described in Section 6.1.
-    pub fn received_fragment<C: CryptoLayer, App: ApplicationLayer<C>>(
+    pub fn received_fragment<C: CryptoLayer>(
         &self,
         mut raw_fragment: Vec<u8>,
         current_time: i64,
@@ -113,10 +113,7 @@ impl DefragBuffer {
         }
 
         let n = raw_fragment[PACKET_NONCE_START..HEADER_SIZE].try_into().unwrap();
-        let result = vrfy(&n, fragment_no, fragment_count);
-        if let Err(e) = result {
-            return Err(e);
-        }
+        vrfy(&n, fragment_no, fragment_count)?;
 
         let expiration_time = current_time + C::SETTINGS.fragment_assembly_timeout as i64;
         let mut map = self.fragment_map.borrow_mut();

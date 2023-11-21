@@ -117,7 +117,7 @@ impl<C: CryptoLayer> Context<C> {
             identity,
             |Packet(kid, nonce, payload): &Packet| {
                 // Process fragmentation layer.
-                let _ = send_with_fragmentation::<C>(send, mtu, *kid, to_packet_nonce(&nonce), payload, None);
+                let _ = send_with_fragmentation::<C>(send, mtu, *kid, to_packet_nonce(nonce), payload, None);
             },
         )
     }
@@ -152,7 +152,7 @@ impl<C: CryptoLayer> Context<C> {
                 let mut zeta = session.0.borrow_mut();
                 let result =
                     zeta.defrag
-                        .received_fragment::<C, App>(raw_fragment, app.time(), |n, frag_no, frag_count| {
+                        .received_fragment::<C>(raw_fragment, app.time(), |n, frag_no, frag_count| {
                             let (p, c) = from_nonce(n);
                             if p != PACKET_TYPE_DATA {
                                 log!(app, ReceivedRawFragment(p, c, frag_no, frag_count));
@@ -191,7 +191,7 @@ impl<C: CryptoLayer> Context<C> {
                                     send_fragment,
                                     mtu,
                                     *kid,
-                                    to_packet_nonce(&nonce),
+                                    to_packet_nonce(nonce),
                                     payload,
                                     hk,
                                 );
@@ -215,7 +215,7 @@ impl<C: CryptoLayer> Context<C> {
                                 &mut zeta,
                                 &session,
                                 &mut app,
-                                &ctx,
+                                ctx,
                                 kid_recv,
                                 to_aes_nonce(&pn),
                                 assembled_packet,
@@ -307,7 +307,7 @@ impl<C: CryptoLayer> Context<C> {
                 if let Entry::Occupied(mut entry) = b2_map.entry(kid_recv) {
                     let zeta = entry.get_mut();
                     // Process recv fragmentation layer.
-                    let result = zeta.defrag.received_fragment::<C, App>(
+                    let result = zeta.defrag.received_fragment::<C>(
                         raw_fragment,
                         app.time(),
                         |n, frag_no, frag_count| {
@@ -334,7 +334,7 @@ impl<C: CryptoLayer> Context<C> {
                                     send_unassociated_reply,
                                     send_unassociated_mtu,
                                     *kid,
-                                    to_packet_nonce(&nonce),
+                                    to_packet_nonce(nonce),
                                     payload,
                                     hk,
                                 );
@@ -358,7 +358,7 @@ impl<C: CryptoLayer> Context<C> {
             }
         } else {
             // Process recv fragmentation layer.
-            let result = ctx.hello_defrag.borrow_mut().received_fragment::<C, App>(
+            let result = ctx.hello_defrag.borrow_mut().received_fragment::<C>(
                 raw_fragment,
                 app.time(),
                 |n, frag_no, frag_count| {
@@ -405,7 +405,7 @@ impl<C: CryptoLayer> Context<C> {
                     // Process recv zeta layer.
                     received_x1_trans(
                         &mut app,
-                        &ctx,
+                        ctx,
                         to_aes_nonce(&n),
                         assembled_packet,
                         |Packet(kid, nonce, payload), hk| {
@@ -413,7 +413,7 @@ impl<C: CryptoLayer> Context<C> {
                                 send_unassociated_reply,
                                 send_unassociated_mtu,
                                 *kid,
-                                to_packet_nonce(&nonce),
+                                to_packet_nonce(nonce),
                                 payload,
                                 Some(hk),
                             );
@@ -471,7 +471,7 @@ impl<C: CryptoLayer> Context<C> {
         mtu = mtu.max(MIN_TRANSPORT_MTU);
         let mut zeta = session.0.borrow_mut();
         send_payload::<C>(&mut zeta, payload, |Packet(kid, nonce, payload), hk| {
-            let result = send_with_fragmentation::<C>(send, mtu, *kid, to_packet_nonce(nonce), &payload, hk);
+            let result = send_with_fragmentation::<C>(send, mtu, *kid, to_packet_nonce(nonce), payload, hk);
             if matches!(result, Err(true)) {
                 return Err(SendError::DataTooLarge);
             }
@@ -511,7 +511,7 @@ impl<C: CryptoLayer> Context<C> {
                                 send_fragment,
                                 mtu,
                                 *kid,
-                                to_packet_nonce(&nonce),
+                                to_packet_nonce(nonce),
                                 payload,
                                 hk,
                             );

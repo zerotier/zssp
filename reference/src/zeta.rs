@@ -124,7 +124,7 @@ impl<C: CryptoLayer> SymmetricState<C> {
         C::PublicKey::from_bytes((pub_key).try_into().unwrap())
     }
     fn mix_dh(&mut self, secret: &C::KeyPair, remote: &C::PublicKey) {
-        let ecdh = Zeroizing::new(secret.agree(&remote));
+        let ecdh = Zeroizing::new(secret.agree(remote));
         self.mix_key(ecdh.as_ref());
     }
 }
@@ -171,7 +171,7 @@ fn remap<C: CryptoLayer>(
     let weak = if let Some(Some(weak)) = zeta.key_ref(true).recv.kid.as_ref().map(|kid| session_map.remove(kid)) {
         weak
     } else {
-        Arc::downgrade(&session)
+        Arc::downgrade(session)
     };
     let new_kid_recv = gen_kid(session_map.deref(), rng.borrow_mut().deref_mut());
     session_map.insert(new_kid_recv, weak);
@@ -236,7 +236,7 @@ impl<C: CryptoLayer> Zeta<C> {
     }
 }
 
-fn create_a1_state<C: CryptoLayer, App: ApplicationLayer<C>>(
+fn create_a1_state<C: CryptoLayer>(
     rng: &RefCell<C::Rng>,
     s_remote: &C::PublicKey,
     kid_recv: NonZeroU32,
@@ -301,7 +301,7 @@ pub(crate) fn trans_to_a1<C: CryptoLayer, App: ApplicationLayer<C>>(
     let mut session_map = ctx.session_map.borrow_mut();
     let kid_recv = gen_kid(session_map.deref(), ctx.rng.borrow_mut().deref_mut());
 
-    let a1 = create_a1_state::<C, App>(&ctx.rng, &s_remote, kid_recv, &state1, state2.as_ref(), identity);
+    let a1 = create_a1_state::<C>(&ctx.rng, &s_remote, kid_recv, &state1, state2.as_ref(), identity);
     let packet = a1.packet.clone();
 
     let (hk_recv, hk_send) = a1.noise.get_ask(LABEL_HEADER_KEY);
@@ -1015,7 +1015,7 @@ fn timeout_trans<C: CryptoLayer, App: ApplicationLayer<C>>(
             }
             let new_kid_recv = remap(session, zeta, &ctx.rng, &ctx.session_map);
 
-            let a1 = create_a1_state::<C, App>(
+            let a1 = create_a1_state::<C>(
                 &ctx.rng,
                 &zeta.s_remote,
                 new_kid_recv,
