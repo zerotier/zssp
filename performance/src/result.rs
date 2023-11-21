@@ -16,7 +16,7 @@ pub enum OpenError {
     /// The session could not be openned as a result.
     StorageError(std::io::Error),
 }
-
+//test
 /// An error that can occur when attempting to send data over a session.
 /// Depending on the error type trying again may not work.
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
