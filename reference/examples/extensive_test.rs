@@ -65,9 +65,7 @@ impl CryptoLayer for TestApplication {
     type SessionData = u128;
 }
 #[allow(unused)]
-impl ApplicationLayer for &mut TestApplication {
-    type Crypto = TestApplication;
-
+impl ApplicationLayer<TestApplication> for &mut TestApplication {
     fn hello_requires_recognized_ratchet(&mut self) -> bool {
         false
     }

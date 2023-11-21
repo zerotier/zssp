@@ -44,9 +44,7 @@ impl CryptoLayer for MyApp {
 /// In this example for simplicity we won't be hooking up ratchet keys to a filesystem backend.
 /// They are dropped and peers ignore if they are missing.
 #[allow(unused)]
-impl ApplicationLayer for &mut MyApp {
-    type Crypto = MyApp;
-
+impl ApplicationLayer<MyApp> for &mut MyApp {
     fn hello_requires_recognized_ratchet(&mut self) -> bool {
         false
     }

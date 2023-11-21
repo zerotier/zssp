@@ -86,7 +86,7 @@ impl DefragBuffer {
     }
 
     /// Corresponds to the authentication and defragmentation algorithm described in Section 6.1.
-    pub fn received_fragment<App: ApplicationLayer>(
+    pub fn received_fragment<C: CryptoLayer, App: ApplicationLayer<C>>(
         &self,
         mut raw_fragment: Vec<u8>,
         current_time: i64,
@@ -98,7 +98,7 @@ impl DefragBuffer {
         }
 
         if let Some(hk_recv) = self.hk_recv.as_ref() {
-            <App::Crypto as CryptoLayer>::Prp::decrypt_in_place(
+            C::Prp::decrypt_in_place(
                 hk_recv,
                 (&mut raw_fragment[HEADER_AUTH_START..HEADER_AUTH_END])
                     .try_into()
@@ -118,7 +118,7 @@ impl DefragBuffer {
             return Err(e);
         }
 
-        let expiration_time = current_time + App::Crypto::SETTINGS.fragment_assembly_timeout as i64;
+        let expiration_time = current_time + C::SETTINGS.fragment_assembly_timeout as i64;
         let mut map = self.fragment_map.borrow_mut();
         match map.entry(n) {
             Entry::Occupied(mut entry) => {

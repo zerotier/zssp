@@ -139,10 +139,7 @@ pub trait CryptoLayer: Sized {
 ///
 /// Templating ZSSP on this trait lets the code here be almost entirely transport, OS,
 /// and use case independent.
-pub trait ApplicationLayer: Sized {
-    /// Specifies which concrete set of cryptography types will be used by this application.
-    type Crypto: CryptoLayer;
-
+pub trait ApplicationLayer<C: CryptoLayer>: Sized {
     /// Should return the current time in milliseconds. Does not have to be monotonic, nor synced
     /// with remote peers (although both of these properties would help reliability slightly).
     /// Used to determine if any current handshakes should be resent or timed-out, or if a session
@@ -174,7 +171,7 @@ pub trait ApplicationLayer: Sized {
     /// least one party is misconfigured and got their ratchet keys corrupted or lost, or Bob has
     /// been compromised and is being impersonated. An attacker must at least have Bob's private
     /// static key to be able to ask Alice to downgrade.
-    fn initiator_disallows_downgrade(&mut self, session: &Arc<Session<Self::Crypto>>) -> bool;
+    fn initiator_disallows_downgrade(&mut self, session: &Arc<Session<C>>) -> bool;
     /// Function to accept sessions after final negotiation.
     /// The second argument is the identity that the remote peer sent us. The application
     /// must verify this identity is associated with the remote peer's static key.
@@ -183,9 +180,9 @@ pub trait ApplicationLayer: Sized {
     /// before returning.
     fn check_accept_session(
         &mut self,
-        remote_static_key: &<Self::Crypto as CryptoLayer>::PublicKey,
+        remote_static_key: &<C as CryptoLayer>::PublicKey,
         identity: &[u8],
-    ) -> AcceptAction<Self::Crypto>;
+    ) -> AcceptAction<C>;
 
     /// Lookup a specific ratchet state based on its ratchet fingerprint.
     /// This function will be called whenever Alice attempts to connect to us with a non-empty
@@ -213,8 +210,8 @@ pub trait ApplicationLayer: Sized {
     /// function `ApplicationLayer::check_accept_session`.
     fn restore_by_identity(
         &mut self,
-        remote_static_key: &<Self::Crypto as CryptoLayer>::PublicKey,
-        session_data: &<Self::Crypto as CryptoLayer>::SessionData,
+        remote_static_key: &<C as CryptoLayer>::PublicKey,
+        session_data: &<C as CryptoLayer>::SessionData,
     ) -> Result<Option<RatchetStates>, std::io::Error>;
     /// Atomically commit the update specified by `update_data` to storage, or return an error if
     /// the update could not be made.
@@ -234,8 +231,8 @@ pub trait ApplicationLayer: Sized {
     /// Otherwise, when we restart, we will not be allowed to reconnect.
     fn save_ratchet_state(
         &mut self,
-        remote_static_key: &<Self::Crypto as CryptoLayer>::PublicKey,
-        session_data: &<Self::Crypto as CryptoLayer>::SessionData,
+        remote_static_key: &<C as CryptoLayer>::PublicKey,
+        session_data: &<C as CryptoLayer>::SessionData,
         update_data: RatchetUpdate<'_>,
     ) -> Result<(), std::io::Error>;
 
@@ -244,7 +241,7 @@ pub trait ApplicationLayer: Sized {
     /// nothing else. Do not base protocol-level decisions upon the events passed to this function.
     #[cfg(feature = "logging")]
     #[allow(unused)]
-    fn event_log(&mut self, event: LogEvent<'_, Self::Crypto>) {}
+    fn event_log(&mut self, event: LogEvent<'_, C>) {}
 }
 
 /// A collection of fields specifying how to complete the key exchange with a specific remote peer,
