@@ -17,7 +17,7 @@ use crate::fragged::Assembled;
 use crate::handshake_cache::UnassociatedHandshakeCache;
 use crate::indexed_heap::IndexedBinaryHeap;
 use crate::proto::*;
-use crate::result::{fault, FaultType, OpenError, ReceiveError, ReceiveOk, SendError, SessionEvent};
+use crate::result::{fault, ExpiredError, FaultType, OpenError, ReceiveError, ReceiveOk, SendError, SessionEvent};
 use crate::zeta::*;
 #[cfg(feature = "logging")]
 use crate::LogEvent::*;
@@ -631,9 +631,14 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
     ///
     /// * `app` - Interface to application using ZSSP
     /// * `send_to` - Function to get a sender and an MTU to send something over an active session
-    pub fn service<App: ApplicationLayer<Crypto>>(&self, mut app: App, send_to: impl SendTo<Crypto>) -> i64 {
+    pub fn service<App: ApplicationLayer<Crypto>>(&self, mut app: App, mut send_to: impl SendTo<Crypto>) -> i64 {
         let current_time = app.time();
-        let next_service_time = self.service_inner(app, send_to, current_time);
+        let next_service_time = loop {
+            match self.service_inner(&mut app, send_to, current_time) {
+                Ok(ts) => break ts,
+                Err((_, s)) => send_to = s,
+            }
+        };
         let max_interval = Crypto::SETTINGS
             .fragment_assembly_timeout
             .min(Crypto::SETTINGS.rekey_timeout)
@@ -649,21 +654,33 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
     /// an `Option<i64>`. This option can contain an updated, reduced timestamp at which this
     /// function ought to be called again.
     ///
+    /// If this returns an error then it means that a session has timed-out and has been expired.
+    /// An expired session is no longer "owned" by the ZSSP context.
+    /// Therefore it is no longer capable of sending, receiving or being serviced,
+    /// so it should be dropped.
+    ///
+    /// A return type of `Err` effectively means that this function should be called again immediately.
+    /// This function should be called repeatedly in a loop until `Ok` is returned.
+    ///
     /// This function should only be used if the caller has direct access to a scheduler that allows
     /// them to dynamically modify the interval at which this function is repeatedly called.
     ///
     /// * `app` - Interface to application using ZSSP
     /// * `send_to` - Function to get a sender and an MTU to send something over an active session
-    pub fn service_scheduled<App: ApplicationLayer<Crypto>>(&self, mut app: App, send_to: impl SendTo<Crypto>) -> i64 {
-        let current_time = app.time();
-        self.service_inner(app, send_to, current_time)
-    }
-    fn service_inner<App: ApplicationLayer<Crypto>>(
+    pub fn service_scheduled<App: ApplicationLayer<Crypto>>(
         &self,
         mut app: App,
-        mut send_to: impl SendTo<Crypto>,
+        send_to: impl SendTo<Crypto>,
+    ) -> Result<i64, ExpiredError<Crypto>> {
+        let current_time = app.time();
+        self.service_inner(&mut app, send_to, current_time).map_err(|e| e.0)
+    }
+    fn service_inner<App: ApplicationLayer<Crypto>, F: SendTo<Crypto>>(
+        &self,
+        app: &mut App,
+        mut send_to: F,
         current_time: i64,
-    ) -> i64 {
+    ) -> Result<i64, (ExpiredError<Crypto>, F)> {
         let ctx = &self.0;
         let mut session_queue = ctx.session_queue.lock().unwrap();
         let mut queue_service_time = i64::MAX;
@@ -682,17 +699,18 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                     continue;
                 }
             };
-            let result = process_timers(&mut app, ctx, &session, current_time, |packet, hk_send| {
+            let result = process_timers(app, ctx, &session, current_time, |packet, hk_send| {
                 if let Some((sender, mut mtu)) = send_to.init_send(&session) {
                     mtu = mtu.max(MIN_TRANSPORT_MTU);
                     send_with_fragmentation(sender, mtu, packet, hk_send);
                 }
             });
-            if let Some(next_timer) = result {
+            if let Ok(next_timer) = result {
                 queue_service_time = queue_service_time.min(next_timer);
                 session_queue.change_priority(queue_idx, Reverse(next_timer));
             } else {
                 session.expire_inner(Some(ctx), Some(&mut session_queue));
+                return Err((ExpiredError(session), send_to));
             }
         }
         // This is the only place where `ctx.next_service_time` can be increased. This only works
@@ -713,7 +731,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
         let t2 = defrag_service_time.min(handshake_service_time);
         let t1 = ctx.next_service_time.fetch_min(t2, Ordering::Relaxed);
 
-        t1.min(t2)
+        Ok(t1.min(t2))
     }
     /// Returns the exact timestamp at which either `Context::service` or
     /// `Context::service_scheduled` should be called again.

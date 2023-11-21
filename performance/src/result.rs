@@ -1,5 +1,5 @@
 use std::error::Error;
-use std::fmt::Display;
+use std::fmt;
 use std::sync::Arc;
 
 use crate::application::CryptoLayer;
@@ -41,6 +41,14 @@ pub enum SendError {
     DataTooLarge,
 }
 
+/// The contained session has just expired.
+///
+/// An expired session is no longer "owned" by the ZSSP context.
+/// Therefore it is no longer capable of sending, receiving or being serviced,
+/// so it should be dropped.
+#[derive(Clone)]
+pub struct ExpiredError<Crypto: CryptoLayer>(pub Arc<Session<Crypto>>);
+
 /// A type of fault occurred because we received a bad packet.
 ///
 /// An unauthenticated attacker can intentionally trigger any of these, so it is best to
@@ -71,11 +79,22 @@ pub enum FaultType {
 /// Because an unauthenticated remote peer can force these to occur with specific
 /// contained information, it is recommended in production to either drop these
 /// immediately, or log them safely to a local output stream and then drop them.
-#[derive(Debug)]
-pub struct ByzantineFault {
+pub struct ByzantineFault<Crypto: CryptoLayer> {
+    /// The session associated with this fault, if there was one.
+    ///
+    /// The sender specified this session within their packet, but they were not authenticated,
+    /// so the sender could theoretically be anyone.
+    pub session: Option<Arc<Session<Crypto>>>,
+    /// This field is true if this fault caused the session it was attached to to expire.
+    /// An expired session is no longer "owned" by the ZSSP context.
+    /// Therefore it is no longer capable of sending, receiving or being serviced,
+    /// so it should be dropped.
+    ///
+    /// If this returns true then it is guaranteed that the `session` field is occupied.
+    pub caused_expiration: bool,
     /// The type of fault that has occurred. Be cautious if you choose to read this
     /// value, as an attacker has control over it.
-    pub(crate) error: FaultType,
+    pub error: FaultType,
     /// Some byzantine faults within ZSSP are naturally occurring, i.e. they can occur
     /// between two well behaved and trusted parties executing the protocol.
     /// This boolean is false if this is one of these faults. If you go to the file and
@@ -88,7 +107,7 @@ pub struct ByzantineFault {
     /// persevered (i.e. bits have been flipped) to be unnatural.
     /// ZSSP also considers collisions of what are supposed to be uniform random
     /// numbers to be unnatural.
-    pub(crate) unnatural: bool,
+    pub unnatural: bool,
     /// The file of this implementation of ZSSP from which this error was generated.
     #[cfg(feature = "debug")]
     pub(crate) file: &'static str,
@@ -98,43 +117,6 @@ pub struct ByzantineFault {
     /// complicated usages of ZSSP.
     #[cfg(feature = "debug")]
     pub(crate) line: u32,
-}
-// I don't like getter methods but in this case they are the only way to implement
-// conditionally compiled struct fields without the feature flag causing breaking changes.
-impl ByzantineFault {
-    /// The type of fault that has occurred. Be cautious if you choose to read this
-    /// value, as an attacker has control over it.
-    pub fn error(&self) -> FaultType {
-        self.error
-    }
-    /// Some byzantine faults within ZSSP are naturally occurring, i.e. they can occur
-    /// between two well behaved and trusted parties executing the protocol.
-    /// This boolean is false if this is one of these faults. If you go to the file and
-    /// line number specified by this error you will find a comment describing
-    /// how and why exactly this fault can occur naturally.
-    ///
-    /// Faults that can occur because the underlying communication medium is lossy and
-    /// sequentially inconsistent (as in UDP) are considered naturally occurring.
-    /// However ZSSP considers faults that occur because data integrity has not been
-    /// persevered (i.e. bits have been flipped) to be unnatural.
-    /// ZSSP also considers collisions of what are supposed to be uniform random
-    /// numbers to be unnatural.
-    pub fn unnatural(&self) -> bool {
-        self.unnatural
-    }
-    /// The file of this implementation of ZSSP from which this error was generated.
-    #[cfg(feature = "debug")]
-    pub fn file(&self) -> &'static str {
-        self.file
-    }
-    /// The line number of this implementation of ZSSP from which this error was
-    /// generated. As such this number uniquely identifies each possible fault that
-    /// can occur during ZSSP. Advanced user can use this information to debug more
-    /// complicated usages of ZSSP.
-    #[cfg(feature = "debug")]
-    pub fn line(&self) -> u32 {
-        self.line
-    }
 }
 
 /// An error that occurred during the receipt of a given packet.
@@ -150,7 +132,7 @@ pub enum ReceiveError<Crypto: CryptoLayer> {
     /// Because an unauthenticated remote peer can force these to occur with specific
     /// contained information, it is recommended in production to either drop these
     /// immediately, or log them safely to a local output stream and then drop them.
-    ByzantineFault(ByzantineFault, Option<Arc<Session<Crypto>>>),
+    ByzantineFault(ByzantineFault<Crypto>),
 
     /// Rekeying failed and session secret has reached its hard usage count limit.
     /// The associated session will no longer function and has to be dropped.
@@ -171,30 +153,31 @@ pub enum ReceiveError<Crypto: CryptoLayer> {
 
 macro_rules! fault {
     ($name:expr, $unnatural:ident) => {
-        ReceiveError::ByzantineFault(
-            crate::result::ByzantineFault {
-                #[cfg(feature = "debug")]
-                file: file!(),
-                #[cfg(feature = "debug")]
-                line: line!(),
-                error: $name,
-                unnatural: $unnatural,
-            },
-            None,
-        )
+        ReceiveError::ByzantineFault(crate::result::ByzantineFault {
+            #[cfg(feature = "debug")]
+            file: file!(),
+            #[cfg(feature = "debug")]
+            line: line!(),
+            error: $name,
+            unnatural: $unnatural,
+            session: None,
+            caused_expiration: false,
+        })
     };
     ($name:expr, $unnatural:ident, $session:ident) => {
-        ReceiveError::ByzantineFault(
-            crate::result::ByzantineFault {
-                #[cfg(feature = "debug")]
-                file: file!(),
-                #[cfg(feature = "debug")]
-                line: line!(),
-                error: $name,
-                unnatural: $unnatural,
-            },
-            Some($session.clone()),
-        )
+        fault!($name, $unnatural, $session, false)
+    };
+    ($name:expr, $unnatural:ident, $session:ident, $e:ident) => {
+        ReceiveError::ByzantineFault(crate::result::ByzantineFault {
+            #[cfg(feature = "debug")]
+            file: file!(),
+            #[cfg(feature = "debug")]
+            line: line!(),
+            error: $name,
+            unnatural: $unnatural,
+            session: Some($session.clone()),
+            caused_expiration: $e,
+        })
     };
 }
 pub(crate) use fault;
@@ -265,8 +248,8 @@ pub enum SessionEvent {
     DowngradedRatchetKey,
 }
 
-impl Display for OpenError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for OpenError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             OpenError::IdentityTooLarge => f.write_str("identity too large"),
             OpenError::StorageError(e) => e.fmt(f),
@@ -275,8 +258,8 @@ impl Display for OpenError {
 }
 impl Error for OpenError {}
 
-impl Display for SendError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for SendError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let str = match self {
             SendError::MtuTooSmall => "mtu too small",
             SendError::SessionExpired => "session has expired",
@@ -288,8 +271,23 @@ impl Display for SendError {
 }
 impl Error for SendError {}
 
-impl Display for FaultType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<Crypto: CryptoLayer> fmt::Debug for ExpiredError<Crypto>
+where
+    Session<Crypto>: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("ExpiredError").field(&self.0).finish()
+    }
+}
+impl<Crypto: CryptoLayer> fmt::Display for ExpiredError<Crypto> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "session expired")
+    }
+}
+impl<Crypto: CryptoLayer> Error for ExpiredError<Crypto> where Session<Crypto>: fmt::Debug {}
+
+impl fmt::Display for FaultType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let str = match self {
             FaultType::UnknownLocalKeyId => "packet contained an unknown key id",
             FaultType::InvalidPacket => "invalid packet received",
@@ -302,25 +300,57 @@ impl Display for FaultType {
 }
 impl Error for FaultType {}
 
-impl Display for ByzantineFault {
+// I don't like getter methods but in this case they are the only way to implement
+// conditionally compiled struct fields without the feature flag causing breaking changes.
+impl<Crypto: CryptoLayer> ByzantineFault<Crypto> {
+    /// The file of this implementation of ZSSP from which this error was generated.
     #[cfg(feature = "debug")]
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    pub fn file(&self) -> &'static str {
+        self.file
+    }
+    /// The line number of this implementation of ZSSP from which this error was
+    /// generated. As such this number uniquely identifies each possible fault that
+    /// can occur during ZSSP. Advanced user can use this information to debug more
+    /// complicated usages of ZSSP.
+    #[cfg(feature = "debug")]
+    pub fn line(&self) -> u32 {
+        self.line
+    }
+}
+impl<Crypto: CryptoLayer> fmt::Debug for ByzantineFault<Crypto>
+where
+    Session<Crypto>: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ByzantineFault")
+            .field("session", &self.session)
+            .field("caused_expiration", &self.caused_expiration)
+            .field("error", &self.error)
+            .field("unnatural", &self.unnatural)
+            .field("file", &self.file)
+            .field("line", &self.line)
+            .finish()
+    }
+}
+impl<Crypto: CryptoLayer> fmt::Display for ByzantineFault<Crypto> {
+    #[cfg(feature = "debug")]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} ({}:{})", self.error, self.file, self.line)
     }
     #[cfg(not(feature = "debug"))]
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.error.fmt(f)
     }
 }
-impl Error for ByzantineFault {}
+impl<Crypto: CryptoLayer> Error for ByzantineFault<Crypto> where Session<Crypto>: fmt::Debug {}
 
-impl<Crypto: CryptoLayer> std::fmt::Debug for ReceiveError<Crypto>
+impl<Crypto: CryptoLayer> fmt::Debug for ReceiveError<Crypto>
 where
-    Crypto::SessionData: std::fmt::Debug,
+    Crypto::SessionData: fmt::Debug,
 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::ByzantineFault(arg0, arg1) => f.debug_tuple("ByzantineFault").field(arg0).field(arg1).finish(),
+            Self::ByzantineFault(arg) => f.debug_tuple("ByzantineFault").field(arg).finish(),
             Self::MaxKeyLifetimeExceeded(arg0) => f.debug_tuple("MaxKeyLifetimeExceeded").field(arg0).finish(),
             Self::Rejected => f.write_str("Rejected"),
             Self::StorageError(arg0) => f.debug_tuple("StorageError").field(arg0).finish(),
@@ -328,11 +358,10 @@ where
         }
     }
 }
-
-impl<Crypto: CryptoLayer> Display for ReceiveError<Crypto> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<Crypto: CryptoLayer> fmt::Display for ReceiveError<Crypto> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ReceiveError::ByzantineFault(e, _) => e.fmt(f),
+            ReceiveError::ByzantineFault(e) => e.fmt(f),
             ReceiveError::MaxKeyLifetimeExceeded(_) => f.write_str("max key lifetime exceeded"),
             ReceiveError::Rejected => f.write_str("attempt to establish session rejected"),
             ReceiveError::StorageError(e) => e.fmt(f),
@@ -340,4 +369,4 @@ impl<Crypto: CryptoLayer> Display for ReceiveError<Crypto> {
         }
     }
 }
-impl<Crypto: CryptoLayer> Error for ReceiveError<Crypto> where Crypto::SessionData: std::fmt::Debug {}
+impl<Crypto: CryptoLayer> Error for ReceiveError<Crypto> where Crypto::SessionData: fmt::Debug {}
