@@ -53,8 +53,8 @@ impl<Fragment, const MAX_FRAGMENTS: usize> Fragged<Fragment, MAX_FRAGMENTS> {
             if got & self.have == 0 && self.count == fragment_count as u32 {
                 self.have |= got;
                 unsafe {
-                    self.frags.get_unchecked_mut(fragment_no as usize).write(fragment);
-                    if self.have == 1u64.wrapping_shl(self.count as u32) - 1 {
+                    self.frags.get_unchecked_mut(fragment_no).write(fragment);
+                    if self.have == 1u64.wrapping_shl(self.count) - 1 {
                         self.have = 0;
                         self.count = 0;
                         self.nonce = u64::MAX;

@@ -2,7 +2,7 @@ use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha512};
 
 use crate::crypto::*;
-
+/// An alias for the Sha512 type from the sha2 crate.
 pub type CrateSha512 = Sha512;
 impl Sha512Hash for CrateSha512 {
     fn new() -> Self {
@@ -20,6 +20,7 @@ impl Sha512Hash for CrateSha512 {
     }
 }
 
+/// A type that implements HMAC SHA512 using the hmac and sha2 crates.
 pub struct CrateHmacSha512;
 impl Sha512Hmac for CrateHmacSha512 {
     fn new() -> Self {

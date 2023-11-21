@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::num::NonZeroU32;
 use std::ops::{Deref, DerefMut};
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, Weak};
 
 use arrayvec::ArrayVec;
@@ -38,7 +38,6 @@ pub struct Session<Crypto: CryptoLayer> {
 
     pub(crate) s_remote: Crypto::PublicKey,
     send_counter: AtomicU64,
-    session_has_expired: AtomicBool,
 
     pub(crate) window: Window<COUNTER_WINDOW_MAX_OOO, COUNTER_WINDOW_MAX_SKIP_AHEAD>,
     pub(crate) defrag: [Mutex<Fragged<Crypto::IncomingPacketBuffer, MAX_FRAGMENTS>>; SESSION_MAX_FRAGMENTS_OOO],
@@ -69,6 +68,7 @@ pub(crate) struct MutableState<Crypto: CryptoLayer> {
 /// Corresponds to State B_2 of the Zeta State Machine found in Section 4.1 - Definition 3.
 pub(crate) struct StateB2<Crypto: CryptoLayer> {
     ratchet_state: RatchetState,
+    lookup_data: Option<Crypto::FingerprintData>,
     kid_send: NonZeroU32,
     pub kid_recv: NonZeroU32,
     pub hk_send: Zeroizing<[u8; AES_256_KEY_SIZE]>,
@@ -185,12 +185,12 @@ impl<Crypto: CryptoLayer> SymmetricState<Crypto> {
     }
     fn mix_dh(&mut self, hmac: &mut Crypto::Hmac, secret: &Crypto::KeyPair, remote: &Crypto::PublicKey) {
         let mut ecdh_secret = Zeroizing::new([0u8; P384_ECDH_SHARED_SECRET_SIZE]);
-        secret.agree(&remote, &mut ecdh_secret);
+        secret.agree(remote, &mut ecdh_secret);
         self.mix_key(hmac, ecdh_secret.as_ref());
     }
     fn mix_dh_no_init(&mut self, hmac: &mut Crypto::Hmac, secret: &Crypto::KeyPair, remote: &Crypto::PublicKey) {
         let mut ecdh_secret = Zeroizing::new([0u8; P384_ECDH_SHARED_SECRET_SIZE]);
-        secret.agree(&remote, &mut ecdh_secret);
+        secret.agree(remote, &mut ecdh_secret);
         self.mix_key_no_init(hmac, ecdh_secret.as_ref());
     }
 }
@@ -236,20 +236,12 @@ fn create_ratchet_state<Crypto: CryptoLayer>(
     )
 }
 fn get_counter<Crypto: CryptoLayer>(session: &Session<Crypto>, state: &MutableState<Crypto>) -> Option<(u64, bool)> {
-    if session.session_has_expired.load(Ordering::Relaxed) {
-        None
-    } else {
-        let c = session.send_counter.fetch_add(1, Ordering::Relaxed);
-        if c > THREAD_SAFE_COUNTER_HARD_EXPIRE {
-            session.session_has_expired.store(true, Ordering::SeqCst);
-        }
-        if c > state.key_creation_counter + EXPIRE_AFTER_USES {
-            session.session_has_expired.store(true, Ordering::SeqCst);
-            return None;
-        }
-        let rekey_at = state.key_creation_counter + Crypto::SETTINGS.rekey_after_key_uses;
-        Some((c, c > rekey_at))
+    let c = session.send_counter.fetch_add(1, Ordering::Relaxed);
+    if c > THREAD_SAFE_COUNTER_HARD_EXPIRE || c > state.key_creation_counter + EXPIRE_AFTER_USES {
+        return None;
     }
+    let rekey_at = state.key_creation_counter + Crypto::SETTINGS.rekey_after_key_uses;
+    Some((c, c > rekey_at))
 }
 
 /// Generate a random local key id that is currently unused.
@@ -271,7 +263,7 @@ fn remap<Crypto: CryptoLayer>(
     let weak = if let Some(Some(weak)) = state.key_ref(true).recv.kid.as_ref().map(|kid| session_map.remove(kid)) {
         weak
     } else {
-        Arc::downgrade(&session)
+        Arc::downgrade(session)
     };
     let new_kid_recv = gen_kid(session_map.deref(), ctx.rng.lock().unwrap().deref_mut());
     session_map.insert(new_kid_recv, weak);
@@ -340,8 +332,8 @@ pub(crate) fn trans_to_a1<Crypto: CryptoLayer, App: ApplicationLayer<Crypto>>(
     send: impl FnOnce(&mut [u8], Option<&Crypto::PrpEnc>),
 ) -> Result<(Arc<Session<Crypto>>, Option<i64>), OpenError> {
     let RatchetStates { state1, state2 } = app
-        .restore_by_identity(&s_remote, &session_data)
-        .map_err(|e| OpenError::StorageError(e))?
+        .restore_by_identity(&s_remote, &session_data, None)
+        .map_err(OpenError::StorageError)?
         .unwrap_or_default();
 
     let mut session_queue = ctx.session_queue.lock().unwrap();
@@ -380,7 +372,6 @@ pub(crate) fn trans_to_a1<Crypto: CryptoLayer, App: ApplicationLayer<Crypto>>(
         queue_idx,
         s_remote,
         send_counter: AtomicU64::new(0),
-        session_has_expired: AtomicBool::new(false),
         window: Window::new(),
         state_machine_lock: Mutex::new(()),
         state: RwLock::new(MutableState {
@@ -435,7 +426,7 @@ pub(crate) fn received_x1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     n: &[u8; AES_GCM_NONCE_SIZE],
     x1: &mut [u8],
     send: impl FnOnce(&mut [u8], Option<&Crypto::PrpEnc>),
-) -> Result<Option<i64>, ReceiveError> {
+) -> Result<Option<i64>, ReceiveError<Crypto>> {
     use FaultType::*;
     //    <- s
     //    ...
@@ -455,13 +446,13 @@ pub(crate) fn received_x1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     let j = i + KID_SIZE;
     noise.mix_hash(hash, &x1[i..j]);
     let kid_send =
-        NonZeroU32::new(u32::from_ne_bytes(x1[i..j].try_into().unwrap())).ok_or(fault!(InvalidPacket, true))?;
+        NonZeroU32::new(u32::from_ne_bytes(x1[i..j].try_into().unwrap())).ok_or_else(|| fault!(InvalidPacket, true))?;
     noise.mix_hash(hash, &ctx.s_secret.public_key_bytes());
     i = j;
     // Process message pattern 1 e token.
     let e_remote = noise
-        .read_e_no_init(hash, hmac, &mut i, &x1)
-        .ok_or(fault!(FailedAuth, true))?;
+        .read_e_no_init(hash, hmac, &mut i, x1)
+        .ok_or_else(|| fault!(FailedAuth, true))?;
     // Process message pattern 1 es token.
     noise.mix_dh(hmac, &ctx.s_secret, &e_remote);
     // Process message pattern 1 e1 token.
@@ -482,11 +473,13 @@ pub(crate) fn received_x1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
         return Err(fault!(FailedAuth, true));
     }
 
+    let mut lookup_data = None;
     let mut ratchet_state = None;
     while i + RATCHET_SIZE <= j {
         match app.restore_by_fingerprint((&x1[i..i + RATCHET_SIZE]).try_into().unwrap()) {
             Ok(None) => {}
-            Ok(Some(rs)) => {
+            Ok(Some((rs, data))) => {
+                lookup_data = Some(data);
                 ratchet_state = Some(rs);
                 break;
             }
@@ -522,7 +515,7 @@ pub(crate) fn received_x1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
             (&x1[e1_start..e1_end]).try_into().unwrap(),
             &mut ekem1_secret,
         )
-        .ok_or(fault!(FailedAuth, true))?;
+        .ok_or_else(|| fault!(FailedAuth, true))?;
         x2.extend(ekem1);
         let tag = noise.encrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_HANDSHAKE_RESPONSE, 0), &mut x2[i..]);
         x2.extend(tag);
@@ -561,6 +554,7 @@ pub(crate) fn received_x1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
             e_secret,
             noise,
             defrag: Mutex::new(Fragged::new()),
+            lookup_data,
         }),
         app.time(),
     );
@@ -584,12 +578,12 @@ pub(crate) fn received_x2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     n: &[u8; AES_GCM_NONCE_SIZE],
     x2: &mut [u8],
     send: impl FnOnce(&mut [u8], Option<&Crypto::PrpEnc>),
-) -> Result<(bool, Option<i64>), ReceiveError> {
+) -> Result<(bool, Option<i64>), ReceiveError<Crypto>> {
     use FaultType::*;
     //    <- e, ee, ekem1, psk
     //    -> s, se
     if HANDSHAKE_RESPONSE_SIZE != x2.len() {
-        return Err(fault!(InvalidPacket, true));
+        return Err(fault!(InvalidPacket, true, session));
     }
 
     let kex_lock = session.state_machine_lock.lock().unwrap();
@@ -598,25 +592,29 @@ pub(crate) fn received_x2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     let hmac = &mut Crypto::Hmac::new();
 
     if Some(kid) != state.key_ref(true).recv.kid {
-        return Err(fault!(UnknownLocalKeyId, true));
+        return Err(fault!(UnknownLocalKeyId, true, session));
     }
     let (_, c) = from_nonce(n);
     if c >= COUNTER_WINDOW_MAX_SKIP_AHEAD || &n[AES_GCM_NONCE_SIZE - 3..] != &x2[x2.len() - 3..] {
-        return Err(fault!(FailedAuth, true));
+        return Err(fault!(FailedAuth, true, session));
+    }
+
+    if !matches!(&state.beta, ZetaAutomata::A1(_)) {
+        return Err(fault!(FailedAuth, true, session));
     }
     let mut should_warn_missing_ratchet = false;
     let mut result = (|| {
         let a1 = if let ZetaAutomata::A1(a1) = &state.beta {
             a1
         } else {
-            return Err(fault!(FailedAuth, true));
+            unreachable!();
         };
         let mut noise = a1.noise.clone();
         let mut i = 0;
         // Process message pattern 2 e token.
         let e_remote = noise
-            .read_e_no_init(hash, hmac, &mut i, &x2)
-            .ok_or(fault!(FailedAuth, true))?;
+            .read_e_no_init(hash, hmac, &mut i, x2)
+            .ok_or_else(|| fault!(FailedAuth, true, session))?;
         // Process message pattern 2 ee token.
         noise.mix_dh(hmac, &a1.e_secret, &e_remote);
         // Process message pattern 2 ekem1 token.
@@ -624,14 +622,14 @@ pub(crate) fn received_x2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
         let k = j + AES_GCM_TAG_SIZE;
         let tag = x2[j..k].try_into().unwrap();
         if !noise.decrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_HANDSHAKE_RESPONSE, 0), &mut x2[i..j], tag) {
-            return Err(fault!(FailedAuth, true));
+            return Err(fault!(FailedAuth, true, session));
         }
         let mut ekem1_secret = Zeroizing::new([0u8; KYBER_PLAINTEXT_SIZE]);
         if !a1
             .e1_secret
             .decapsulate((&x2[i..j]).try_into().unwrap(), &mut ekem1_secret)
         {
-            return Err(fault!(FailedAuth, true));
+            return Err(fault!(FailedAuth, true, session));
         }
         noise.mix_key_no_init(hmac, ekem1_secret.as_ref());
         drop(ekem1_secret);
@@ -649,7 +647,7 @@ pub(crate) fn received_x2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
         // Check for which ratchet key Bob wants to use.
         let mut test_ratchet_key = |ratchet_key| -> Option<(NonZeroU32, SymmetricState<Crypto>)> {
             let mut noise = noise.clone();
-            let mut payload = payload.clone();
+            let mut payload = payload;
             // Process message pattern 2 psk token.
             noise.mix_key_and_hash(hash, hmac, ratchet_key);
             // Process message pattern 2 payload.
@@ -679,7 +677,7 @@ pub(crate) fn received_x2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
             }
         }
 
-        let (kid_send, mut noise) = result.ok_or(fault!(FailedAuth, true))?;
+        let (kid_send, mut noise) = result.ok_or_else(|| fault!(FailedAuth, true, session))?;
 
         let mut x3 = ArrayVec::<u8, HEADERED_HANDSHAKE_COMPLETION_MAX_SIZE>::new();
         x3.extend([0u8; HEADER_SIZE]);
@@ -744,7 +742,7 @@ pub(crate) fn received_x2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
                 a1
             } else {
                 // This return is unreachable.
-                return Err(fault!(FailedAuth, true));
+                return Err(fault!(FailedAuth, true, session));
             };
             state.beta = ZetaAutomata::A3(Box::new(StateA3 { identity: a1.identity.clone(), x3: x3.clone() }));
             resend_timer
@@ -759,38 +757,40 @@ pub(crate) fn received_x2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
         Ok((x3, reduced))
     })();
 
-    match result {
-        Err(ReceiveError::ByzantineFault { .. }) => {
+    match &mut result {
+        Err(ReceiveError::ByzantineFault(_)) => {
             let kex_lock = session.state_machine_lock.lock().unwrap();
             let state = session.state.read().unwrap();
             let current_time = app.time();
-            timeout_trans(app, ctx, session, kex_lock, state, current_time, send);
+            // We can only reach this point if we are in state A1, and state A1 cannot expire.
+            debug_assert!(timeout_trans(app, ctx, session, kex_lock, state, current_time, send).is_ok());
         }
-        Ok((ref mut packet, _)) => send(packet, Some(&session.state.read().unwrap().hk_send)),
+        Ok((packet, _)) => send(packet, Some(&session.state.read().unwrap().hk_send)),
         _ => {}
     }
     result.map(|(_, reduced_service_time)| (should_warn_missing_ratchet, reduced_service_time))
 }
+/// Returns `Err(true)` if the counter expired.
 fn send_control<Crypto: CryptoLayer, const CAP: usize>(
     session: &Arc<Session<Crypto>>,
     state: &MutableState<Crypto>,
     packet_type: u8,
     mut payload: ArrayVec<u8, CAP>,
     send: impl FnOnce(&mut [u8], Option<&Crypto::PrpEnc>),
-) -> bool {
-    if let Some((c, _)) = get_counter(session, &state) {
+) -> Result<(), bool> {
+    if let Some((c, _)) = get_counter(session, state) {
         if let (Some(kek), Some(kid)) = (state.key_ref(false).send.kek.as_ref(), state.key_ref(false).send.kid) {
             let nonce = to_nonce(packet_type, c);
             let tag = Crypto::Aead::encrypt_in_place(kek, &nonce, &[], &mut payload[HEADER_SIZE..]);
             payload.extend(tag);
             set_header(&mut payload, kid.get(), &nonce);
             send(&mut payload, Some(&state.hk_send));
-            true
+            Ok(())
         } else {
-            false
+            Err(false)
         }
     } else {
-        false
+        Err(true)
     }
 }
 /// Corresponds to Transition Algorithm 4 found in Section 4.3.
@@ -801,7 +801,7 @@ pub(crate) fn received_x3_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     kid: NonZeroU32,
     x3: &mut [u8],
     send: impl FnOnce(&mut [u8], Option<&Crypto::PrpEnc>),
-) -> Result<(Arc<Session<Crypto>>, bool, Option<i64>), ReceiveError> {
+) -> Result<(Arc<Session<Crypto>>, bool, Option<i64>), ReceiveError<Crypto>> {
     use FaultType::*;
     //    -> s, se
     if x3.len() < HANDSHAKE_COMPLETION_MIN_SIZE {
@@ -822,7 +822,8 @@ pub(crate) fn received_x3_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     if !noise.decrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_HANDSHAKE_COMPLETION, 1), &mut x3[i..j], tag) {
         return Err(fault!(FailedAuth, true));
     }
-    let s_remote = Crypto::PublicKey::from_bytes((&x3[i..j]).try_into().unwrap()).ok_or(fault!(FailedAuth, true))?;
+    let s_remote =
+        Crypto::PublicKey::from_bytes((&x3[i..j]).try_into().unwrap()).ok_or_else(|| fault!(FailedAuth, true))?;
     i = k;
     // Process message pattern 3 se token.
     noise.mix_dh(hmac, &zeta.e_secret, &s_remote);
@@ -841,7 +842,7 @@ pub(crate) fn received_x3_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     noise.get_ask(hmac, LABEL_KEX_KEY, &mut kek_send, &mut kek_recv);
     let c = 0;
 
-    let action = app.check_accept_session(&s_remote, &x3[identity_start..identity_end]);
+    let action = app.check_accept_session(&s_remote, &x3[identity_start..identity_end], zeta.lookup_data.as_ref());
     let responder_disallows_downgrade = action.responder_disallows_downgrade;
     let responder_silently_rejects = action.responder_silently_rejects;
     let create_reject = || {
@@ -857,7 +858,7 @@ pub(crate) fn received_x3_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
         d
     };
     if let Some(session_data) = action.session_data {
-        let result = app.restore_by_identity(&s_remote, &session_data);
+        let result = app.restore_by_identity(&s_remote, &session_data, zeta.lookup_data.as_ref());
         match result {
             Ok(rss) => {
                 let RatchetStates { state1, state2 } = rss.unwrap_or_default();
@@ -915,7 +916,6 @@ pub(crate) fn received_x3_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
                         was_bob: true,
                         s_remote,
                         send_counter: AtomicU64::new(c + 1),
-                        session_has_expired: AtomicBool::new(false),
                         state_machine_lock: Mutex::new(()),
                         state: RwLock::new(MutableState {
                             ratchet_state1: new_ratchet_state.clone(),
@@ -951,7 +951,8 @@ pub(crate) fn received_x3_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
                 let state = session.state.read().unwrap();
                 let mut c1 = ArrayVec::<u8, HEADERED_KEY_CONFIRMATION_SIZE>::new();
                 c1.extend([0u8; HEADER_SIZE]);
-                send_control(&session, &state, PACKET_TYPE_KEY_CONFIRM, c1, send);
+                // This session is new so the result is overwhelmingly likely to be `Ok(())`.
+                let _ = send_control(&session, &state, PACKET_TYPE_KEY_CONFIRM, c1, send);
                 drop(state);
 
                 Ok((session, should_warn_missing_ratchet, reduced_service_time))
@@ -974,11 +975,11 @@ pub(crate) fn received_c1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     n: &[u8; AES_GCM_NONCE_SIZE],
     c1: &[u8],
     send: impl FnOnce(&mut [u8], Option<&Crypto::PrpEnc>),
-) -> Result<(bool, Option<i64>), ReceiveError> {
+) -> Result<(bool, Option<i64>), ReceiveError<Crypto>> {
     use FaultType::*;
 
     if c1.len() != KEY_CONFIRMATION_SIZE {
-        return Err(fault!(InvalidPacket, true));
+        return Err(fault!(InvalidPacket, true, session));
     }
 
     let kex_lock = session.state_machine_lock.lock().unwrap();
@@ -991,18 +992,18 @@ pub(crate) fn received_c1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     } else {
         // Some key confirmation may have arrived extremely delayed.
         // It is unlikely but possible.
-        return Err(fault!(OutOfSequence, false));
+        return Err(fault!(OutOfSequence, false, session));
     };
 
     let specified_key = state.key_ref(is_other).recv.kek.as_ref();
-    let specified_key = specified_key.ok_or(fault!(OutOfSequence, true))?;
+    let specified_key = specified_key.ok_or_else(|| fault!(OutOfSequence, true, session))?;
     let tag = c1[..].try_into().unwrap();
     if !Crypto::Aead::decrypt_in_place(specified_key, n, &[], &mut [], tag) {
-        return Err(fault!(FailedAuth, true));
+        return Err(fault!(FailedAuth, true, session));
     }
     let (_, c) = from_nonce(n);
     if !session.window.update(c) {
-        return Err(fault!(ExpiredCounter, true));
+        return Err(fault!(ExpiredCounter, true, session));
     }
     let mut reduced_service_time = None;
 
@@ -1041,16 +1042,24 @@ pub(crate) fn received_c1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
                 .change_priority(session.queue_idx, Reverse(timeout_timer));
             reduced_service_time = ctx.reduce_next_service_time(timeout_timer);
             state = session.state.read().unwrap();
+        } else {
+            drop(kex_lock);
         }
+    } else {
+        drop(kex_lock);
     }
 
     let mut c2 = ArrayVec::<u8, HEADERED_ACKNOWLEDGEMENT_SIZE>::new();
     c2.extend([0u8; HEADER_SIZE]);
-    if !send_control(session, &state, PACKET_TYPE_ACK, c2, send) {
-        return Err(fault!(OutOfSequence, true));
+    match send_control(session, &state, PACKET_TYPE_ACK, c2, send) {
+        Ok(()) => Ok((just_establised, reduced_service_time)),
+        Err(true) => {
+            drop(state);
+            session.expire();
+            Err(fault!(ExpiredCounter, true, session, true))
+        }
+        Err(false) => Err(fault!(OutOfSequence, true, session)),
     }
-
-    Ok((just_establised, reduced_service_time))
 }
 /// Corresponds to the trivial Transition Algorithm described for processing C_2 packets found in
 /// Section 4.3.
@@ -1061,11 +1070,11 @@ pub(crate) fn received_c2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     kid: NonZeroU32,
     n: &[u8; AES_GCM_NONCE_SIZE],
     c2: &[u8],
-) -> Result<Option<i64>, ReceiveError> {
+) -> Result<Option<i64>, ReceiveError<Crypto>> {
     use FaultType::*;
 
     if c2.len() != ACKNOWLEDGEMENT_SIZE {
-        return Err(fault!(InvalidPacket, true));
+        return Err(fault!(InvalidPacket, true, session));
     }
 
     let kex_lock = session.state_machine_lock.lock().unwrap();
@@ -1073,20 +1082,20 @@ pub(crate) fn received_c2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
 
     if Some(kid) != state.key_ref(false).recv.kid {
         // Some acknowledgement may have arrived extremely delayed.
-        return Err(fault!(UnknownLocalKeyId, false));
+        return Err(fault!(UnknownLocalKeyId, false, session));
     }
     if !matches!(&state.beta, ZetaAutomata::S1) {
         // Some acknowledgement may have arrived extremely delayed.
-        return Err(fault!(OutOfSequence, false));
+        return Err(fault!(OutOfSequence, false, session));
     }
 
     let tag = c2[..].try_into().unwrap();
     if !Crypto::Aead::decrypt_in_place(state.key_ref(false).recv.kek.as_ref().unwrap(), n, &[], &mut [], tag) {
-        return Err(fault!(FailedAuth, true));
+        return Err(fault!(FailedAuth, true, session));
     }
     let (_, c) = from_nonce(n);
     if !session.window.update(c) {
-        return Err(fault!(ExpiredCounter, true));
+        return Err(fault!(ExpiredCounter, true, session));
     }
     drop(state);
     let timeout_timer = {
@@ -1112,27 +1121,27 @@ pub(crate) fn received_d_trans<Crypto: CryptoLayer>(
     kid: NonZeroU32,
     n: &[u8; AES_GCM_NONCE_SIZE],
     d: &[u8],
-) -> Result<(), ReceiveError> {
+) -> Result<(), ReceiveError<Crypto>> {
     use FaultType::*;
 
     if d.len() != SESSION_REJECTED_SIZE {
-        return Err(fault!(InvalidPacket, true));
+        return Err(fault!(InvalidPacket, true, session));
     }
 
     let kex_lock = session.state_machine_lock.lock().unwrap();
     let state = session.state.read().unwrap();
 
     if Some(kid) != state.key_ref(true).recv.kid || !matches!(&state.beta, ZetaAutomata::A3 { .. }) {
-        return Err(fault!(OutOfSequence, true));
+        return Err(fault!(OutOfSequence, true, session));
     }
 
     let tag = d[..].try_into().unwrap();
     if !Crypto::Aead::decrypt_in_place(state.key_ref(true).recv.kek.as_ref().unwrap(), n, &[], &mut [], tag) {
-        return Err(fault!(FailedAuth, true));
+        return Err(fault!(FailedAuth, true, session));
     }
     let (_, c) = from_nonce(n);
     if !session.window.update(c) {
-        return Err(fault!(ExpiredCounter, true));
+        return Err(fault!(ExpiredCounter, true, session));
     }
 
     drop(state);
@@ -1140,7 +1149,8 @@ pub(crate) fn received_d_trans<Crypto: CryptoLayer>(
     session.expire();
     Ok(())
 }
-// Corresponds to the timeout timer Transition Algorithm described in Section 4.1 - Definition 3.
+/// Corresponds to the timeout timer Transition Algorithm described in Section 4.1 - Definition 3.
+/// Returns `Err(())` if this session should be expired.
 fn timeout_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypto>>(
     app: &mut App,
     ctx: &Arc<ContextInner<Crypto>>,
@@ -1149,9 +1159,9 @@ fn timeout_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypto>>(
     state: RwLockReadGuard<'_, MutableState<Crypto>>,
     current_time: i64,
     send: impl FnOnce(&mut [u8], Option<&Crypto::PrpEnc>),
-) -> Option<i64> {
+) -> Result<i64, ()> {
     match &state.beta {
-        ZetaAutomata::Null => None,
+        ZetaAutomata::Null => Err(()),
         ZetaAutomata::A1(_) | ZetaAutomata::A3 { .. } => {
             let identity = match &state.beta {
                 ZetaAutomata::A1(a1) => &a1.identity,
@@ -1198,7 +1208,7 @@ fn timeout_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypto>>(
             drop(kex_lock);
 
             send(&mut x1, None);
-            Some(resend_timer)
+            Ok(resend_timer)
         }
         ZetaAutomata::S2 => {
             // Corresponds to Transition Algorithm 6 found in Section 4.3.
@@ -1243,31 +1253,34 @@ fn timeout_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypto>>(
             drop(kex_lock);
             let state = session.state.read().unwrap();
 
-            send_control(session, &state, PACKET_TYPE_REKEY_INIT, k1, send);
-            Some(resend_timer)
+            match send_control(session, &state, PACKET_TYPE_REKEY_INIT, k1, send) {
+                Err(true) => Err(()),
+                _ => Ok(resend_timer),
+            }
         }
         ZetaAutomata::S1 { .. } => {
             log!(app, TimeoutKeyConfirm(session));
-            None
+            Err(())
         }
         ZetaAutomata::R1 { .. } => {
             log!(app, TimeoutK1(session));
-            None
+            Err(())
         }
         ZetaAutomata::R2 { .. } => {
             log!(app, TimeoutK2(session));
-            None
+            Err(())
         }
     }
 }
 /// Corresponds to the timer rules of the Zeta State Machine found in Section 4.1 - Definition 3.
+/// Returns `Err(())` if this session should be expired.
 pub(crate) fn process_timers<Crypto: CryptoLayer, App: ApplicationLayer<Crypto>>(
     app: &mut App,
     ctx: &Arc<ContextInner<Crypto>>,
     session: &Arc<Session<Crypto>>,
     current_time: i64,
     send: impl FnOnce(&mut [u8], Option<&Crypto::PrpEnc>),
-) -> Option<i64> {
+) -> Result<i64, ()> {
     let kex_lock = session.state_machine_lock.lock().unwrap();
     let state = session.state.read().unwrap();
     if state.timeout_timer <= current_time {
@@ -1280,16 +1293,16 @@ pub(crate) fn process_timers<Crypto: CryptoLayer, App: ApplicationLayer<Crypto>>
             // Corresponds to the resend timer rules found in Section 4.1 - Definition 3.
 
             let (packet_type, control_payload) = match &state.beta {
-                ZetaAutomata::Null => return None,
+                ZetaAutomata::Null => return Err(()),
                 ZetaAutomata::A1(a1) => {
                     log!(app, ResentX1(session));
                     send(&mut a1.x1.clone(), None);
-                    return Some(resend_next);
+                    return Ok(resend_next);
                 }
                 ZetaAutomata::A3(a3) => {
                     log!(app, ResentX3(session));
                     send(&mut a3.x3.clone(), Some(&state.hk_send));
-                    return Some(resend_next);
+                    return Ok(resend_next);
                 }
                 ZetaAutomata::S1 => {
                     log!(app, ResentKeyConfirm(session));
@@ -1297,7 +1310,7 @@ pub(crate) fn process_timers<Crypto: CryptoLayer, App: ApplicationLayer<Crypto>>
                     c1.extend([0u8; HEADER_SIZE]);
                     (PACKET_TYPE_KEY_CONFIRM, c1)
                 }
-                ZetaAutomata::S2 => return Some(state.timeout_timer),
+                ZetaAutomata::S2 => return Ok(state.timeout_timer),
                 ZetaAutomata::R1 { k1, .. } => {
                     log!(app, ResentK1(session));
                     (PACKET_TYPE_REKEY_INIT, k1.clone())
@@ -1308,10 +1321,12 @@ pub(crate) fn process_timers<Crypto: CryptoLayer, App: ApplicationLayer<Crypto>>
                 }
             };
 
-            send_control(session, &state, packet_type, control_payload, send);
-            Some(resend_next)
+            match send_control(session, &state, packet_type, control_payload, send) {
+                Err(true) => Err(()),
+                _ => Ok(resend_next),
+            }
         } else {
-            Some(ts)
+            Ok(ts)
         }
     }
 }
@@ -1324,7 +1339,7 @@ pub(crate) fn received_k1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     n: &[u8; AES_GCM_NONCE_SIZE],
     k1: &mut [u8],
     send: impl FnOnce(&mut [u8], Option<&Crypto::PrpEnc>),
-) -> Result<Option<i64>, ReceiveError> {
+) -> Result<Option<i64>, ReceiveError<Crypto>> {
     use FaultType::*;
     //    -> s
     //    <- s
@@ -1332,7 +1347,7 @@ pub(crate) fn received_k1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     //    -> psk, e, es, ss
     //    <- e, ee, se
     if k1.len() != REKEY_SIZE {
-        return Err(fault!(InvalidPacket, true));
+        return Err(fault!(InvalidPacket, true, session));
     }
 
     let kex_lock = session.state_machine_lock.lock().unwrap();
@@ -1340,7 +1355,7 @@ pub(crate) fn received_k1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
 
     if Some(kid) != state.key_ref(false).recv.kid {
         // Some rekey packet may have arrived extremely delayed.
-        return Err(fault!(UnknownLocalKeyId, false));
+        return Err(fault!(UnknownLocalKeyId, false, session));
     }
     let should_rekey_as_bob = match &state.beta {
         ZetaAutomata::S2 { .. } => true,
@@ -1349,21 +1364,21 @@ pub(crate) fn received_k1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     };
     if !should_rekey_as_bob {
         // Some rekey packet may have arrived extremely delayed.
-        return Err(fault!(OutOfSequence, false));
+        return Err(fault!(OutOfSequence, false, session));
     }
 
     let i = k1.len() - AES_GCM_TAG_SIZE;
     let tag = k1[i..].try_into().unwrap();
     let kek_recv = state.key_ref(false).recv.kek.as_ref().unwrap();
     if !Crypto::Aead::decrypt_in_place(kek_recv, n, &[], &mut k1[..i], &tag) {
-        return Err(fault!(FailedAuth, true));
+        return Err(fault!(FailedAuth, true, session));
     }
     let (_, c) = from_nonce(n);
     if !session.window.update(c) {
-        return Err(fault!(ExpiredCounter, true));
+        return Err(fault!(ExpiredCounter, true, session));
     }
 
-    let result = (|| {
+    let result = (move || {
         let mut i = 0;
         let mut noise = SymmetricState::<Crypto>::initialize(PROTOCOL_NAME_NOISE_KK);
         let hash = &mut Crypto::Hash::new();
@@ -1375,8 +1390,8 @@ pub(crate) fn received_k1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
         noise.mix_key_and_hash_no_init(hash, hmac, state.ratchet_state1.key.as_ref());
         // Process message pattern 1 e token.
         let e_remote = noise
-            .read_e_no_init(hash, hmac, &mut i, &k1)
-            .ok_or(fault!(FailedAuth, true))?;
+            .read_e_no_init(hash, hmac, &mut i, k1)
+            .ok_or_else(|| fault!(FailedAuth, true, session, true))?;
         // Process message pattern 1 es token.
         noise.mix_dh_no_init(hmac, &ctx.s_secret, &e_remote);
         // Process message pattern 1 ss token.
@@ -1386,10 +1401,10 @@ pub(crate) fn received_k1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
         let k = j + AES_GCM_TAG_SIZE;
         let tag = k1[j..k].try_into().unwrap();
         if !noise.decrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_REKEY_INIT, 0), &mut k1[i..j], tag) {
-            return Err(fault!(FailedAuth, true));
+            return Err(fault!(FailedAuth, true, session, true));
         }
-        let kid_send =
-            NonZeroU32::new(u32::from_ne_bytes(k1[i..j].try_into().unwrap())).ok_or(fault!(FailedAuth, true))?;
+        let kid_send = NonZeroU32::new(u32::from_ne_bytes(k1[i..j].try_into().unwrap()))
+            .ok_or_else(|| fault!(FailedAuth, true, session, true))?;
 
         let mut k2 = ArrayVec::<u8, HEADERED_REKEY_SIZE>::new();
         k2.extend([0u8; HEADER_SIZE]);
@@ -1452,16 +1467,18 @@ pub(crate) fn received_k1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
             .change_priority(session.queue_idx, Reverse(resend_timer));
         let reduced_service_time = ctx.reduce_next_service_time(resend_timer);
         let state = session.state.read().unwrap();
-
-        if !send_control(session, &state, PACKET_TYPE_REKEY_COMPLETE, k2, send) {
-            return Err(fault!(OutOfSequence, true));
+        match send_control(session, &state, PACKET_TYPE_REKEY_COMPLETE, k2, send) {
+            Ok(()) => Ok(reduced_service_time),
+            Err(false) => Err(fault!(OutOfSequence, true, session)),
+            Err(true) => Err(fault!(ExpiredCounter, true, session, true)),
         }
-
-        Ok(reduced_service_time)
     })();
 
-    if matches!(result, Err(ReceiveError::ByzantineFault { .. })) {
-        session.expire();
+    match &result {
+        Err(ReceiveError::ByzantineFault(fault)) if fault.caused_expiration => {
+            session.expire();
+        }
+        _ => {}
     }
     result
 }
@@ -1474,11 +1491,11 @@ pub(crate) fn received_k2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     n: &[u8; AES_GCM_NONCE_SIZE],
     k2: &mut [u8],
     send: impl FnOnce(&mut [u8], Option<&Crypto::PrpEnc>),
-) -> Result<Option<i64>, ReceiveError> {
+) -> Result<Option<i64>, ReceiveError<Crypto>> {
     use FaultType::*;
     //    <- e, ee, se
     if k2.len() != REKEY_SIZE {
-        return Err(fault!(InvalidPacket, true));
+        return Err(fault!(InvalidPacket, true, session));
     }
 
     let kex_lock = session.state_machine_lock.lock().unwrap();
@@ -1486,33 +1503,29 @@ pub(crate) fn received_k2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
 
     if Some(kid) != state.key_ref(false).recv.kid {
         // Some rekey packet may have arrived extremely delayed.
-        return Err(fault!(UnknownLocalKeyId, false));
+        return Err(fault!(UnknownLocalKeyId, false, session));
     }
-    if !matches!(&state.beta, ZetaAutomata::R1 { .. }) {
-        // Some rekey packet may have arrived extremely delayed.
-        return Err(fault!(OutOfSequence, false));
-    }
-
-    let i = k2.len() - AES_GCM_TAG_SIZE;
-    let tag = k2[i..].try_into().unwrap();
-    let kek_recv = state.key_ref(false).recv.kek.as_ref().unwrap();
-    if !Crypto::Aead::decrypt_in_place(kek_recv, n, &[], &mut k2[..i], &tag) {
-        return Err(fault!(FailedAuth, true));
-    }
-    let (_, c) = from_nonce(n);
-    if !session.window.update(c) {
-        return Err(fault!(ExpiredCounter, true));
-    }
-    let result = (|| {
+    let result = (move || {
         if let ZetaAutomata::R1 { noise, e_secret, .. } = &state.beta {
+            let i = k2.len() - AES_GCM_TAG_SIZE;
+            let tag = k2[i..].try_into().unwrap();
+            let kek_recv = state.key_ref(false).recv.kek.as_ref().unwrap();
+            if !Crypto::Aead::decrypt_in_place(kek_recv, n, &[], &mut k2[..i], &tag) {
+                return Err(fault!(FailedAuth, true, session));
+            }
+            let (_, c) = from_nonce(n);
+            if !session.window.update(c) {
+                return Err(fault!(ExpiredCounter, true, session));
+            }
+
             let mut noise = noise.clone();
             let mut i = 0;
             let hash = &mut Crypto::Hash::new();
             let hmac = &mut Crypto::Hmac::new();
             // Process message pattern 2 e token.
             let e_remote = noise
-                .read_e_no_init(hash, hmac, &mut i, &k2)
-                .ok_or(fault!(FailedAuth, true))?;
+                .read_e_no_init(hash, hmac, &mut i, k2)
+                .ok_or_else(|| fault!(FailedAuth, true, session, true))?;
             // Process message pattern 2 ee token.
             noise.mix_dh_no_init(hmac, e_secret, &e_remote);
             // Process message pattern 2 se token.
@@ -1522,10 +1535,10 @@ pub(crate) fn received_k2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
             let k = j + AES_GCM_TAG_SIZE;
             let tag = k2[j..k].try_into().unwrap();
             if !noise.decrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_REKEY_COMPLETE, 0), &mut k2[i..j], tag) {
-                return Err(fault!(FailedAuth, true));
+                return Err(fault!(FailedAuth, true, session, true));
             }
-            let kid_send =
-                NonZeroU32::new(u32::from_ne_bytes(k2[i..j].try_into().unwrap())).ok_or(fault!(InvalidPacket, true))?;
+            let kid_send = NonZeroU32::new(u32::from_ne_bytes(k2[i..j].try_into().unwrap()))
+                .ok_or_else(|| fault!(InvalidPacket, true, session, true))?;
 
             let new_ratchet_state = create_ratchet_state(hmac, &noise, state.ratchet_state1.chain_len);
             app.save_ratchet_state(
@@ -1575,18 +1588,22 @@ pub(crate) fn received_k2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
 
             let mut c1 = ArrayVec::<u8, HEADERED_KEY_CONFIRMATION_SIZE>::new();
             c1.extend([0u8; HEADER_SIZE]);
-            if !send_control(&session, &state, PACKET_TYPE_KEY_CONFIRM, c1, send) {
-                return Err(fault!(OutOfSequence, true));
+            match send_control(session, &state, PACKET_TYPE_KEY_CONFIRM, c1, send) {
+                Ok(()) => Ok(reduced_service_time),
+                Err(false) => Err(fault!(OutOfSequence, true, session)),
+                Err(true) => Err(fault!(ExpiredCounter, true, session, true)),
             }
-
-            Ok(reduced_service_time)
         } else {
-            unreachable!()
+            // Some rekey packet may have arrived extremely delayed.
+            Err(fault!(OutOfSequence, false, session))
         }
     })();
 
-    if matches!(result, Err(ReceiveError::ByzantineFault { .. })) {
-        session.expire();
+    match &result {
+        Err(ReceiveError::ByzantineFault(fault)) if fault.caused_expiration => {
+            session.expire();
+        }
+        _ => {}
     }
     result
 }
@@ -1605,7 +1622,17 @@ pub(crate) fn send_payload<Crypto: CryptoLayer>(
     }
 
     let state = session.state.read().unwrap();
-    let (c, mut should_rekey) = get_counter(session, &state).ok_or(SessionExpired)?;
+    if matches!(&state.beta, ZetaAutomata::Null) {
+        return Err(SessionExpired);
+    }
+    let (c, mut should_rekey) = match get_counter(session, &state) {
+        Some(c) => c,
+        None => {
+            drop(state);
+            session.expire();
+            return Err(SessionExpired);
+        }
+    };
     let nonce = to_nonce(PACKET_TYPE_DATA, c);
 
     let key = state.key_ref(false);
@@ -1693,7 +1720,7 @@ pub(crate) fn receive_payload_in_place<Crypto: CryptoLayer>(
     nonce: &[u8; AES_GCM_NONCE_SIZE],
     fragments: &mut [Crypto::IncomingPacketBuffer],
     mut output_buffer: impl Write,
-) -> Result<(), ReceiveError> {
+) -> Result<(), ReceiveError<Crypto>> {
     use FaultType::*;
     debug_assert!(!fragments.is_empty());
 
@@ -1703,10 +1730,12 @@ pub(crate) fn receive_payload_in_place<Crypto: CryptoLayer>(
         state.keys[1].nk.as_ref()
     } else {
         // Should be unreachable unless we are leaking kids somewhere.
-        return Err(fault!(UnknownLocalKeyId, true));
+        return Err(fault!(UnknownLocalKeyId, true, session));
     };
 
-    let mut cipher = specified_key.ok_or(fault!(OutOfSequence, true))?.start_dec(nonce);
+    let mut cipher = specified_key
+        .ok_or_else(|| fault!(OutOfSequence, true, session))?
+        .start_dec(nonce);
     let (_, c) = from_nonce(nonce);
 
     // NOTE: This only works because we check the size of every received fragment in the receive
@@ -1722,25 +1751,25 @@ pub(crate) fn receive_payload_in_place<Crypto: CryptoLayer>(
     cipher.decrypt_in_place(&mut fragment[..tag_idx]);
 
     if !cipher.finish((&fragment[tag_idx..]).try_into().unwrap()) {
-        return Err(fault!(FailedAuth, true));
+        return Err(fault!(FailedAuth, true, session));
     }
 
     if !session.window.update(c) {
         // This error is marked as not happening naturally, but it could occur if something about
         // the transport protocol is duplicating packets.
-        return Err(fault!(ExpiredCounter, true));
+        return Err(fault!(ExpiredCounter, true, session));
     }
 
     for i in 0..fragments.len() - 1 {
         let result = output_buffer.write(&fragments[i].as_ref()[HEADER_SIZE..]);
         if let Err(e) = result {
-            return Err(ReceiveError::WriteError(e));
+            return Err(ReceiveError::WriteError(e, session.clone()));
         }
     }
     let fragment = &fragments[fragments.len() - 1].as_ref()[HEADER_SIZE..];
     let result = output_buffer.write(&fragment[..tag_idx]);
     if let Err(e) = result {
-        return Err(ReceiveError::WriteError(e));
+        return Err(ReceiveError::WriteError(e, session.clone()));
     }
 
     Ok(())
@@ -1770,22 +1799,22 @@ impl<Crypto: CryptoLayer> Session<Crypto> {
     ) {
         let _kex_lock = self.state_machine_lock.lock().unwrap();
         let mut state = self.state.write().unwrap();
-        let mut kids_to_remove = None;
         if !matches!(&state.beta, ZetaAutomata::Null) {
-            self.session_has_expired.store(true, Ordering::Relaxed);
-            kids_to_remove = Some([state.keys[0].recv.kid, state.keys[1].recv.kid]);
+            state.beta = ZetaAutomata::Null;
+
+            let kids_to_remove = [state.keys[0].recv.kid, state.keys[1].recv.kid];
             state.keys = [DuplexKey::default(), DuplexKey::default()];
             state.resend_timer = AtomicI64::new(i64::MAX);
             state.timeout_timer = i64::MAX;
-            state.beta = ZetaAutomata::Null;
-        }
-        if let Some(session_queue) = session_queue {
-            session_queue.remove(self.queue_idx);
-        }
-        if let (Some(ctx), Some(kids_to_remove)) = (ctx, kids_to_remove) {
-            let mut session_map = ctx.session_map.write().unwrap();
-            for kid_recv in kids_to_remove.iter().flatten() {
-                session_map.remove(kid_recv);
+
+            if let Some(session_queue) = session_queue {
+                session_queue.remove(self.queue_idx);
+            }
+            if let Some(ctx) = ctx {
+                let mut session_map = ctx.session_map.write().unwrap();
+                for kid_recv in kids_to_remove.iter().flatten() {
+                    session_map.remove(kid_recv);
+                }
             }
         }
     }

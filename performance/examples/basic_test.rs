@@ -63,6 +63,7 @@ impl CryptoLayer for TestApplication {
     type SessionData = u128;
 
     type IncomingPacketBuffer = Vec<u8>;
+    type FingerprintData = ();
 }
 #[allow(unused)]
 impl ApplicationLayer<TestApplication> for &TestApplication {
@@ -82,6 +83,7 @@ impl ApplicationLayer<TestApplication> for &TestApplication {
         &mut self,
         remote_static_key: &CrateP384PublicKey,
         identity: &[u8],
+        _: Option<&()>,
     ) -> AcceptAction<TestApplication> {
         AcceptAction {
             session_data: Some(1),
@@ -93,15 +95,16 @@ impl ApplicationLayer<TestApplication> for &TestApplication {
     fn restore_by_fingerprint(
         &mut self,
         ratchet_fingerprint: &[u8; RATCHET_SIZE],
-    ) -> Result<Option<RatchetState>, std::io::Error> {
+    ) -> Result<Option<(RatchetState, ())>, std::io::Error> {
         let ratchets = self.ratchets.lock().unwrap();
-        Ok(ratchets.rf_map.get(ratchet_fingerprint).cloned())
+        Ok(ratchets.rf_map.get(ratchet_fingerprint).cloned().map(|r| (r, ())))
     }
 
     fn restore_by_identity(
         &mut self,
         remote_static_key: &CrateP384PublicKey,
         session_data: &u128,
+        _: Option<&()>,
     ) -> Result<Option<RatchetStates>, std::io::Error> {
         let ratchets = self.ratchets.lock().unwrap();
         Ok(ratchets.peer_map.get(session_data).cloned())
@@ -187,9 +190,6 @@ fn alice_main(
                         pkt,
                         &mut output_data,
                     ) {
-                        Ok((Unassociated, _)) => {
-                            //println!("[alice] ok");
-                        }
                         Ok((Associated(_, event), _)) => match event {
                             Established => {
                                 up = true;
@@ -201,10 +201,13 @@ fn alice_main(
                             Control => (),
                             _ => panic!(),
                         },
+                        Ok(_) => {
+                            //println!("[alice] ok");
+                        }
                         Err(e) => {
                             println!("[alice] ERROR {:?}", e);
                             if let ReceiveError::ByzantineFault(e) = e {
-                                assert!(!e.unnatural())
+                                assert!(!e.unnatural)
                             }
                         }
                     }
@@ -278,7 +281,6 @@ fn bob_main(
                     pkt,
                     &mut output_data,
                 ) {
-                    Ok((Unassociated, _)) => {}
                     Ok((Associated(s, event), _)) => match event {
                         NewSession | NewDowngradedSession => {
                             println!("[bob] new session, took {}s", current_time as f32 / 1000.0);
@@ -300,10 +302,11 @@ fn bob_main(
                         Control => (),
                         _ => panic!(),
                     },
+                    Ok(_) => {}
                     Err(e) => {
                         println!("[bob] ERROR {:?}", e);
                         if let ReceiveError::ByzantineFault(e) = e {
-                            assert!(!e.unnatural())
+                            assert!(!e.unnatural)
                         }
                     }
                 }

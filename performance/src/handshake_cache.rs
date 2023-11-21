@@ -61,7 +61,7 @@ impl<Application: CryptoLayer> UnassociatedHandshakeCache<Application> {
         cache.expiries[idx] = expiry;
         cache.handshakes[idx] = Some(state);
         self.has_pending.store(true, Ordering::Release);
-        return Some(expiry);
+        Some(expiry)
     }
     pub(crate) fn remove(&self, local_id: NonZeroU32) -> bool {
         let mut cache = self.cache.write().unwrap();

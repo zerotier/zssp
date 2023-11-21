@@ -154,7 +154,7 @@ If we enable all security features, we get \emph{Persistent Mode} ZSSP. This mod
 
 If we disable all security features, we get \emph{Opportunistic Mode} ZSSP. This mode of operation will warn the user if it detects a peer may have been compromised, but will not enforce a zero-communication policy. This makes it inherently vulnerable to post-compromise attacks. We still consider this a novel security property for real-time protocols, since it makes undetectable MitM extremely difficult to achieve, even with a full compromise of both communicating peers. In this mode ZSSP can gracefully coordinate resetting two peers' ratchet keys to zero in the event one peer has corrupted their keys, without any additional round trips. This allows a peer that does not have writeable or reliable persistent storage to still be able to use ZSSP. A persistent mode peer can communicate directly with an opportunistic mode peer, without performing any kind of negotiation to do so.
 
-\begin{table}[!ht]
+\begin{table}[H]
 	\renewcommand{\arraystretch}{1.3}
 	\caption{The security properties of ZSSP in its two primary modes of operation}\label{table:security_prop}
 	\centering
@@ -171,7 +171,7 @@ If we disable all security features, we get \emph{Opportunistic Mode} ZSSP. This
 		\hline
 		Ratcheted Forward Secrecy & \color{BlueViolet} Yes & \color{BlueViolet} Yes \\
 		\hline
-		Silence is a Virtue & \color{BlueViolet} Yes & \color{Red} No  \\
+		Silence is Golden & \color{BlueViolet} Yes & \color{Red} No  \\
 		\hline
 		Key-Compromise Impersonation & \color{BlueViolet} Resistant & \color{BlueViolet} Resistant \\
 		\hline
@@ -191,7 +191,7 @@ If we disable all security features, we get \emph{Opportunistic Mode} ZSSP. This
 	\item Forward Secret Identity Hiding -- The identities of peers are always either not transmitted or are encrypted with forward secrecy to an authenticated peer. An attacker cannot test candidate static public keys without the corresponding private key.
 	\item Quantum Forward Secrecy -- A quantum computer powerful enough to break elliptic-curve cryptography is not sufficient to decrypt recordings of messages sent between peers.
 	\item Ratcheted Forward Secrecy -- In order to break forward secrecy an attacker must record and break every single key exchange two peers perform, in order, starting from the first key exchange that uses a ratchet key the attacker has access to. This, among other things, improves forward secrecy under a weak or compromised random number generator.
-	\item Silence is a Virtue -- A peer will not respond to any anonymous, inauthentic or replayed message.
+	\item Silence is Golden -- A peer will not respond to any anonymous, inauthentic or replayed message.
 	\item Key-Compromise Impersonation -- The attacker has the static private keys of two peers, and attempts impersonate some other peer to them.
 	\item Compromise-and-Impersonate -- The attacker has the static private keys of a single peer, and attempts to impersonate them to any other peer.
 	\item Single Key-Compromise MitM -- The attacker has the static private keys of a single peer, and attempts to become a Man-in-the-Middle between them and any other peer.
@@ -218,7 +218,7 @@ If this is the first time Alice and Bob are communicating, Alice will send an em
 
 Since the ratchet fingerprint is included in the first message of Noise XK, with weak forward secrecy, there is some concern it could violate identity hiding. However, since the ratchet fingerprint is a constantly rotating ASK, information about the communicating peers can only be leaked by it if the same ratchet fingerprint is used twice. In normal operation, not only will the ratchet fingerprint only be used once, but it will be deleted with the ratchet key when the key exchange is completed, providing replay protection. Furthermore, if the same ratchet fingerprint is used more than once, all this will reveal is that the same pair of peers are initiating a session with each other, and only if Bob's private key is compromised.
 
-Actually this protocol give ZSSP a lot of useful properties. For one thing Bob can require Alice to include a recognized, nonempty ratchet fingerprint in their first message. This is how ZSSP can achieve Silence is a Virtue despite the fact that the first Noise XK packet is usually anonymous and replayable. It also allows Bob to authenticate Alice's identity immediately, as opposed to waiting for Alice's next message. This protocol also is integral to how Alice and Bob are able to coordinate the ratchet key management described in \sectionref{sec:key_management} without any additional round trips.
+Actually this protocol give ZSSP a lot of useful properties. For one thing Bob can require Alice to include a recognized, nonempty ratchet fingerprint in their first message. This is how ZSSP can achieve ``Silence is Golden'' despite the fact that the first Noise XK packet is usually anonymous and replayable. It also allows Bob to authenticate Alice's identity immediately, as opposed to waiting for Alice's next message. This protocol also is integral to how Alice and Bob are able to coordinate the ratchet key management described in \sectionref{sec:key_management} without any additional round trips.
 
 If Alice has corrupted their storage, Alice can either send the empty string or send whatever corrupted ratchet fingerprint they still have to Bob. If Bob sees the empty string, and Bob is in opportunistic mode, Bob completes the key exchange with the zero ratchet key, making it possible for Alice to connect. If Alice sent a corrupted ratchet fingerprint, or Bob is the one who corrupted their storage, and if Bob is in opportunistic mode, Bob will ignore the unrecognized ratchet fingerprint and instead uses the zero ratchet key as the PSK. When Alice receives Bob's reply, if Alice is in opportunistic mode, Alice will decrypt Bob's reply with both the ratchet key they intended to use and the zero ratchet key, and go with the one that successfully decrypts the reply. This allows Alice and Bob to reset their ratchet keys in such a way that an attacker cannot perform a downgrade attack without at least one peer's static private key. And if Alice and Bob are in persistent mode, a downgrade attack is simply not possible.
 
@@ -226,8 +226,8 @@ If Alice has corrupted their storage, Alice can either send the empty string or 
 
 ZSSP is a stack of three closely related, but independent protocols. These are the \emph{Zeta Key Exchange} (ZKE), the \emph{ZeroTier Challenge Protocol} (ZCP) and the \emph{ZeroTier Fragmentation Protocol} (ZFP), described in \figureref{fig:protocol_stack}. The Zeta Key Exchange is the most complex and most essential from this stack: It is the part of ZSSP that implements Noise XK and Noise KK and directly interfaces with the upper protocol. For that reason we are going to describe it first, in isolation from the lower protocols.
 
-\begin{figure}
-	\caption{The protocol stack of ZSSP. When the upper protocol sends a packet, it must pass down the protocol stack from the top to the bottom, where each layer may modify or adds to the packet in some way. When the datagram protocol receives a packet, it passes it up towards the top of the protocol stack. Any layer may consume the incoming packet and not pass it upwards. The Zeta Key Exchange performs key exchanges to provide authenticated encryption to packets. The ZCP protects any key exchange protocol above it from CPU exhaustion DOS attacks. And the ZeroTier Fragmentation Protocol fragments packets to fit within the MTU of the protocol below it, in a way that mitigates common fragmentation DOS attacks.}\label{fig:protocol_stack}
+\begin{figure}[H]
+	\caption{The protocol stack of ZSSP. When the upper protocol sends a packet, it must pass down the protocol stack from the top to the bottom, where each layer may modify or adds to the packet in some way. When the datagram protocol receives a packet, it passes is up towards the top of the protocol stack. Any layer may consume the incoming packet and not pass it upwards. ZKE performs key exchanges to provide authenticated encryption to packets. ZCP protects any key exchange protocol above it from CPU exhaustion DOS attacks. And ZFP fragments packets to fit within the MTU of the protocol below it, using an algorithm that mitigates common fragmentation DOS attacks.}\label{fig:protocol_stack}
 	\centering
 	\begin{tikzpicture}[stack/.style={rectangle split, rectangle split parts=#1,draw, anchor=center}]
 		\node[stack=5]  {
@@ -242,7 +242,7 @@ ZSSP is a stack of three closely related, but independent protocols. These are t
 
 The next section will be dedicated to describing ZKE in explicit detail. We will be making heavy use of common mathematical notions and notation surrounding Deterministic Finite Automata, State Machines and AKE security. The goal with this section is to describe ZKE at a level of detail necessary both to allow someone to implement ZKE, and to aide future mathematical analysis of ZKE.
 
-\begin{definition}[ZKE packet types]
+\begin{definition}[H][ZKE packet types]
 	We define 8 different packet types that are essential for the functioning of ZKE.
 	\begin{itemize}
 		\item $X_1$: This packet type contains the first message of Noise XK. It is identified internally with packet type number `0'.
@@ -260,7 +260,7 @@ The next section will be dedicated to describing ZKE in explicit detail. We will
 	\end{itemize}
 \end{definition}
 
-\begin{figure}[!ht]
+\begin{figure}[H]
 	\caption{Handshake Hello $X_1$ -- This is the packet structure of the first packet Alice sends to Bob. It conforms to the message structure required by the Noise protocol.}\label{packet:handshake_hello}
 	\centering
 	\begin{bytefield}[bitwidth=5.5em]{4}
@@ -278,7 +278,7 @@ The next section will be dedicated to describing ZKE in explicit detail. We will
 	\end{bytefield}
 \end{figure}
 
-\begin{figure}[!ht]
+\begin{figure}[H]
 	\caption{Handshake Response $X_2$ -- Bob sends this packet in response to Alice's Hello packet. It also conforms to the message structure of the Noise protocol. All packets in ZKE do.}\label{packet:handshake_response}
 	\centering
 	\begin{bytefield}[bitwidth=5.5em]{4}
@@ -292,7 +292,7 @@ The next section will be dedicated to describing ZKE in explicit detail. We will
 	\end{bytefield}
 \end{figure}
 
-\begin{figure}[!ht]
+\begin{figure}[H]
 	\caption{Handshake Completion $X_3$ -- This is the packet structure of the final message of Noise XK, which Alice sends to Bob.}\label{packet:handshake_complete}
 	\centering
 	\begin{bytefield}[bitwidth=6em]{4}
@@ -305,7 +305,7 @@ The next section will be dedicated to describing ZKE in explicit detail. We will
 	\end{bytefield}
 \end{figure}
 
-\begin{figure}[!ht]
+\begin{figure}[H]
 	\caption{Key Confirmation $C_1$, Acknowledgement $C_2$, and Session Rejection $D$ -- These three packet types have the same packet structure. They just contain a MAC to confirm both peers have completed the handshake.}\label{packet:key_conf}
 	\centering
 	\begin{bytefield}[bitwidth=5em]{4}
@@ -313,7 +313,7 @@ The next section will be dedicated to describing ZKE in explicit detail. We will
 	\end{bytefield}
 \end{figure}
 
-\begin{figure}[!ht]
+\begin{figure}[H]
 	\caption{Rekey Initiation $K_1$, and Rekey Completion $K_2$ -- Both types of Noise KK rekeying packets have the same structure.}\label{packet:rekey}
 	\centering
 	\begin{bytefield}[bitwidth=5.5em]{4}
@@ -326,7 +326,7 @@ The next section will be dedicated to describing ZKE in explicit detail. We will
 	\end{bytefield}
 \end{figure}
 
-\begin{figure}[!ht]
+\begin{figure}[H]
 	\caption{Data Transport Packet $P$ -- This is the structure of packets containing payloads of data from the upper protocol.}\label{packet:transport}
 	\centering
 	\begin{bytefield}[bitwidth=5.5em]{4}
@@ -337,7 +337,7 @@ The next section will be dedicated to describing ZKE in explicit detail. We will
 	\end{bytefield}
 \end{figure}
 
-\begin{figure}[!ht]
+\begin{figure}[H]
 	\caption{The Zeta Key Exchange in ideal conditions.}
 	\centering
 	\begin{sequencediagram}
@@ -366,7 +366,7 @@ We model ZKE as two state machines in communication with each other. Each machin
 
 At the end of this section we will have defined $\zeta$, which is the high-level state machine that represents both Alice and Bob's side of ZKE.
 
-\begin{definition}[ZKE Automata]\label{def:automata}
+\begin{definition}[H][ZKE Automata]\label{def:automata}
 	We will first start by defining Deterministic Finite Automata (DFA) $\beta$, which will be the foundation upon which we construct the ZKE state machine. $\beta$ is depicted in \figureref{fig:automata}.
 
 	Let $Q = \{\bot, A_1, B_2, A_3, S_1, S_2, R_1, R_2\}$ be the set of possible states within $\beta$.
@@ -400,15 +400,15 @@ At the end of this section we will have defined $\zeta$, which is the high-level
 			\item $\delta(R_2, \tau)=\bot$.
 		\end{itemize}
 	\end{multicols}
-	In addition, for all states $q\in Q,\ \delta(q, \chi) = \bot$, which is to say the process restart symbol $\chi$, transitions all states to the initial state, $\bot$.
+	In addition, for all states $q\in Q,\ \delta(q, \chi) = \bot$, which in other words means that the process restart symbol, $\chi$, transitions all states to the initial state, $\bot$.
 	For all transitions of $\delta$ that are not yet specified, they are the identity transition, as in a transition that maps a state to itself.
 
-	We added the transition $\delta(\bot, \tau)=A_1$, but it is important to note $\bot$, being the initial state, does not have any attached timer within ZKE, and will not be triggered automatically. This transition simply represents the upper protocol initiating a session through ZKE. Most upper protocols will attempt to restart sessions on a timer, which is why we chose to represent this unique transition with the $\tau$ symbol.
+	$\beta$ contains the transition $\delta(\bot, \tau)=A_1$, but it is important to note $\bot$, being the initial state, does not have any attached timer within ZKE, and will not be triggered automatically. This transition simply represents the upper protocol initiating a session through ZKE. Most upper protocols will attempt to restart sessions on a timer, which is why we chose to represent this unique transition with the $\tau$ symbol.
 
 	Let $\beta=(Q, \Sigma, \delta, \bot, \{S_2\})$ be the ZKE Automata.
 \end{definition}
 
-\begin{figure}
+\begin{figure}[H]
 	\caption{The ZKE Automata, $\beta$ -- Both sides of a ZSSP session contain a copy of this machine. $A_1$, $B_2$ and $A_3$ are Noise XK states, $S_1$ and $S_2$ are session established states, and $R_1$ and $R_2$ are Noise KK states. Each symbol represents a received packet type, except for $\tau$ which represents a timeout transition. Omitted are the identity and $\chi$ transitions.}\label{fig:automata}
 	\centering
 	\begin{tikzpicture}[shorten >=1pt,node distance=2.5cm,auto,>=latex]
@@ -445,7 +445,7 @@ At the end of this section we will have defined $\zeta$, which is the high-level
 \end{figure}
 
 
-\begin{definition}[The Zeta State Machine, $\zeta$]\label{def:state_machine}
+\begin{definition}[H][The Zeta State Machine, $\zeta$]\label{def:state_machine}
 	We are going to extend $\beta$ with behaviors and rules that cannot be modelled adequately by DFAs. This new, extended machine will be referred to as $\zeta$, the Zeta state machine. $\zeta$ will retain the core states, alphabet, transition function and initial state as $\beta$, but we are going to add the ability for $\zeta$ to establish a session, send a remote peer encrypted packets, and to process incoming packets.
 
 	$\bot$ is treated as a unique, nondeterministic state within $\zeta$. Internally, $\zeta$ is always in the $\bot$ state. Whenever an input is received that would cause a transition out of the $\bot$ state, $\zeta$ will stay in the $\bot$ state, but spawn a copy of itself that is initialized to the correct transition state, either $A_1$ or $B_2$. If this new instance of $\zeta$ enters the $\bot$ state, it will be deleted from memory. The original  $\zeta$ will still exist in the $\bot$ state, ready to spawn more copies. This is directly analogous to a nondeterministic transition within an NFA. This is how ZKE handles multiple session to a single peer, each session can be considered its own independent instance of the $\zeta$ state machine, running concurrently with each other. If we are only interested in considering one session to one peer, we can safely ignore this rule.
@@ -475,7 +475,7 @@ At the end of this section we will have defined $\zeta$, which is the high-level
 	\end{itemize}
 	The timer system has the property that all timers are generated locally, checked locally, and are never sent ``over the wire''. This has the advantage of making it difficult to impossible for a remote attacker to manipulate a peer's timers. The system has also been intentionally designed to make it impossible for $\zeta$ to ever get indefinitely stuck in one state. If it could, it would open up the possibility that an attacker could intentionally cause this to happen, which would be a form of a DOS attack. The rekeying timer for state $S_1$ is randomized to  deter traffic analysis of ZSSP, and to prevent peers from simultaneously entering state $R_1$, which would be redundant and inefficient.
 
-	It is important to note from this definition that there is no such thing as a ``heartbeat'' in ZKE, nor ZSSP as a whole. ZKE, on its own, does not require ``keep-alive'' messages to be periodically sent between peers. Instead, the only packets ZKE will automatically send are those which are strictly necessary to maintain strong forward secrecy. This makes ZKE ideal for applications where silence is considered a virtue. It is up to the upper protocol to implement a heartbeat or keep-alive system if it is deemed necessary.
+	It is important to note from this definition that there is no such thing as a ``heartbeat'' in ZKE, nor ZSSP as a whole. ZKE, on its own, does not require ``keep-alive'' messages to be periodically sent between peers. Instead, the only packets ZKE will automatically send are those which are strictly necessary to maintain strong forward secrecy. This makes ZKE ideal for applications where a silent protocol is preferred. It is up to the upper protocol to implement a heartbeat or keep-alive system if it is deemed necessary.
 
 	$\zeta$, being a cryptographic protocol, also has many rules relating to how it must cryptographically process incoming or outgoing packets, and how those packets can influence state transitions of $\beta$. Below is a numbered list of all of these rules.
 	\begin{enumerate}
@@ -514,11 +514,11 @@ The following are the 4 cryptographic primitives ZKE is based upon. We will be a
 \newcommand{\COUNTER}{\algn{Count}}
 \newcommand{\KID}{\algn{KID-Gen}}
 
-\begin{definition}[SHA-512 \cite{fips_sha2}]
+\begin{definition}[H][SHA-512 \cite{fips_sha2}]
 	Let $\HASH(M)$ be the SHA-512 hashing algorithm, where $M$ is the string input to be hashed. It has a 512-bit output.
 \end{definition}
 
-\begin{definition}[KBKDF \cite{fips_kbkdf}]
+\begin{definition}[H][KBKDF \cite{fips_kbkdf}]
 	Let $\KDF(\textit{K}_{\textit{IN}}, \textit{Label}, \textit{Context}, N)$ be the KBKDF key derivation algorithm, instantiated in HMAC-Counter mode using SHA-512. Variable $\textit{K}_{\textit{IN}}$ is the input key material, $\textit{Label}$ is some static label, $\textit{Context}$ is additional input key material, and $N$ is the number of 512-bit outputs to be produced. $\KDF(\textit{K}_{\textit{IN}}, \textit{Label}, \textit{Context}, N)$ produces as output $(x_1,\ldots,x_N)$, a tuple of $N$ 512-bit outputs.
 
 	Given $i\in \{1,\ldots,N\}$, we will use the notation $\KDF(\textit{K}_{\textit{IN}}, \textit{Label}, \textit{Context}, N)_i$ to refer to the $i$th output of $\KDF$. When assigning a single 512-bit output to a variable or field that is 256-bits in size, it is assumed that the output is being truncated to just the first 256-bits.
@@ -526,17 +526,17 @@ The following are the 4 cryptographic primitives ZKE is based upon. We will be a
 	So $k\gets \KDF(x, l, y, 3)_2$ represents computing KBKDF on inputs $\textit{K}_{\textit{IN}}= x,\, \textit{Label}=l,\, \textit{Context}=y$ and $L=3\cdot 512$, and setting variable $k$ equal to bits $512$ to $1023$ of the output. If $k$ is a variable of size 256-bits, then $k$ is set equal to bits $512$ to $767$ of the output.
 \end{definition}
 
-\begin{definition}[AES-GCM \cite{fips_aesgcm}]
+\begin{definition}[H][AES-GCM \cite{fips_aesgcm}]
 	Let $\AEAD(K, N, H, M)$ be the AES-GCM Authenticated Encryption with Additional Data algorithm, where $K$ is the encryption key, $N$ is the nonce or IV, $H$ is the additional authentication data, and $M$ is the plaintext message to be encrypted. $\AEAD(K, N, H, M)$ produces as output $c||t$, a ciphertext, $c$, concatenated with its 128-bit (16 byte) authentication tag, $t$.
 \end{definition}
 
-\begin{definition}[P384 \cite{fips_p384}]
+\begin{definition}[H][P384 \cite{fips_p384}]
 	Let $\DHGEN()$ be the P384 elliptic curve Diffie-Helman key generation algorithm. $\DHGEN()$ outputs a random keypair, $(x, g^x)$, where $x$ is the private key and $g^x$ is the public key. $g$ is the generator of the P384 elliptic curve group.
 \end{definition}
 
 Given $(x, g^x)$ and $(y, g^y)$, two output keypairs from $\DHGEN()$, a \emph{key agreement} between these keys can be performed by computing $(g^x)^y$ or $(g^y)^x$. It is the case that $(g^x)^y=(g^y)^x=g^{xy}$. This value, $g^{xy}$, is considered the output key material of Diffie-Helman key agreement.
 
-\begin{definition}[Kyber1024 \cite{kyber}]
+\begin{definition}[H][Kyber1024 \cite{kyber}]
 	Let $(\KEMGEN, \KEMENC, \KEMDEC)$ be the Kyber1024 key encapsulation mechanism. $\KEMGEN()$ randomly generates a keypair, $(e_{priv}, e_{pub})$, where $e_{priv}$ is the private key and $e_{pub}$ is the public key. $\KEMENC(e_{pub})$ takes as input a Kyber1024 public key, and outputs the pair $(e_{key}, e_{kem})$, where $e_{key}$ is the symmetric key and $e_{kem}$ is the encapsulated ciphertext of $e_{key}$. $\KEMDEC(e_{priv}, e_{kem})$ takes as input a private key and an encapsulated ciphertext, and outputs $e_{key}$, the decryption of $e_{kem}$. Both \KEMENC and \KEMDEC can output $\bot$, the null value, which implies authentication failure due to invalid input keys.
 \end{definition}
 
@@ -566,7 +566,7 @@ All of these variables are independent \emph{per instance of} $\zeta$. So each i
 
 What constitutes a ``single, unique remote peer'' is up to the upper protocol to decide. Usually remote peers are identified and differentiated by their static public keys ($g^u$ or $g^v$). However ZKE does not strictly enforce a one-to-one relationship between static public keys and identity specifically so the upper protocol is able to rotate the static public keys of peers.
 
-\begin{definition}[Session Counter]
+\begin{definition}[H][Session Counter]
 	Every instance of $\zeta$ contains a single monotonically increasing counter, that is initialized to 0. We will use the notation $\COUNTER()$ to represent incrementing this counter by 1 and returning the previous counter value.
 
 	So the very first call to $\COUNTER()$ within $\zeta$ will return 0, the second call will return 1, and so on.
@@ -576,7 +576,7 @@ What constitutes a ``single, unique remote peer'' is up to the upper protocol to
 
 ZKE uses a 64-bit (8 byte) counter, but AES-GCM uses a 96-bit (12 byte) nonce/IV. The Noise protocol does specify that, in order to use a counter value as an AES nonce, it should be encoded as a big-endian integer with 4 bytes of zero padding to the left of it. However, for good reason, we have decided to utilize the rightmost byte of that 4 byte padding to store the packet type number, as depicted in \figureref{fig:nonce}. This accomplishes two goals. First it explicitly authenticates the packet type of a packet, which makes it infeasible for an attacker to change the packet type field of a header without triggering an authentication failure. We could have used the additional authentication data parameter of AES-GCM to accomplish this, but the Noise protocol already makes extensive use of this parameter. Second, this nonce construction reduces the risk of catastrophic nonce reuse due to implementation error, specifically during key exchanges. While a correctly implemented counter would be sufficient for security, this adds an extra layer of defence. Given a packet type number $p$, and a counter value $c$, we will use the notation $p||c$ to represent this nonce construction.
 
-\begin{figure}
+\begin{figure}[H]
 	\caption{Construction of the AES-GCM 96-bit nonce/IV.}\label{fig:nonce}
 	\centering
 	\begin{bytefield}[bitwidth=3.5em]{10}
@@ -586,12 +586,12 @@ ZKE uses a 64-bit (8 byte) counter, but AES-GCM uses a 96-bit (12 byte) nonce/IV
 	\end{bytefield}
 \end{figure}
 
-\begin{definition}[Key Id Generation]
+\begin{definition}[H][Key Id Generation]
 	\algn{KID-Gen} is a stateful algorithm that outputs a locally unique, uniform random 32-bit string. The output of this algorithm will be used as the \emph{key id} for a session key, allowing the local peer to multiplex many keys for many remote peers simultaneously. The output of $\algn{KID-Gen}()$ must be locally unique from all other key ids currently in use. $\algn{KID-Gen}()$ may only repeat an output if that output is currently not being used as a key id.
 \end{definition}
 
 
-\begin{definition}[Persistent State]
+\begin{definition}[H][Persistent State]
 	The variables $\texttt{rk}$ and $\texttt{rf}$ are considered the \emph{persistent state} of ZKE. The values stored in these variables are not lost when a session ends, and can be \emph{restored} at any time to initiate a new session.
 
 	$\texttt{rk}$ is a tuple of up to two 256-bit \emph{ratchet keys}. Similarly, $\texttt{rf}$ is a tuple of up to two 256-bit \emph{ratchet fingerprints}. $\texttt{rk}$ is initialized to $(0^{256}, \bot)$ and $\texttt{rf}$ is initialized to $(\varepsilon, \bot)$.
@@ -603,7 +603,7 @@ $\bot$ represents the ``null'' value. When a variable is set to $\bot$, it means
 
 It is assumed that prior to any usage of ZKE, Alice and Bob will generate their static keypairs with $\DHGEN()$. It is also assumed that Alice already knows Bob's public key, $g^v$, prior to any attempt to connect to Bob. Bob does not necessarily know Alice's public key.
 
-\begin{table}
+\begin{table}[H]
 	\caption{Intermediate Values of the Noise XKhfs+psk2 and the Noise KKpsk0 Handshakes \cite{noise_protocol} \cite{noise_hfs} -- $(u, g^u)$ and $(v, g^v)$ are respectively the static keypairs of Alice and Bob within \emph{the current Noise handshake}, and the label $L=\texttt{"ZSSP"}$. The ciphertext of packets is hashed and not the plaintext. The following transition algorithms implicitly compute and have access to the values described here. This syntax for defining cryptographic variables comes from Benjamin Dowling et.~al.~\cite{wireguard_analysis}}
 	\centering
 	\renewcommand{\arraystretch}{1.05}
@@ -655,7 +655,7 @@ If packet decryption fails because the AEAD MAC is inauthentic, this is consider
 
 Prior to the execution of any of the following algorithms, $\zeta$ will check if it is in the correct state, if it is allowed to perform the related state transition, that the received key id matches the expected key id, and that the packet has the correct type number. If any of these checks fail execution is aborted and the packet is ignored.
 
-\begin{algorithm}\label{alg:x1}
+\begin{algorithm}[H]\label{alg:x1}
 	\caption{Transition $\delta(\bot, \tau)=A_1$ -- Alice creates and sends a ``Hello'' packet to initialize a session with Bob, \figureref{packet:handshake_hello}. Alice knows Bob's static public key, $g^v$, prior to execution. By sending a Hello packet to Bob, Alice is implicitly trusting Bob.}
 	\begin{algorithmic}
 		\Require $g^v$
@@ -677,7 +677,7 @@ The ratchet fingerprint, \texttt{rf}, is a sacrificial ASK that does nothing mor
 
 Including the ratchet fingerprint in the Hello packet does not compromise identity hiding, because the ratchet fingerprint is replaced with every single handshake. In the event that Bob's private keys are compromised, and all ratchet fingerprints used in Hello packets to Bob can be decrypted, all an attacker would see are several indistinguishable 256-bit strings. The one exception is if a peer reuses the same ratchet fingerprint. This would allow an attacker who has compromised Bob's static private key to learn that two Hello packets come from the same peer, but this does not given any information about that peer's static keys or identity. Ratchet fingerprints in normal operation are never reused, this can only happen if the initial Noise XK handshake is aborted before completion, preventing one or more of the participating peers from confirming a new ratchet fingerprint.
 
-\begin{algorithm}
+\begin{algorithm}[H]
 	\caption{Transition $\delta(\bot, X_1)=B_2$ -- Bob has received Alice's Hello packet and replies with the second message of Noise XK, \figureref{packet:handshake_response}. Input $\pi_1$ is a security flag, a bit set by the upper protocol. Bob will only allow Alice to connect with zero persistent state if $\pi_1=0$. If Alice sent an unrecognized ratchet fingerprint and $\pi_1=0$, instead of rejecting Alice's session, Bob will ask Alice if they would like to connect with zero persistent state. ZKE has superior security properties when $\pi_1=1$, but usability suffers.}\label{alg:recv_x1}
 	\begin{algorithmic}
 		\Require $(0,\ 0||c,\ X_1),\, \pi_1,$
@@ -712,7 +712,7 @@ Including the ratchet fingerprint in the Hello packet does not compromise identi
 	\end{algorithmic}
 \end{algorithm}
 
-\begin{algorithm}
+\begin{algorithm}[H]
 	\caption{Transition $\delta(A_1, X_2)=A_3$ -- Alice has received Bob's reply and can now send a Handshake Completion packet, \figureref{packet:handshake_complete}. Input $\pi_2$ is a security flag, a bit set by the upper protocol. Bob may ask Alice if they would like to connect with zero persistent state instead of the current persistent state. If $\pi_2=0$ then Alice will accept this request, and reset their ratchet keys. Input \texttt{identity} is an arbitrary string provided by the upper protocol. It is expected to contain some form of cryptographic identifier or certificate for this peer, but it could also be the empty string.}\label{alg:recv_x2}
 	\begin{algorithmic}
 		\Require $(\texttt{kid}^1_1,\ 1||c,\ X_2),\, \pi_2,\, \texttt{identity}$
@@ -750,7 +750,7 @@ Packet types $X_2$ and $K_1$ represent the second to last message of Noise XK an
 
 Similarly, the new ratchet key and fingerprint will not have been derived by the remote peer yet. So this peer will have to save these keys to persistent storage, but not yet delete the previous ratchet key and fingerprint until the remote peer sends a key confirmation. This means that for a brief period of time Alice has two sets of ratchet keys and fingerprints saved, instead of just one. We want to make sure Alice and Bob never have more than two of these keys saved at a time. So during the Noise XK handshake if Alice has two sets of keys and fingerprints, they must send both fingerprints to Bob, and delete the key and fingerprint that Bob chooses not to use as the PSK.
 
-\begin{algorithm}
+\begin{algorithm}[H]
 	\caption{Transition $\delta(B_2, X_3)=S_1$ -- Bob receives the final packet of Noise XK. Input $\algn{Accept}$ is a function provided by the upper protocol that takes as input Alice's identity and outputs security flags $(\pi_3, \pi_4)$, $\pi_3$ can be $\bot$. If $\pi_3=\bot$, Bob will reject Alice's session. If $\pi_3=1$, and Bob is aware of a ratchet key Alice should have, but Alice is not connecting with it, Bob will reject Alice's session (similar to when $\pi_2=1$). If Bob rejects Alice's session and $\pi_4 = 0$, Bob will send a packet to Alice explicitly rejecting their session.}\label{alg:recv_x3}
 	\begin{algorithmic}
 		\Require $(\texttt{kid}_2,\ 2||0,\ X_3),\,\algn{Accept}$
@@ -788,11 +788,11 @@ Similarly, the new ratchet key and fingerprint will not have been derived by the
 	\end{algorithmic}
 \end{algorithm}
 
-When packet $X_3$ is received, Bob might refuse to start a session with Alice based on their static key and identity. The preferred way for Bob to do this is to simply do nothing, and ignore Alice's packets. This would follow the ``silence is a virtue" principle of security. However there are some applications where, usually for UX reasons, Alice needs to be able tell apart having a bad connection with Bob from Bob rejecting Alice's identity. If Bob always goes silent Alice has no reliable way to tell these two situations apart. Since both Bob and Alice have the key exchange key at this point in the handshake, it was a very natural and secure extension of the protocol to allow Bob to notify Alice that the session has been refused.
+When packet $X_3$ is received, Bob might refuse to start a session with Alice based on their static key and identity. The preferred way for Bob to do this is to simply do nothing, and ignore Alice's packets. This would follow the ``Silence is Golden" principle of security. However there are some applications where, usually for UX reasons, Alice needs to be able tell apart having a bad connection with Bob from Bob rejecting Alice's identity. If Bob always goes silent Alice has no reliable way to tell these two situations apart. Since both Bob and Alice have the key exchange key at this point in the handshake, it was a very natural and secure extension of the protocol to allow Bob to notify Alice that the session has been refused.
 
 Packet types $X_3$ and $K_2$ represent the final messages of Noise XK and Noise KK, respectively. The peer who receives these packets can be sure that the remote peer has derived an identical Noise key already, and so the new key can be reliably used immediately.
 
-\begin{algorithm}
+\begin{algorithm}[H]
 	\caption{Transition $\delta(A_3, C_1)=S_2$ and $\delta(R_2, C_1)=S_2$ -- A key confirmation for either the Noise XK initial handshake or Noise KK rekeying has been received. This peer must send an Acknowledgement, \figureref{packet:key_conf}, to let the remote peer know that it has been received.}\label{alg:key_conf}
 	\begin{algorithmic}
 		\Require $(\texttt{kid}^{\texttt{i} + 1}_{\texttt{r}},\ 3||c,\ C_1)$
@@ -807,7 +807,7 @@ Packet types $X_3$ and $K_2$ represent the final messages of Noise XK and Noise 
 
 Packet types $C_2$ and $D$ have trivial transition algorithms. They merely decrypt the received packet with the most recent key exchange key, $\texttt{kek}^\texttt{i}_\texttt{r}$. If authentication succeeds then $\zeta$ transitions state.
 
-\begin{algorithm}
+\begin{algorithm}[H]
 	\caption{Transition $\delta(S_2, \tau)=R_1$ -- This peer, whom will be henceforth be referred to as Alice, has decided to initiate rekeying. They create and send a Rekey Initiation packet, \figureref{packet:rekey}, to the remote peer, Bob. The entire Noise KK message is encrypted under the key exchange key for additional security.}
 	\begin{algorithmic}
 		\State $\texttt{kid}^{\texttt{i} + 1}_\texttt{r} \gets \KID()$
@@ -821,7 +821,7 @@ Packet types $C_2$ and $D$ have trivial transition algorithms. They merely decry
 \end{algorithm}
 
 
-\begin{algorithm}
+\begin{algorithm}[H]
 	\caption{Transition $\delta(S_2, K_1)=R_2$ and $\delta(R_1, K_1)=R_2$ -- Bob has received Alice's request to rekey and sends a Rekey Completion packet, \figureref{packet:rekey}, in reply. Bob has now finished Noise KK and has obtained a new Noise key. A new pair of key ids are generated so Bob can tell apart packets encrypted with the new key from those encrypted with the previous key.}
 	\begin{algorithmic}
 		\Require $(\texttt{kid}^\texttt{i}_\texttt{r},\ 5||c,\ K_1)$
@@ -844,7 +844,7 @@ Packet types $C_2$ and $D$ have trivial transition algorithms. They merely decry
 \end{algorithm}
 
 
-\begin{algorithm}
+\begin{algorithm}[H]
 	\caption{Transition $\delta(R_1, K_2)=S_1$ -- Alice has received Bob's reply and so can also finish Noise KK. They send a Key Confirmation, \figureref{packet:key_conf}, to signal the completion of the handshake. The second to last Noise key is deleted for forward secrecy.}
 	\begin{algorithmic}
 		\Require $(\texttt{kid}^\texttt{i}_\texttt{r},\ 6||c,\ K_2)$
@@ -864,7 +864,7 @@ Packet types $C_2$ and $D$ have trivial transition algorithms. They merely decry
 
 We want to minimize the number of Noise keys alive in memory for the sake of perfect forward secrecy, in case the content of a peer's memory is stolen by an attacker. However we have to keep at least the last 2 keys around for reliability. Otherwise a packet that was sent before rekeying could arrive out of order, after the rekey is completed, and not be decryptable.
 
-\begin{algorithm}
+\begin{algorithm}[H]
 	\caption{Data transport send -- The upper protocol has decided to send the remote peer an encrypted payload. Input \texttt{payload} is an arbitrary string provided by the upper protocol.}
 	\begin{algorithmic}
 		\Require $\texttt{payload}$
@@ -874,7 +874,7 @@ We want to minimize the number of Noise keys alive in memory for the sake of per
 	\end{algorithmic}
 \end{algorithm}
 
-\begin{algorithm}
+\begin{algorithm}[H]
 	\caption{Data transport received -- A data transport packet has been received. It is decrypted and its payload is given to the upper protocol to handle.}
 	\begin{algorithmic}
 		\Require $(\texttt{kid}^i_r,\ 8||c,\ P)$
@@ -885,18 +885,16 @@ We want to minimize the number of Noise keys alive in memory for the sake of per
 
 \subsection{Security Flags}\label{sec:security_flags}
 
-ZKE has 4 security flags, $\pi_1, \pi_2, \pi_3 \andb \pi_4$. Each of these flags is a bit that, when sent to 1, change the behavior of the protocol to be more secure. In particular, setting $\pi_2 = \pi_3 = 1$ dramatically improve ZKE's post-compromise resistance, and setting $\pi_1 = \pi_4 = 1$ obeys the ``Silence is a Virtue'' principle of security. However setting these flags to 1 come with usability downsides that could make ZKE unsuitable for particular applications or particular users. Hence why these features are flags that the upper protocol is allowed to choose between.
+ZKE has 4 security flags, $\pi_1, \pi_2, \pi_3 \andb \pi_4$. Each of these flags is a bit that, when sent to 1, change the behavior of the protocol to be more secure. In particular, setting $\pi_2 = \pi_3 = 1$ dramatically improve ZKE's post-compromise resistance, and setting $\pi_1 = \pi_4 = 1$ obeys the ``Silence is Golden'' principle of security. However setting these flags to 1 come with usability downsides that could make ZKE unsuitable for particular applications or particular users. Hence why these features are flags that the upper protocol is allowed to choose between.
 
 Below is a description of each security flag, and the security versus usability tradeoff that occurs when it is set to 1. It should be noted that all communicating peers need not have the exact same set of flags. It will be possible for them to communicate even if their flags differ. Also, a peer may set their flags per remote peer, this is why flags $\pi_3$ and $\pi_4$ are returned by a function that takes as input the identity of the remote peer. This would, for example, allow a user to place much stricter authentication requirements upon a credentials server than a friend's laptop.
 
 \begin{itemize}
-	\item Hello Requires Recognized Ratchet, $\pi_1$ -- Used in \algorithmref{alg:recv_x1}. When this flag is set Alice is required to present a recognized, nonzero ratchet fingerprint, or else Bob will remain silent. This satisfies the Silence is a Virtue principle of security, since a peer can only acquire a valid ratchet fingerprint through some pre-existing trust relationship. However, this means a legitimate Alice must establish out-of-band an initial ratchet key and fingerprint with Bob. Bob and Alice can share a one time password to be used as the first ratchet key and fingerprint, or Bob can connect to Alice first if Alice has $\pi_1=0$, or Bob can temporarily set $\pi_1=0$ until Alice has completed their first key exchange.
+	\item Hello Requires Recognized Ratchet, $\pi_1$ -- Used in \algorithmref{alg:recv_x1}. When this flag is set Alice is required to present a recognized, nonzero ratchet fingerprint, or else Bob will remain silent. This satisfies the Silence is Golden principle of security, since a peer can only acquire a valid ratchet fingerprint through some pre-existing trust relationship. However, this means a legitimate Alice must establish out-of-band an initial ratchet key and fingerprint with Bob. Bob and Alice can share a one time password to be used as the first ratchet key and fingerprint, or Bob can connect to Alice first if Alice has $\pi_1=0$, or Bob can temporarily set $\pi_1=0$ until Alice has completed their first key exchange.
 	\item Initiator Disallows Downgrade, $\pi_2$ -- Used in \algorithmref{alg:recv_x2}. When this flag is set Alice is resistant to Compromise-And-Impersonate and MitM, because Alice will never allow their ratchet key to be reset to zero. However it requires that Bob never accidentally corrupt their persistent ratchet key.
 	\item Responder Disallows Downgrade, $\pi_3$ -- Used in \algorithmref{alg:recv_x3}. When this flag is set Bob is resistant to Compromise-And-Impersonate and MitM, because Bob will never allow their ratchet key to be reset to zero. However it requires that Alice never accidentally corrupt their ratchet key. It is recommended that $\pi_2=\pi_3$ for any given pair of peers.
-	\item Responder Silently Rejects, $\pi_4$ -- Used in \algorithmref{alg:recv_x3}. When this flag is set Bob will not send a session rejected packet to Alice, but instead just silently ignore Alice if Bob does not approve of their identity. This also follows the Silence is a Virtue principle, but it prevents Alice from knowing Bob will never allow Alice to connect in their current configuration. In this state Alice will keep attempting the handshake until the upper protocol times-out the session. It is recommended that $\pi_1=\pi_4$ for any given pair of peers.
+	\item Responder Silently Rejects, $\pi_4$ -- Used in \algorithmref{alg:recv_x3}. When this flag is set Bob will not send a session rejected packet to Alice, but instead just silently ignore Alice if Bob does not approve of their identity. This also follows the Silence is Golden principle, but it prevents Alice from knowing Bob will never allow Alice to connect in their current configuration. In this state Alice will keep attempting the handshake until the upper protocol times-out the session. It is recommended that $\pi_1=\pi_4$ for any given pair of peers.
 \end{itemize}
-
-As one might guess, having security flag $\pi_1 = 1$ will not protect a peer if they act as Alice in a key exchange. In some circumstances this can be beneficial for establishing the first ratchet key, but in general Alice ought to be more discerning about who they connect with if $\pi_1 = 1$. The upper protocol should take this into account.
 
 When $\pi_2 = \pi_3 = 1$, ZKE strictly requires all users to either have access to reliable persistent storage, or have access to some out-of-band mechanism for one to be reauthenticated in the event they lose or corrupt their persistent storage. This, unfortunately, is not always feasible in a real-time environment. For one thing there are many embedded devices which only have access to persistent ROM, but for another, there are far too many realistic scenarios in which an inexperienced user accidentally loses or corrupts their persistent storage. People often do not realize that they cannot always rollback an application's data directory to a previously backed-up state, and expect the application to work. Furthermore, very few people have redundant drives, as in RAID, so a hard drive failure will likely cause them to lose most if not all of their ratchet keys. When a user can no longer connect with peers because they have corrupted their ratchet keys, some will perceive this as a bug with the application, rather than the protocol working as intended.
 
@@ -916,7 +914,7 @@ Without some kind of mitigation, an attacker consume a small amount of their ban
 
 The protocol is initialized with a random 256-bit string \texttt{salt}. As the name implies, this will be used as a salt for SHA-512. When Alice sends their first Hello packet, they execute \algorithmref{alg:challenge_empty}, and append the output to their Hello packet. Under normal conditions Bob will simply ignore this part of Alice's Hello packet and allow the key exchange protocol to proceed. However if Bob is under load, Bob may choose to execute \algorithmref{alg:challenge_create}. This algorithm is overwhelmingly likely to output a \texttt{challenge}, which is then sent to Alice. Alice then computes \algorithmref{alg:challenge_response} upon Bob's \texttt{challenge}, which outputs a \texttt{response}. \texttt{response} is re-appended to Alice's Hello packet, and it is resent to Bob. Both \texttt{response} and \texttt{challenge} are a sequence of bytes with identical internal structure, documented in \figureref{packet:challenge_internal}.
 
-\begin{figure}
+\begin{figure}[H]
 	\caption{Bob's Challenge $\texttt{challenge}$, and Alice's Response $\texttt{response}$ -- This is the internal structure of both the challenge and response strings Alice and Bob send each other. They are included as payloads within a larger packet.}\label{packet:challenge_internal}
 	\centering
 	\begin{bytefield}[bitwidth=6.5em]{4}
@@ -925,7 +923,7 @@ The protocol is initialized with a random 256-bit string \texttt{salt}. As the n
 	\end{bytefield}
 \end{figure}
 
-\begin{figure}
+\begin{figure}[H]
 	\caption{Challenge Packet -- Whereas Alice's response is sent appended to their Hello packet, Bob's challenge is sent on its own. This usually means it requires a small amount of framing to be considered a well-formed packet that Alice can receive. The ``Peer Identifier'' is defined by the upper protocol to allow for multiplexing between multiple peers. In ZSSP, the Peer Identifier is set to the key id included in Alice's Hello packet, $X_1\texttt{.key\_id}$. In ZSSP challenge packets are identified with packet type number `9'.}\label{packet:challenge}
 	\centering
 	\begin{bytefield}[bitwidth=6em]{4}
@@ -934,17 +932,17 @@ The protocol is initialized with a random 256-bit string \texttt{salt}. As the n
 	\end{bytefield}
 \end{figure}
 
-To challenge Alice to proof address ownership, Bob will include a MAC that is a salted hash of a counter, for replay protection, and Alice's address. Alice is expected to include in their next \texttt{response} the same counter and MAC, proving they can send and receive packets from their address. Attackers who are spoofing their address would not be able to receive nor reply to Bob's challenge. Many DDOS attacks, however, are performed using botnets of computers infected with malware. Each of these computers usually has access to a static address it can stage an attack from, which would allow it to respond to the challenge. Hence Bob also requires a proof of work from Alice.
+To challenge Alice to proof address ownership, Bob will send a counter value, for replay protection, and a MAC that is a salted hash of the counter and Alice's address. Alice is expected to include in their next \texttt{response} the same counter and MAC, proving they can send and receive packets from their address. Attackers who are spoofing their address would not be able to receive nor reply to Bob's challenge. Many DDOS attacks, however, are performed using botnets of computers infected with malware. Each of these computers usually has access to a static address it can stage an attack from, which would allow it to respond to the challenge. Hence Bob also requires a proof of work from Alice.
 
 To challenge Alice to prove work, Bob will require Alice to find a 64-bit string that, when appended to their counter and MAC, produces a hash with $N$ leading zeros. In order to do this we expect Alice will have to compute SHA-512 $2^N$ times, which is a proof of work. $N$ is a static protocol constant. We recommend setting $N$ to be the smallest value that makes computing the proof of work, \algorithmref{alg:challenge_response}, take more time on average than it takes the key exchange protocol to process Alice's Hello packet. For ZSSP we have found this value to be $N=13$. This method of choosing $N$ minimizes the burden on legitimate peers while still eliminating the computational asymmetry between an attacker spamming Hello packets and Bob processing them. This, in general, should make a CPU exhaustion attack more expensive than a volumetric DDOS attack.
 
-Finally, to mitigate the possibility that the proof of work itself becomes a CPU exhaustion vector, Bob is required to ``proof receipt'' of Alice's response. Bob must include the 64-bit proof of work field sent by Alice in their challenge to Alice. If Alice sees that their proof of work is not included in Bob's challenge, Alice will ignore the challenge. This makes it difficult for an attacker to spoof a challenge to look like it came from Bob. The attacker would have to be able to read Alice's Hello packet and send their fake challenge before Bob sends the real challenge. The average botnet DDOS attacker is not capable of doing this. Using the proof of work for this has the advantage of making it trivial to serialize each of Alice's executions of \algorithmref{alg:challenge_response}, rate limiting the proof of work and preventing more than one CPU core from being consumed. The proof of receipt could be made more effective if it was also a salted hash of a counter and Bob's address, but we felt that the current design was more than enough to make CPU exhaustion attacks more expensive than volumetric DDOS attacks. It is recommended that Alice eventually timeout their key exchange with Bob if Bob has done nothing but send challenges.
+Finally, to mitigate the possibility that the proof of work itself becomes a CPU exhaustion vector, Bob is required to ``prove receipt'' of Alice's response. Bob must include the 64-bit proof of work field sent by Alice in their challenge to Alice. If Alice sees that their proof of work is not included in Bob's challenge, Alice will ignore the challenge. This makes it difficult for an attacker to spoof a challenge to look like it came from Bob. The attacker would have to be able to read Alice's Hello packet and send their fake challenge before Bob sends the real challenge. The average botnet DDOS attacker is not capable of doing this. Using the proof of work for this purpose has the advantage of making it trivial to serialize each of Alice's executions of \algorithmref{alg:challenge_response}, rate limiting the proof of work and preventing more than one CPU core from being consumed. The proof of receipt could be made more effective if it was also a salted hash of a counter and Bob's address, but we felt that the current design was more than enough to make CPU exhaustion attacks more expensive than volumetric DDOS attacks. It is recommended that Alice has a mechanism to eventually timeout their key exchange with Bob if Bob has done nothing but send challenges.
 
 To prevent a legitimate Alice from unintentionally straining Bob while Bob is under load, Alice should not immediately resend their Hello packet upon receipt of a \texttt{challenge}. Instead Alice should wait until they would normal resend their Hello packet.
 
-The application may choose to rotate the \texttt{salt} variable periodically. While the protocol as we have described it so far has strong replay protection, it does not automatically expire sent challenges after a set amount of time. This means challenges might never expire, and could be saved up to be used later. We do not consider this a practical DOS attack vector, but for applications that do, rotating \texttt{salt} on a periodic schedule is one of the best solutions.
+Implementations may choose to rotate the \texttt{salt} variable periodically. While the protocol as we have described it so far has strong replay protection, it does not automatically expire sent challenges after a set amount of time. This means challenges might never expire, and could be saved up to be used later. We do not consider this a practical DOS attack vector, but for applications that do, rotating \texttt{salt} on a periodic schedule is one of the best solutions.
 
-\begin{algorithm}
+\begin{algorithm}[H]
 	\caption{Alice generates a null response -- The returned value is appended to Alice's initial Hello packet to Bob.}\label{alg:challenge_empty}
 	\begin{algorithmic}
 		\State $\texttt{response.counter} \gets 0^{64}$
@@ -954,7 +952,7 @@ The application may choose to rotate the \texttt{salt} variable periodically. Wh
 	\end{algorithmic}
 \end{algorithm}
 
-\begin{algorithm}
+\begin{algorithm}[H]
 	\caption{Bob decides whether to issue a challenge to a Hello packet -- Input \texttt{response} is the last 32 bytes of Alice's Hello packet. Input $a$ contains the ``address'' of the lower datagram protocol from which the packet was received. So when the datagram protocol is UDP, $a$ contains the IP address and port of Alice. This algorithm is stateful, so it has a stateful counter $d$, and can remember counter values $c$ it has seen before, similar to counter-based AEAD decryption. If $\bot$ is returned, this means Bob will not be sent a challenge packet, but instead Alice's Hello packet will be allowed to be processed by the upper protocol.}\label{alg:challenge_create}
 	\begin{algorithmic}
 		\Require $\texttt{response},\, a$
@@ -973,7 +971,7 @@ The application may choose to rotate the \texttt{salt} variable periodically. Wh
 	\end{algorithmic}
 \end{algorithm}
 
-\begin{algorithm}
+\begin{algorithm}[H]
 	\caption{Alice responds to a challenge from Bob -- Input \texttt{previous\_response} is the contents of the \texttt{response} that was appended to Alice's last sent Hello packet. The returned value replaces it in the next Hello packet.}\label{alg:challenge_response}
 	\begin{algorithmic}
 		\Require $\texttt{challenge},\, \texttt{previous\_response}$
@@ -993,7 +991,7 @@ The application may choose to rotate the \texttt{salt} variable periodically. Wh
 
 We have intentionally avoided involving any of the cryptographic variables from the upper key exchange protocol in this protocol. This is to enforce strict protocol independence, to avoid accidentally compromising some security property of the key exchange protocol. In particular this protocol will preserve identity hiding, since neither Bob nor Alice include static, identifying values in their challenge or response. From an analytical perspective, within most AKE security experiments, we can almost always prove that the security of a key exchange protocol plus ZCP can be reduced to the security of just the key exchange protocol. This is because an adversary which just attacks the key exchange is always capable of accurately simulating both Alice and Bob's side of ZCP to an adversary which attacks both the key exchange and ZCP.
 
-This protocol violates the ``Silence is a Virtue'' principle of security. So we recommend disabling it entirely if security flag $\pi_1=1$. In general we expect many administrators will have this protocol turned off by default, but will manually enable it in the event a CPU exhaustion attack is detected. Just the fact that this protocol is available to be enabled at any time will likely deter attackers from performing a CPU exhaustion attack against ZSSP.
+This protocol violates the Silence is Golden principle of security. So we recommend disabling it entirely if security flag $\pi_1=1$. In general we expect many administrators will have this protocol turned off by default, but will manually enable it in the event a CPU exhaustion attack is detected. Just the fact that this protocol is available to be enabled at any time will likely deter attackers from performing a CPU exhaustion attack against ZSSP.
 
 \section{ZeroTier Fragmentation Protocol}
 
@@ -1001,13 +999,13 @@ ZSSP supports the partitioning of large packets into smaller fragments, that can
 
 ZFP is responsible for fragmentation within ZSSP. It sits at the very bottom of the ZSSP protocol stack, just above the datagram protocol. We have chosen to put the fragmentation protocol at the bottom of the ZSSP stack, instead of the top for a few reasons. First and foremost it allows key exchange packets to be as large as we need, larger than the MTU of the underlying datagram protocol. This allows us to use P384 and Kyber1024 keys, instead of their smaller and less secure variants. The second reason is that it allows the bandwidth overhead of fragmentation to be extremely small, just 16 bytes per fragment. If the fragmentation protocol were at the top of the stack instead, then each fragment would have required an additional 16 bytes for each MAC. This also benefits efficiency, because it reduces the number of MACs that must be computed and subsequently verified.
 
-Given a packet $P$ from the upper protocol, and a MTU $M$ that is greater than 127, there is exactly one canonical way to fragment it to fit within the MTU. Set the \emph{fragment count}, $C$, to $\lceil|P|/(M - 16)\rceil$, where $|P|$ is the size of the packet in bytes. The fragment count is the total number of fragments we will be splitting the original packet into.  Each fragment will be assigned a \emph{fragment number}, from $0$ to $C - 1$, to indicate their order in the original packet. Each fragment will have a 16 byte \emph{fragment header} followed by a \emph{payload}. The fragments assigned numbers 0 to $|P|\%C - 1$ must have a \emph{payload} of size $\lfloor|P|/C\rfloor + 1$. And fragments assigned numbers $|P|\%C$ to $C - 1$ must have a payload of size $\lfloor|P|/C\rfloor$. It can be shown that this guarantees each fragment will at most $M$ bytes long. When each payload is concatenate in fragment number order, the result must be equal to the original packet, $P$. This fragmentation scheme was chosen to prevent miniscule payloads from being generated, to allow implementations to accurately estimate $|P|$ given any one fragment, and to keep fragments from the same packet roughly the same size.
+Given a packet, $P$, from the upper protocol, and a MTU, $M$, that is greater than 127, there is exactly one canonical way to fragment it to fit within the MTU. Set the \emph{fragment count}, $C$, to $\lceil|P|/(M - 16)\rceil$, where $|P|$ is the size of the packet in bytes. The fragment count is the total number of fragments we will be splitting the original packet into.  Each fragment will be assigned a \emph{fragment number}, from $0$ to $C - 1$, to indicate their order in the original packet. Each fragment will have a 16 byte \emph{fragment header} followed by a \emph{payload}. The fragments assigned numbers 0 to $|P|\%C - 1$ must have a \emph{payload} of size $\lfloor|P|/C\rfloor + 1$. And fragments assigned numbers $|P|\%C$ to $C - 1$ must have a payload of size $\lfloor|P|/C\rfloor$. It can be shown that this guarantees each fragment will at most $M$ bytes long. When each payload is concatenate in fragment number order, the result must be equal to the original packet, $P$. This fragmentation scheme was chosen to prevent miniscule payloads from being generated, to allow implementations to accurately estimate $|P|$ given any one fragment, and to keep fragments from the same packet roughly the same size.
 
 The upper protocol must identify every packet with a \emph{packet nonce}. For each fragmented payload, take the fragment number, fragment count and a packet nonce, and combine them according to \figureref{packet:header} to create a \emph{fragment header}. Then append each payload to its header to create the final set of \emph{fragments}. These fragments are then individually sent to the remote peer over the lower datagram protocol.
 
 Implementations must support a fragment count of at least 48. Implementations may choose and enforce a maximum length of the final reassembled packet. Since fragment numbers and counts are stored as 1 byte integers, the maximum possible fragment count that can be encoded is 256. If the fragment count for a packet is 256, the fragment count field of the packet header should be set to 0. Implementations that choose to support fragment counts of 256 must interpret a 0 in the fragment count field as a fragment count of 256.
 
-\begin{figure}
+\begin{figure}[H]
 	\caption{Header of the ZeroTier Fragmentation Protocol -- The ``Peer Identifier'' is given by the upper protocol to allow for multiplexing between multiple peers. In ZSSP, the Peer Identifier is set to the most recent key id of the remote peer. The ``Packet Nonce'' is also given by the upper protocol, it is expected to contain metadata on behalf of the upper protocol, and as the name implies it should be unique per packet. \figureref{fig:header_nonce} describes how this Nonce is constructed in ZSSP.}\label{packet:header}
 	\centering
 	\begin{bytefield}[bitwidth=6.5em]{4}
@@ -1017,7 +1015,7 @@ Implementations must support a fragment count of at least 48. Implementations ma
 	\end{bytefield}
 \end{figure}
 
-\begin{figure}
+\begin{figure}[H]
 	\caption{Construction of the packet nonce within ZSSP -- Notice that this construction is identical with the ZSSP AES-GCM Nonce, but with two less bytes of padding.}\label{fig:header_nonce}
 	\centering
 	\begin{bytefield}[bitwidth=3.5em]{9}
@@ -1040,7 +1038,7 @@ After all fragments are constructed, AES-256 \cite{fips_aes} is used to directly
 
 Bytes 4 through 20 of a fragment include the fragment number, fragment count, packet nonce, and the first 4 byte of the payload. The packet nonce, in combination with the fragment number, guarantees each block fed into AES will be strictly unique, thereby guaranteeing every header will have a unique encryption. We allow the first 4 bytes of the payload to be included in the block because it is simpler to implement, and it could help in the event a packet nonce is reused due to implementation error.
 
-We proof in \theoremref{theorem:frag_proof} that, under the assumption AES-256 is a pseudo-random permutation, and the header key is indistinguishable from random, that the ZSSP header authentication algorithm is existentially unforgeable under an adaptive chosen message attack. We also demonstrate that the probability an attacker is able to forge a valid header is bound above by the probability that the upper protocol considers a uniform random packet nonce to be valid. For ZSSP, this implies that the probability an attacker forges a valid header is bound above by $\algn{negl}(n) + 2^{-45}$, where $\algn{negl}(n)$ is the probability that an attacker is able to break AES-256.
+We prove in \theoremref{theorem:frag_proof} that, under the assumption AES-256 is a pseudo-random permutation, and the header key is indistinguishable from random, that the ZSSP header authentication algorithm is existentially unforgeable under an adaptive chosen message attack. We also demonstrate that the probability an attacker is able to forge a valid header is bound above by the probability that the upper protocol considers a uniform random packet nonce to be valid. For ZSSP, this implies that the probability an attacker forges a valid header is bound above by $\algn{negl}(n) + 2^{-45}$, where $\algn{negl}(n)$ is the probability that an attacker is able to break AES-256.
 
 While this probability is not low enough to be considered cryptographically secure, it is more than plenty for making a defragmentation DOS attack more expensive than a volumetric DDOS attack. It should be emphasized that this authentication mechanism is only sufficient for defending against DOS attacks, ZSSP does not rely on it for anything more than that.
 
@@ -1055,18 +1053,18 @@ The Hello packet defragmentation buffer is significantly easier to DOS than a se
 The challenge packet, \figureref{packet:challenge}, is small enough that it never requires fragmentation. So Bob does not use the header key to authenticate the header of the challenge packet they send Alice. Bob would not be able to derive the header key anyways, since Bob has not processed Alice's Hello packet. The last 8 bytes of the packet nonce are randomized so challenge packets do not collide with each other.
 The Noise XK handshake packets, as specified by Noise, do not use a unique counter, but instead use counter values of 0 or 1. This creates a problem for fragmenting Hello packets, $X_1$ and Response packets, $X_2$, because we need a way for each of these packets to be fragmented with unique packet nonce values, and not just packet nonce values of $0||0$ and $1||0$. Otherwise, these packets will end up colliding and corrupting each other in the defragmentation buffer. For $X_1$ packets, the last 8 bytes of the final AES-GCM MAC is used as the counter value within the packet nonce. This essentially treats the MAC as a random number which is attached to each fragment. The MAC was chosen instead of an actual random number because it allows Bob to trivially authenticate that the received packet nonce is exactly the packet nonce Alice sent, by simply checking if it is equal to the MAC. A modification of this policy is used for $X_2$ packets. Since we use ZPF authenticated headers with the fragments of $X_2$ packets, to provide robust authentication we want the counter value used to always be in a $2^{16}$ integer range. For this reason we only use the last 2 bytes of the final AES-GCM MAC as the random counter value for the packet nonce of $X_2$ fragments. The risk of accidental collision is far, far less than that of $X_1$ packets, so we consider 2 bytes sufficient. $X_3$ use a counter value of 0, since, due to the structure of ZKE, a packet nonce of $2||0$ will always be unique for the $X_3$ packet of a given key exchange. Both peers have synchronized state at this point in the handshake, so Alice can statefully prevent two different, colliding $X_3$ packets from being generated.
 
-\subsection{Proof of Security}
+\subsection{Mathematical Background}
 
 We are going to prove that the ZSSP header authentication algorithm is existentially unforgeable under an adaptive chosen message attack. However our algorithm does not fit the standard syntax of message authentication codes. This means we must prove security under a different security experiment than the standard message authentication code experiment. We choose to use the syntax of a message transmission scheme \cite{modern_crypto}, and prove authenticated communication under the secure message transmission experiment, \algorithmref{alg:header_auth}.
 
-\begin{definition}[Message Transmission Scheme \cite{modern_crypto}]
-	A message transmission scheme is tuple of algorithms $\Pi = (\algn{Gen}, \algn{EncMac}, \algn{Dec})$. \algn{Gen} is the key generation algorithm, \algn{EncMac} is the authenticated encryption algorithm, and \algn{Dec} is the decryption and verification algorithm.
+\begin{definition}[H][Message Transmission Scheme \cite{modern_crypto}]\label{def:mts}
+	A message transmission scheme is a tuple of algorithms $\Pi = (\algn{Gen}, \algn{EncMac}, \algn{Dec})$. \algn{Gen} is the key generation algorithm, \algn{EncMac} is the authenticated encryption algorithm, and \algn{Dec} is the decryption and verification algorithm.
 
 	A message transmission scheme is \emph{correct} if for all keys $k\gets \algn{Gen}(1^n)$ and messages $m$,
 	$$\algn{Dec}_k(\algn{EncMac}_k(m)) = m.$$
 \end{definition}
 
-\begin{algorithm}
+\begin{algorithm}[H]
 	\caption{The secure message transmission experiment, $\algn{Auth}_{\mathcal{A},\, \Pi}(n)$ \cite{modern_crypto}}\label{alg:header_auth}
 	\begin{algorithmic}
 		\Require $n$
@@ -1078,22 +1076,25 @@ We are going to prove that the ZSSP header authentication algorithm is existenti
 	\end{algorithmic}
 \end{algorithm}
 
-\begin{definition}[Authenticated Communication \cite{modern_crypto}]
+\begin{definition}[H][Authenticated Communication \cite{modern_crypto}]
 	Message transmission scheme, $\Pi = (\algn{Gen}, \algn{EncMac}, \algn{Dec})$ achieves authenticated communication if for all probabilistic poly-time adversaries $\mathcal{A}$, there exists a negligible function $\algn{negl}$ such that:
 	$$\prob[\algn{Auth}_{\mathcal{A},\, \Pi}(n) = 1] \leq \algn{negl}(n).$$
 \end{definition}
 
-\begin{definition}[Pseudorandom Permutation \cite{modern_crypto}]
-	Given the security parameter $n$, a keyed permutation, $F$, and a probabilistic poly-time distinguishers $D$, define the advantage of $D$ to be:
+\begin{definition}[H][Pseudorandom Permutation \cite{modern_crypto}]
+	Given the security parameter $n$, a keyed permutation, $F_k:\{0,1\}^n\to\{0,1\}^n$, and a probabilistic poly-time distinguishers $D$, define the advantage of $D$ to be:
 	$$\mathbf{Adv}^\text{ind-prp}_{D,\,F}(n) = |\prob[D^{F_k(\cdot), F_k^{-1}(\cdot)}(1^n) = 1] - \prob[D^{f(\cdot), f^{-1}(\cdot)}(1^n) = 1]|,$$
-	where $k\gets\$\,\{0,1\}^n$ and $f$ is a truly random permutation.
+	where $k\gets\$\,\{0,1\}^n$ and $f:\{0,1\}^n\to\{0,1\}^n$ is a truly random permutation.
 
-	An efficient, keyed permutation, $F$, is a strong pseudorandom permutation if for all probabilistic poly-time distinguishers $D$, there exists a negligible function $\algn{negl}$ such that:
+	An efficient, keyed permutation, $F_k$, is a strong pseudorandom permutation if for all probabilistic poly-time distinguishers $D$, there exists a negligible function $\algn{negl}$ such that:
 	$$\mathbf{Adv}^\text{ind-prp}_{D,\,F}(n) \leq \algn{negl}(n),$$
 \end{definition}
 
+\subsection{Proof of Security}
 
-\begin{algorithm}
+Algorithms \algorithmref{alg:header_gen}, \algorithmref{alg:header_encmac}, and \algorithmref{alg:header_dec} define the ZSSP header authentication algorithm using the syntax of a Message Transmission Scheme, \definitionref{def:mts}. These definitions are then used in \theoremref{theorem:frag_proof} to reduce the security of the ZSSP header authentication algorithm to the security of AES-256.
+
+\begin{algorithm}[H]
 	\caption{$\algn{Gen}(1^n)$ of the ZSSP header authentication algorithm -- We are implicitly assuming here that the header key is truly random, or at least computationally indistinguishable from random.}\label{alg:header_gen}
 	\begin{algorithmic}
 		\Require $1^n$
@@ -1102,16 +1103,16 @@ We are going to prove that the ZSSP header authentication algorithm is existenti
 	\end{algorithmic}
 \end{algorithm}
 
-\begin{algorithm}
-	\caption{$\algn{EncMac}_k(m)$ of the ZSSP header authentication algorithm -- Input $m$ is bytes 4 to 20 of a fragment. Function $F$ is AES-256. For the sake of the security proof we will assume $m$ grows proportionally to $n$.}\label{alg:header_encmac}
+\begin{algorithm}[H]
+	\caption{$\algn{EncMac}_k(m)$ of the ZSSP header authentication algorithm -- Input $m$ is bytes 4 to 20 of a fragment, which is the portion of the fragment that ZFP encrypts. Function $F$ is AES-256. For the sake of the security proof we will assume that the input block size of AES-256 is not constant, but instead is equal to $n$. For this reason we also assume $m$ is able to grow to be of size $n$.}\label{alg:header_encmac}
 	\begin{algorithmic}
 		\Require $m$
 		\Ensure $F_k(m)$
 	\end{algorithmic}
 \end{algorithm}
 
-\begin{algorithm}
-	\caption{$\algn{Dec}_k(c)$ of the ZSSP header authentication algorithm -- Function $F^{-1}$ is inverse of AES-256. Function $\algn{Vrfy}$ is some algorithm provided by the upper protocol for verifying that the packet nonce is valid. For the sake of the security proof we will be assuming that the size of the packet nonce $N$ is proportional to the security parameter $n$. The version of $\algn{Vrfy}$ used by ZSSP is described by \algorithmref{alg:header_vrfy}.}\label{alg:header_dec}
+\begin{algorithm}[H]
+	\caption{$\algn{Dec}_k(c)$ of the ZSSP header authentication algorithm -- Function $F^{-1}$ is inverse of AES-256. Function $\algn{Vrfy}$ is some algorithm provided by the upper protocol for verifying that the packet nonce is valid. For the sake of the security proof we assume that the the packet nonce $N$ is able to grow in size proportional to $n$. The version of $\algn{Vrfy}$ used by ZSSP is described by \algorithmref{alg:header_vrfy}.}\label{alg:header_dec}
 	\begin{algorithmic}
 		\Require $c$
 		\State $m \gets F_k^{-1}(c)$
@@ -1124,14 +1125,14 @@ We are going to prove that the ZSSP header authentication algorithm is existenti
 \end{algorithm}
 
 
-\begin{theorem}\label{theorem:frag_proof}
-	If $F:\{0,1\}^n\to\{0,1\}^n$ is a strong psuedorandom permutation, and $\prob[\algn{Vrfy}(N) = 1]$ is negligible in $|N|$ for uniform random $N$, then $\Pi=(\text{\algorithmref{alg:header_gen}, \algorithmref{alg:header_encmac}, \algorithmref{alg:header_dec}})$ achieves authenticated communication, with advantage bound:
+\begin{theorem}[H]\label{theorem:frag_proof}
+	If $F_k:\{0,1\}^n\to\{0,1\}^n$ is a strong psuedorandom permutation, and $\prob[\algn{Vrfy}(N) = 1]$ is a negligible function in $|N|$ for uniform random $N$, then $\Pi=(\text{\algorithmref{alg:header_gen}, \algorithmref{alg:header_encmac}, \algorithmref{alg:header_dec}})$ achieves authenticated communication, with advantage bound:
 
 	$$\prob[\algn{Auth}_{\mathcal{A},\, \Pi}(n) = 1] \leq \mathbf{Adv}^\text{ind-prp}_{D,\,F}(n) + \frac{2^n}{2^n-q(n)}\prob[\algn{Vrfy}(N) = 1],$$
 	where $N$ is uniform random, and $q(n)$ is the upper bound on the total number of queries $\mathcal{A}$ asks its oracle.
 \end{theorem}
 
-\begin{proof}
+\begin{proof}[H]
 	Given $\mathcal{A}$ an adversary for $\Pi = (\algn{Gen}, \algn{EncMac}, \algn{Dec})$, we construct $D$, \algorithmref{alg:header_d}, a distinguisher for $F$.
 	Assume without loss of generality $\mathcal{A}$ will never output a string which it has previously received from its oracle.
 
@@ -1152,7 +1153,7 @@ We are going to prove that the ZSSP header authentication algorithm is existenti
 
 	Since $f$ is a truly random permutation, it is the case that $f^{-1}(\mathcal{A}^{f(\cdot)}(1^n))$ outputs a uniform random string, $m$, from the set of strings $\mathcal{A}$ did not queried to $f(\cdot)$. Let $Q$ be a random variable that represents the set of queries asked while executing $\mathcal{A}^{f(\cdot)}(1^n)$.
 
-	Given $m$ an output of $f$, let $\mathcal{N}(m)$ be defined as the packet nonce of $m$.
+	Let $m\in\{0,1\}^n$ be a uniform random variable, and let $\mathcal{N}(m)$ be defined as the packet nonce of $m$.
 	\begin{flalign*}
 		\text{So } \prob_f[D^{f(\cdot), f^{-1}(\cdot)}(1^n) = 1] &= \prob[\algn{Vrfy}(\mathcal{N}(f^{-1}(\mathcal{A}^{f(\cdot)}(1^n)))) = 1] \\
 		&= \prob[\algn{Vrfy}(\mathcal{N}(m)) = 1\,|\, m \notin Q] \\
@@ -1170,7 +1171,7 @@ We are going to prove that the ZSSP header authentication algorithm is existenti
 	\end{flalign*}
 \end{proof}
 
-\begin{algorithm}
+\begin{algorithm}[H]
 	\caption{The implementation of $\algn{Vrfy}(N)$ for ZSSP -- We are assuming that the input $N$ is being interpreted as $p||c$, the packet nonce construction of \figureref{fig:header_nonce}. $D$ is a stateful, finite array of integers, initialized to -1, that stores the value of previously authenticated counters. $D$ is updated after ZSSP decrypts a received packet. ZSSP explicitly does not verify that the padding is zero, for the sake of possible future revisions.}\label{alg:header_vrfy}
 	\begin{algorithmic}
 		\Require $p||c$
@@ -1194,15 +1195,15 @@ We are going to prove that the ZSSP header authentication algorithm is existenti
 \end{algorithm}
 
 \algorithmref{alg:header_vrfy} shows how ZSSP validates packet nonces. Notice that $p$ must be in range 1 through 8 to be considered valid. Also notice that, regardless of the value of $p$, $c$ must fall into some range of integers that is at most $2^{24}$ in size. If we assume the adversary makes no oracle queries, this implies that the advantage against ZSSP header authentication is bound above by
-\begin{flalign*}
+\begin{flalign*}[H]
 	\prob[\algn{Auth}_{\mathcal{A},\, \Pi}(n) = 1] &\leq \mathbf{Adv}^\text{ind-prp}_{D,\,F}(n) + \prob[\algn{Vrfy}(N) = 1] \\
 	&\leq \algn{negl}(n) + \frac{8}{2^8}\cdot\frac{2^{24}}{2^{64}} \\
-	&\leq \algn{negl}(n) + 2^{-5}\cdot 2^{-40} \\
+	&= \algn{negl}(n) + 2^{-5}\cdot 2^{-40} \\
 	&= \algn{negl}(n) + 2^{-45}.
 \end{flalign*}
 If we assume the adversary does make oracle queries, then their advantage bound is only negligibly larger than the advantage above.
 
-The range $2^{24}$ was chosen because changing its value makes the protocol worst. One byte less of range, $2^{16}$, makes it possible for one peer to have $2^{16}$ of their packets dropped. This would put their counter out of the allowed range, and cause all future packets to be dropped. One byte more of range, $2^{32}$, makes it easier than it need to be for an attacker to forge a valid header.
+The range $2^{24}$ was chosen because changing its value makes the protocol worse. One byte less of range, $2^{16}$, makes it possible for one peer to have $2^{16}$ of their packets dropped. This would put their counter out of the allowed range, and cause all future packets to be dropped. One byte more of range, $2^{32}$, makes it easier than it need to be for an attacker to forge a valid header.
 
 The security experiment we have used does not consider replay protection, however it should be clear that \algorithmref{alg:header_vrfy} does indeed provide replay protection. Once any packet is fully authenticated by ZSSP, and its counter is added to array $D$, it is the case that its packet nonce will no longer be valid according to \algorithmref{alg:header_vrfy}. If a packet is dropped or corrupted, its fragments could only be replayed until some other received packet updated the relevant index of $D$. This prevents a type of DOS attack where the attacker simply replays valid fragments to keep the defragmentation buffer full.
 

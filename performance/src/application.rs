@@ -153,6 +153,22 @@ pub trait CryptoLayer: Sized {
     /// each session.
     type SessionData;
 
+    /// Type for arbitrary opaque object that is attached to a new connection attempt if Alice sends
+    /// us a ratchet fingerprint recognized by `restore_by_fingerprint`.
+    ///
+    /// If Alice continues to connect
+    /// with us, then this object will be passed to `check_accept_session` and `restore_by_identity`.
+    /// This is useful if the ratchet fingerprint was derived from a one-time password, in which
+    /// case `FingerprintData` can contain metadata regarding the one-time password. This can be
+    /// used by `check_accept_session` and `restore_by_identity` to perform additional
+    /// authentication checks, such as validating the one-time password as an invitation code.
+    ///
+    /// `FingerprintData` can also be used with extreme caution to cache database resources that can
+    /// speed up the expected future calls to `check_accept_session` and `restore_by_identity`.
+    /// If this is done, the implementor is required in `check_accept_session` to verify that the
+    /// cached resources in `FingerprintData` indeed belong to the specified remote peer.
+    type FingerprintData;
+
     /// Data type for incoming packet buffers.
     ///
     /// This can be something like `Vec<u8>` or `Box<[u8]>` or it can be something like a pooled
@@ -190,6 +206,9 @@ pub trait ApplicationLayer<Crypto: CryptoLayer>: Sized {
     /// If this function is configured to always return true, it means peers will not be able to
     /// connect to us unless they had a prior-established ratchet key with us. This is the best way
     /// for the paranoid to enforce a manual allow-list.
+    ///
+    /// Corresponds to the "Hello Requires Recognized Ratchet, π_1" security flag of Transition
+    /// Algorithm 2 within the ZSSP whitepaper.
     fn hello_requires_recognized_ratchet(&mut self) -> bool;
     /// This function is called if we, as Alice, attempted to open a session with Bob using a
     /// non-empty ratchet key, but Bob does not have this ratchet key and wants to downgrade
@@ -206,15 +225,29 @@ pub trait ApplicationLayer<Crypto: CryptoLayer>: Sized {
     /// least one party is misconfigured and got their ratchet keys corrupted or lost, or Bob has
     /// been compromised and is being impersonated. An attacker must at least have Bob's private
     /// static key to be able to ask Alice to downgrade.
+    ///
+    /// Corresponds to the "Initiator Disallows Downgrade, π_2" security flag of Transition
+    /// Algorithm 3 within the ZSSP whitepaper.
     fn initiator_disallows_downgrade(&mut self, session: &Arc<Session<Crypto>>) -> bool;
     /// Function to accept sessions after final negotiation.
-    /// The second argument is the identity that the remote peer sent us. The application
-    /// must verify this identity is associated with the remote peer's static key.
+    ///
+    /// The implementor must verify that three arguments, `remote_static_key`, `identity` and
+    /// optionally `fingerprint_data` all belong to the same remote peer, using whatever definition
+    /// of "same remote peer" that the upper protocol chooses.
+    /// `fingerprint_data` is an opaque type that is only `Some` if Alice sent us a ratchet
+    /// fingerprint that was successfully restored by `restore_by_fingerprint`.
     ///
     /// To prevent desync, if this function specifies that we should connect, no other open session
     /// with the same remote peer must exist. Drop or call expire on any pre-existing sessions
     /// before returning.
-    fn check_accept_session(&mut self, remote_static_key: &Crypto::PublicKey, identity: &[u8]) -> AcceptAction<Crypto>;
+    ///
+    /// Corresponds to the **Accept** call of Transition Algorithm 4 within the ZSSP whitepaper.
+    fn check_accept_session(
+        &mut self,
+        remote_static_key: &Crypto::PublicKey,
+        identity: &[u8],
+        fingerprint_data: Option<&Crypto::FingerprintData>,
+    ) -> AcceptAction<Crypto>;
 
     /// Lookup a specific ratchet state based on its ratchet fingerprint.
     /// This function will be called whenever Alice attempts to connect to us with a non-empty
@@ -222,10 +255,24 @@ pub trait ApplicationLayer<Crypto: CryptoLayer>: Sized {
     ///
     /// If a ratchet state with a matching fingerprint could not be found, this function should
     /// return `Ok(None)`.
+    ///
+    /// This function can also return an opaque `FingerprintData` object. If Alice continues to connect
+    /// with us, then this object will be passed to `check_accept_session` and `restore_by_identity`.
+    /// This is useful if the ratchet fingerprint was derived from a one-time password, in which
+    /// case `FingerprintData` can contain metadata regarding the one-time password. This can be
+    /// used by `check_accept_session` and `restore_by_identity` to perform additional
+    /// authentication checks, such as validating the one-time password as an invitation code.
+    ///
+    /// `FingerprintData` can also be used with extreme caution to cache database resources that can
+    /// speed up the expected future calls to `check_accept_session` and `restore_by_identity`.
+    /// If this is done, the implementor is required in `check_accept_session` to verify that the
+    /// cached resources in `FingerprintData` indeed belong to the specified remote peer.
+    ///
+    /// Corresponds to the **Restore** call of Transition Algorithm 2 within the ZSSP whitepaper.
     fn restore_by_fingerprint(
         &mut self,
         ratchet_fingerprint: &[u8; RATCHET_SIZE],
-    ) -> Result<Option<RatchetState>, std::io::Error>;
+    ) -> Result<Option<(RatchetState, Crypto::FingerprintData)>, std::io::Error>;
     /// Lookup the specific ratchet states based on the identity of the peer being communicated with.
     /// This function will be called whenever Alice attempts to open a session, or Bob attempts
     /// to verify Alice's identity.
@@ -240,10 +287,13 @@ pub trait ApplicationLayer<Crypto: CryptoLayer>: Sized {
     /// This function is not responsible for deciding whether or not to connect to this remote peer.
     /// Filtering peers should be done by the caller to `Context::open` as well as by the
     /// function `ApplicationLayer::check_accept_session`.
+    ///
+    /// Corresponds to the **Restore** call of Transition Algorithm 1 and 4 within the ZSSP whitepaper.
     fn restore_by_identity(
         &mut self,
         remote_static_key: &Crypto::PublicKey,
         session_data: &Crypto::SessionData,
+        fingerprint_data: Option<&Crypto::FingerprintData>,
     ) -> Result<Option<RatchetStates>, std::io::Error>;
     /// Atomically commit the update specified by `update_data` to storage, or return an error if
     /// the update could not be made.
@@ -306,12 +356,18 @@ pub struct AcceptAction<Crypto: CryptoLayer> {
     pub session_data: Option<Crypto::SessionData>,
     /// Whether or not we will accept a connection with the remote peer when they do not have a
     /// ratchet key that we think they should have.
+    ///
+    /// Corresponds to the "Responder Disallows Downgrade, π_3" security flag of Transition
+    /// Algorithm 4 within the ZSSP whitepaper.
     pub responder_disallows_downgrade: bool,
     /// Whether or not to send an explicit rejection packet to the remote peer if we do not create
     /// a session with them.
     ///
     /// This field will not be used if `session_data` is `Some` and the remote peer passes all other
     /// authentication checks.
+    ///
+    /// Corresponds to the "Responder Silently Rejects, π_4" security flag of Transition
+    /// Algorithm 4 within the ZSSP whitepaper.
     pub responder_silently_rejects: bool,
 }
 
@@ -323,7 +379,7 @@ pub trait Sender {
     /// Send the given fragment on this interface and then return whether or not an error occured.
     ///
     /// If `true` is returned then sending is cancelled and this instance of `Sender` is dropped.
-    fn send_frag<'a>(&'a mut self, frag: &mut [u8]) -> bool;
+    fn send_frag(&mut self, frag: &mut [u8]) -> bool;
 }
 
 /// A trait to genericize the process of borrowing the resources necessary to repeatedly
@@ -353,7 +409,7 @@ pub trait SendTo<Crypto: CryptoLayer> {
 }
 
 impl<F: FnMut(&mut [u8]) -> bool> Sender for F {
-    fn send_frag<'a>(&'a mut self, frag: &mut [u8]) -> bool {
+    fn send_frag(&mut self, frag: &mut [u8]) -> bool {
         self(frag)
     }
 }

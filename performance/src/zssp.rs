@@ -17,7 +17,7 @@ use crate::fragged::Assembled;
 use crate::handshake_cache::UnassociatedHandshakeCache;
 use crate::indexed_heap::IndexedBinaryHeap;
 use crate::proto::*;
-use crate::result::{fault, FaultType, OpenError, ReceiveError, ReceiveOk, SendError, SessionEvent};
+use crate::result::{fault, ExpiredError, FaultType, OpenError, ReceiveError, ReceiveOk, SendError, SessionEvent};
 use crate::zeta::*;
 #[cfg(feature = "logging")]
 use crate::LogEvent::*;
@@ -71,7 +71,9 @@ impl<Crypto: CryptoLayer> ContextInner<Crypto> {
     }
 }
 
-fn parse_fragment_header(incoming_fragment: &[u8]) -> Result<(usize, usize, [u8; AES_GCM_NONCE_SIZE]), ReceiveError> {
+fn parse_fragment_header<Crypto: CryptoLayer>(
+    incoming_fragment: &[u8],
+) -> Result<(usize, usize, [u8; AES_GCM_NONCE_SIZE]), ReceiveError<Crypto>> {
     let fragment_no = incoming_fragment[FRAGMENT_NO_IDX] as usize;
     let fragment_count = incoming_fragment[FRAGMENT_COUNT_IDX] as usize;
     if fragment_no >= fragment_count || fragment_count > MAX_FRAGMENTS {
@@ -206,7 +208,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
         remote_address: &impl Hash,
         mut incoming_fragment_buf: Crypto::IncomingPacketBuffer,
         output_buffer: impl Write,
-    ) -> Result<(ReceiveOk<Crypto>, Option<i64>), ReceiveError> {
+    ) -> Result<(ReceiveOk<Crypto>, Option<i64>), ReceiveError<Crypto>> {
         use crate::result::FaultType::*;
         let ctx = &self.0;
         send_unassociated_mtu = send_unassociated_mtu.max(MIN_TRANSPORT_MTU);
@@ -234,40 +236,38 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                     );
                 }
 
-                {
-                    //vrfy
-                    if packet_type == PACKET_TYPE_HANDSHAKE_RESPONSE {
-                        if !matches!(&state.beta, ZetaAutomata::A1(_)) {
-                            // A resent handshake response from Bob may have arrived out of order,
-                            // after we already received one.
-                            return Err(fault!(OutOfSequence, false));
-                        }
-                        if incoming_counter >= COUNTER_WINDOW_MAX_SKIP_AHEAD {
-                            return Err(fault!(ExpiredCounter, true));
-                        }
-                    } else if PACKET_TYPE_USES_COUNTER_RANGE.contains(&packet_type) {
-                        // For DOS resistant reply-protection we need to check that the given counter is
-                        // in the window of valid counters immediately.
-                        // But for packets larger than 1 fragment we can't actually record the
-                        // counter as received until we've authenticated the packet.
-                        // So we check the counter window twice, and only update it the second time
-                        // after the packet has been authenticated.
-                        if !session.window.check(incoming_counter) {
-                            // This can occur naturally if packets arrive way out of order, or
-                            // if they are duplicates.
-                            // This can also be naturally triggered if Bob has just successfully
-                            // received the first session key and is reject all of Alice's resends.
-                            // This can also occur if a session was manually expired, but not
-                            // dropped, and the remote party is still sending us data.
-                            return Err(fault!(ExpiredCounter, false));
-                        }
-                    } else if packet_type == PACKET_TYPE_HANDSHAKE_COMPLETION {
-                        // This can be triggered if Bob successfully received a session key and
-                        // needs to reject all of Alice's resends of PACKET_TYPE_NOISE_XK_PATTERN_3.
-                        return Err(fault!(InvalidPacket, false));
-                    } else {
-                        return Err(fault!(InvalidPacket, true));
+                //vrfy
+                if packet_type == PACKET_TYPE_HANDSHAKE_RESPONSE {
+                    if !matches!(&state.beta, ZetaAutomata::A1(_)) {
+                        // A resent handshake response from Bob may have arrived out of order,
+                        // after we already received one.
+                        return Err(fault!(OutOfSequence, false, session));
                     }
+                    if incoming_counter >= COUNTER_WINDOW_MAX_SKIP_AHEAD {
+                        return Err(fault!(ExpiredCounter, true, session));
+                    }
+                } else if PACKET_TYPE_USES_COUNTER_RANGE.contains(&packet_type) {
+                    // For DOS resistant reply-protection we need to check that the given counter is
+                    // in the window of valid counters immediately.
+                    // But for packets larger than 1 fragment we can't actually record the
+                    // counter as received until we've authenticated the packet.
+                    // So we check the counter window twice, and only update it the second time
+                    // after the packet has been authenticated.
+                    if !session.window.check(incoming_counter) {
+                        // This can occur naturally if packets arrive way out of order, or
+                        // if they are duplicates.
+                        // This can also be naturally triggered if Bob has just successfully
+                        // received the first session key and is reject all of Alice's resends.
+                        // This can also occur if a session was manually expired, but not
+                        // dropped, and the remote party is still sending us data.
+                        return Err(fault!(ExpiredCounter, false, session));
+                    }
+                } else if packet_type == PACKET_TYPE_HANDSHAKE_COMPLETION {
+                    // This can be triggered if Bob successfully received a session key and
+                    // needs to reject all of Alice's resends of PACKET_TYPE_NOISE_XK_PATTERN_3.
+                    return Err(fault!(InvalidPacket, false, session));
+                } else {
+                    return Err(fault!(InvalidPacket, true, session));
                 }
 
                 // Handle defragmentation.
@@ -282,7 +282,8 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                             &mut fragment_buffer,
                         );
                         if fragment_buffer.is_empty() {
-                            return Ok((ReceiveOk::Unassociated, None));
+                            drop(state);
+                            return Ok((ReceiveOk::Fragment(session), None));
                         } else {
                             // We have not yet authenticated the sender so we do not report
                             // receiving a packet from them.
@@ -308,12 +309,12 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                             &mut fragment_buffer,
                         );
                         if fragment_buffer.is_empty() {
-                            return Ok((ReceiveOk::Unassociated, None));
+                            return Ok((ReceiveOk::Fragment(session), None));
                         } else {
                             for fragment in fragment_buffer.as_ref() {
                                 buffer
                                     .try_extend_from_slice(&fragment.as_ref()[HEADER_SIZE..])
-                                    .map_err(|_| fault!(InvalidPacket, true))?;
+                                    .map_err(|_| fault!(InvalidPacket, true, session))?;
                             }
                             // We have not yet authenticated the sender so we do not report
                             // receiving a packet from them.
@@ -407,7 +408,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                             log!(app, DIsAuthClosedSession(&session));
                             (SessionEvent::Rejected, None)
                         }
-                        _ => return Err(fault!(InvalidPacket, true)), // This is unreachable.
+                        _ => return Err(fault!(InvalidPacket, true, session)), // This is unreachable.
                     }
                 };
                 Ok((ReceiveOk::Associated(session, ret.0), ret.1))
@@ -428,11 +429,9 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                         ReceivedRawFragment(packet_type, incoming_counter, fragment_no, fragment_count)
                     );
 
-                    {
-                        //vrfy
-                        if packet_type != PACKET_TYPE_HANDSHAKE_COMPLETION || incoming_counter != 0 {
-                            return Err(fault!(InvalidPacket, true));
-                        }
+                    //vrfy
+                    if packet_type != PACKET_TYPE_HANDSHAKE_COMPLETION || incoming_counter != 0 {
+                        return Err(fault!(InvalidPacket, true));
                     }
 
                     let mut buffer = ArrayVec::<u8, HANDSHAKE_COMPLETION_MAX_SIZE>::new();
@@ -484,7 +483,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                     // This can occur naturally because either Bob's incoming_sessions cache got
                     // full so Alice's incoming session was dropped, or the session this packet
                     // was for was dropped by the application.
-                    return Err(fault!(UnknownLocalKeyId, false));
+                    Err(fault!(UnknownLocalKeyId, false))
                 }
             }
         } else {
@@ -632,9 +631,14 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
     ///
     /// * `app` - Interface to application using ZSSP
     /// * `send_to` - Function to get a sender and an MTU to send something over an active session
-    pub fn service<App: ApplicationLayer<Crypto>>(&self, mut app: App, send_to: impl SendTo<Crypto>) -> i64 {
+    pub fn service<App: ApplicationLayer<Crypto>>(&self, mut app: App, mut send_to: impl SendTo<Crypto>) -> i64 {
         let current_time = app.time();
-        let next_service_time = self.service_inner(app, send_to, current_time);
+        let next_service_time = loop {
+            match self.service_inner(&mut app, send_to, current_time) {
+                Ok(ts) => break ts,
+                Err((_, s)) => send_to = s,
+            }
+        };
         let max_interval = Crypto::SETTINGS
             .fragment_assembly_timeout
             .min(Crypto::SETTINGS.rekey_timeout)
@@ -650,21 +654,33 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
     /// an `Option<i64>`. This option can contain an updated, reduced timestamp at which this
     /// function ought to be called again.
     ///
+    /// If this returns an error then it means that a session has timed-out and has been expired.
+    /// An expired session is no longer "owned" by the ZSSP context.
+    /// Therefore it is no longer capable of sending, receiving or being serviced,
+    /// so it should be dropped.
+    ///
+    /// A return type of `Err` effectively means that this function should be called again immediately.
+    /// This function should be called repeatedly in a loop until `Ok` is returned.
+    ///
     /// This function should only be used if the caller has direct access to a scheduler that allows
     /// them to dynamically modify the interval at which this function is repeatedly called.
     ///
     /// * `app` - Interface to application using ZSSP
     /// * `send_to` - Function to get a sender and an MTU to send something over an active session
-    pub fn service_scheduled<App: ApplicationLayer<Crypto>>(&self, mut app: App, send_to: impl SendTo<Crypto>) -> i64 {
-        let current_time = app.time();
-        self.service_inner(app, send_to, current_time)
-    }
-    fn service_inner<App: ApplicationLayer<Crypto>>(
+    pub fn service_scheduled<App: ApplicationLayer<Crypto>>(
         &self,
         mut app: App,
-        mut send_to: impl SendTo<Crypto>,
+        send_to: impl SendTo<Crypto>,
+    ) -> Result<i64, ExpiredError<Crypto>> {
+        let current_time = app.time();
+        self.service_inner(&mut app, send_to, current_time).map_err(|e| e.0)
+    }
+    fn service_inner<App: ApplicationLayer<Crypto>, F: SendTo<Crypto>>(
+        &self,
+        app: &mut App,
+        mut send_to: F,
         current_time: i64,
-    ) -> i64 {
+    ) -> Result<i64, (ExpiredError<Crypto>, F)> {
         let ctx = &self.0;
         let mut session_queue = ctx.session_queue.lock().unwrap();
         let mut queue_service_time = i64::MAX;
@@ -683,17 +699,18 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                     continue;
                 }
             };
-            let result = process_timers(&mut app, ctx, &session, current_time, |packet, hk_send| {
+            let result = process_timers(app, ctx, &session, current_time, |packet, hk_send| {
                 if let Some((sender, mut mtu)) = send_to.init_send(&session) {
                     mtu = mtu.max(MIN_TRANSPORT_MTU);
                     send_with_fragmentation(sender, mtu, packet, hk_send);
                 }
             });
-            if let Some(next_timer) = result {
+            if let Ok(next_timer) = result {
                 queue_service_time = queue_service_time.min(next_timer);
                 session_queue.change_priority(queue_idx, Reverse(next_timer));
             } else {
                 session.expire_inner(Some(ctx), Some(&mut session_queue));
+                return Err((ExpiredError(session), send_to));
             }
         }
         // This is the only place where `ctx.next_service_time` can be increased. This only works
@@ -714,7 +731,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
         let t2 = defrag_service_time.min(handshake_service_time);
         let t1 = ctx.next_service_time.fetch_min(t2, Ordering::Relaxed);
 
-        t1.min(t2)
+        Ok(t1.min(t2))
     }
     /// Returns the exact timestamp at which either `Context::service` or
     /// `Context::service_scheduled` should be called again.

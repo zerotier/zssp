@@ -83,7 +83,6 @@ pub(crate) const LABEL_RATCHET_STATE: &[u8; 4] = b"ASKR";
 pub(crate) const LABEL_HEADER_KEY: &[u8; 4] = b"ASKH";
 pub(crate) const LABEL_KEX_KEY: &[u8; 4] = b"ASKK";
 
-//pub(crate) const EXPIRE_AFTER_USES: u64 = (1 << 32) - 1;
 pub(crate) const HARD_EXPIRATION: u64 = u64::MAX;
 /// Determines the number of counters a session will remember. If a counter arrives over
 /// this amount out of order relative to other received counters, it is likely to be
