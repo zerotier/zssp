@@ -170,8 +170,8 @@ fn alice_main(
                     Ok(_) => {}
                     Err(e) => {
                         println!("[alice] ERROR {:?}", e);
-                        if let ReceiveError::ByzantineFault(e, _) = e {
-                            assert!(!e.unnatural())
+                        if let ReceiveError::ByzantineFault(e) = e {
+                            assert!(!e.unnatural)
                         }
                     }
                 }
@@ -260,8 +260,8 @@ fn bob_main(
                 Ok(_) => {}
                 Err(e) => {
                     println!("[bob] ERROR {:?}", e);
-                    if let ReceiveError::ByzantineFault(e, _) = e {
-                        assert!(!e.unnatural())
+                    if let ReceiveError::ByzantineFault(e) = e {
+                        assert!(!e.unnatural)
                     }
                 }
             }
