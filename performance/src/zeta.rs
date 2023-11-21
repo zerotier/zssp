@@ -184,12 +184,12 @@ impl<Crypto: CryptoLayer> SymmetricState<Crypto> {
     }
     fn mix_dh(&mut self, hmac: &mut Crypto::Hmac, secret: &Crypto::KeyPair, remote: &Crypto::PublicKey) {
         let mut ecdh_secret = Zeroizing::new([0u8; P384_ECDH_SHARED_SECRET_SIZE]);
-        secret.agree(&remote, &mut ecdh_secret);
+        secret.agree(remote, &mut ecdh_secret);
         self.mix_key(hmac, ecdh_secret.as_ref());
     }
     fn mix_dh_no_init(&mut self, hmac: &mut Crypto::Hmac, secret: &Crypto::KeyPair, remote: &Crypto::PublicKey) {
         let mut ecdh_secret = Zeroizing::new([0u8; P384_ECDH_SHARED_SECRET_SIZE]);
-        secret.agree(&remote, &mut ecdh_secret);
+        secret.agree(remote, &mut ecdh_secret);
         self.mix_key_no_init(hmac, ecdh_secret.as_ref());
     }
 }
@@ -262,7 +262,7 @@ fn remap<Crypto: CryptoLayer>(
     let weak = if let Some(Some(weak)) = state.key_ref(true).recv.kid.as_ref().map(|kid| session_map.remove(kid)) {
         weak
     } else {
-        Arc::downgrade(&session)
+        Arc::downgrade(session)
     };
     let new_kid_recv = gen_kid(session_map.deref(), ctx.rng.lock().unwrap().deref_mut());
     session_map.insert(new_kid_recv, weak);
@@ -332,7 +332,7 @@ pub(crate) fn trans_to_a1<Crypto: CryptoLayer, App: ApplicationLayer<Crypto>>(
 ) -> Result<(Arc<Session<Crypto>>, Option<i64>), OpenError> {
     let RatchetStates { state1, state2 } = app
         .restore_by_identity(&s_remote, &session_data)
-        .map_err(|e| OpenError::StorageError(e))?
+        .map_err(OpenError::StorageError)?
         .unwrap_or_default();
 
     let mut session_queue = ctx.session_queue.lock().unwrap();
@@ -450,7 +450,7 @@ pub(crate) fn received_x1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     i = j;
     // Process message pattern 1 e token.
     let e_remote = noise
-        .read_e_no_init(hash, hmac, &mut i, &x1)
+        .read_e_no_init(hash, hmac, &mut i, x1)
         .ok_or_else(|| fault!(FailedAuth, true))?;
     // Process message pattern 1 es token.
     noise.mix_dh(hmac, &ctx.s_secret, &e_remote);
@@ -609,7 +609,7 @@ pub(crate) fn received_x2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
         let mut i = 0;
         // Process message pattern 2 e token.
         let e_remote = noise
-            .read_e_no_init(hash, hmac, &mut i, &x2)
+            .read_e_no_init(hash, hmac, &mut i, x2)
             .ok_or_else(|| fault!(FailedAuth, true, session))?;
         // Process message pattern 2 ee token.
         noise.mix_dh(hmac, &a1.e_secret, &e_remote);
@@ -643,7 +643,7 @@ pub(crate) fn received_x2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
         // Check for which ratchet key Bob wants to use.
         let mut test_ratchet_key = |ratchet_key| -> Option<(NonZeroU32, SymmetricState<Crypto>)> {
             let mut noise = noise.clone();
-            let mut payload = payload.clone();
+            let mut payload = payload;
             // Process message pattern 2 psk token.
             noise.mix_key_and_hash(hash, hmac, ratchet_key);
             // Process message pattern 2 payload.
@@ -774,7 +774,7 @@ fn send_control<Crypto: CryptoLayer, const CAP: usize>(
     mut payload: ArrayVec<u8, CAP>,
     send: impl FnOnce(&mut [u8], Option<&Crypto::PrpEnc>),
 ) -> Result<(), bool> {
-    if let Some((c, _)) = get_counter(session, &state) {
+    if let Some((c, _)) = get_counter(session, state) {
         if let (Some(kek), Some(kid)) = (state.key_ref(false).send.kek.as_ref(), state.key_ref(false).send.kid) {
             let nonce = to_nonce(packet_type, c);
             let tag = Crypto::Aead::encrypt_in_place(kek, &nonce, &[], &mut payload[HEADER_SIZE..]);
@@ -1386,7 +1386,7 @@ pub(crate) fn received_k1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
         noise.mix_key_and_hash_no_init(hash, hmac, state.ratchet_state1.key.as_ref());
         // Process message pattern 1 e token.
         let e_remote = noise
-            .read_e_no_init(hash, hmac, &mut i, &k1)
+            .read_e_no_init(hash, hmac, &mut i, k1)
             .ok_or_else(|| fault!(FailedAuth, true, session, true))?;
         // Process message pattern 1 es token.
         noise.mix_dh_no_init(hmac, &ctx.s_secret, &e_remote);
@@ -1520,7 +1520,7 @@ pub(crate) fn received_k2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
             let hmac = &mut Crypto::Hmac::new();
             // Process message pattern 2 e token.
             let e_remote = noise
-                .read_e_no_init(hash, hmac, &mut i, &k2)
+                .read_e_no_init(hash, hmac, &mut i, k2)
                 .ok_or_else(|| fault!(FailedAuth, true, session, true))?;
             // Process message pattern 2 ee token.
             noise.mix_dh_no_init(hmac, e_secret, &e_remote);
@@ -1584,14 +1584,14 @@ pub(crate) fn received_k2_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
 
             let mut c1 = ArrayVec::<u8, HEADERED_KEY_CONFIRMATION_SIZE>::new();
             c1.extend([0u8; HEADER_SIZE]);
-            match send_control(&session, &state, PACKET_TYPE_KEY_CONFIRM, c1, send) {
+            match send_control(session, &state, PACKET_TYPE_KEY_CONFIRM, c1, send) {
                 Ok(()) => Ok(reduced_service_time),
                 Err(false) => Err(fault!(OutOfSequence, true, session)),
                 Err(true) => Err(fault!(ExpiredCounter, true, session, true)),
             }
         } else {
             // Some rekey packet may have arrived extremely delayed.
-            return Err(fault!(OutOfSequence, false, session));
+            Err(fault!(OutOfSequence, false, session))
         }
     })();
 

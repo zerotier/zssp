@@ -483,7 +483,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                     // This can occur naturally because either Bob's incoming_sessions cache got
                     // full so Alice's incoming session was dropped, or the session this packet
                     // was for was dropped by the application.
-                    return Err(fault!(UnknownLocalKeyId, false));
+                    Err(fault!(UnknownLocalKeyId, false))
                 }
             }
         } else {
