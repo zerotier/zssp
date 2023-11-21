@@ -16,18 +16,18 @@ struct PacketMetadata {
     creation_time: i64,
 }
 
-pub(crate) struct UnassociatedFragCache<Crypto: CryptoLayer> {
+pub(crate) struct UnassociatedFragCache<C: CryptoLayer> {
     dos_salt: RandomState,
     frags_first_unused: usize,
     frags_unused_size: usize,
     map: [PacketMetadata; MAX_UNASSOCIATED_PACKETS],
-    frags: [MaybeUninit<Crypto::IncomingPacketBuffer>; MAX_UNASSOCIATED_FRAGMENTS],
+    frags: [MaybeUninit<C::IncomingPacketBuffer>; MAX_UNASSOCIATED_FRAGMENTS],
     map_idx: [u32; MAX_UNASSOCIATED_FRAGMENTS],
 }
 /// A combination of a hash table cache and a ring buffer for unassociated fragments.
 /// Designed specifically to be extremely DDOS resistant.
 /// This datastructure takes raw unauthenticated fragments straight from the network.
-impl<Crypto: CryptoLayer> UnassociatedFragCache<Crypto> {
+impl<C: CryptoLayer> UnassociatedFragCache<C> {
     pub(crate) fn new() -> Self {
         Self {
             dos_salt: RandomState::new(),
@@ -53,11 +53,11 @@ impl<Crypto: CryptoLayer> UnassociatedFragCache<Crypto> {
         nonce: &[u8; AES_GCM_NONCE_SIZE],
         remote_address: impl Hash,
         fragment_size: usize,
-        fragment: Crypto::IncomingPacketBuffer,
+        fragment: C::IncomingPacketBuffer,
         fragment_no: usize,
         fragment_count: usize,
         current_time: i64,
-        ret_assembled: &mut Assembled<Crypto::IncomingPacketBuffer>,
+        ret_assembled: &mut Assembled<C::IncomingPacketBuffer>,
     ) -> Option<i64> {
         debug_assert!(MAX_FRAGMENTS < MAX_UNASSOCIATED_FRAGMENTS);
         if fragment_no >= fragment_count
@@ -95,7 +95,7 @@ impl<Crypto: CryptoLayer> UnassociatedFragCache<Crypto> {
         } else if self.map[idx0].key == 0 || self.map[idx1].key == 0 {
             if fragment_count > self.frags_unused_size {
                 // There are not enough free fragment slots so attempt to expire a bunch of entries.
-                let _ = self.check_for_expiry_inner(Crypto::SETTINGS.resend_time as i64, current_time);
+                let _ = self.check_for_expiry_inner(C::SETTINGS.resend_time as i64, current_time);
             }
             if self.map[idx0].key == 0 {
                 idx0
@@ -104,7 +104,7 @@ impl<Crypto: CryptoLayer> UnassociatedFragCache<Crypto> {
             }
         } else {
             // No room for a new entry so attempt to expire a bunch of entries.
-            let _ = self.check_for_expiry_inner(Crypto::SETTINGS.resend_time as i64, current_time);
+            let _ = self.check_for_expiry_inner(C::SETTINGS.resend_time as i64, current_time);
             if self.map[idx0].key == 0 {
                 idx0
             } else if self.map[idx1].key == 0 {
@@ -118,7 +118,7 @@ impl<Crypto: CryptoLayer> UnassociatedFragCache<Crypto> {
         if self.map[idx].key == 0 {
             // This is a new entry so initialize it.
             if fragment_count <= self.frags_unused_size {
-                new_expiry = Some(current_time + Crypto::SETTINGS.fragment_assembly_timeout as i64);
+                new_expiry = Some(current_time + C::SETTINGS.fragment_assembly_timeout as i64);
                 let entry = &mut self.map[idx];
                 entry.key = key;
                 entry.frags_idx = self.frags_first_unused as u32;
@@ -166,7 +166,7 @@ impl<Crypto: CryptoLayer> UnassociatedFragCache<Crypto> {
     }
     /// Returns the timestamp at which this function should be called again.
     pub(crate) fn check_for_expiry(&mut self, current_time: i64) -> i64 {
-        self.check_for_expiry_inner(Crypto::SETTINGS.fragment_assembly_timeout as i64, current_time)
+        self.check_for_expiry_inner(C::SETTINGS.fragment_assembly_timeout as i64, current_time)
     }
     fn check_for_expiry_inner(&mut self, timeout: i64, current_time: i64) -> i64 {
         while self.frags_unused_size < self.frags.len() {
@@ -219,7 +219,7 @@ impl<Crypto: CryptoLayer> UnassociatedFragCache<Crypto> {
         }
     }
 }
-impl<Crypto: CryptoLayer> Drop for UnassociatedFragCache<Crypto> {
+impl<C: CryptoLayer> Drop for UnassociatedFragCache<C> {
     fn drop(&mut self) {
         for i in 0..self.map.len() {
             if self.map[i].key != 0 {
@@ -243,8 +243,8 @@ fn test_cache() {
         r.wrapping_mul(0x2545F4914F6CDD1Du64)
     }
     use crate::crypto_impl::*;
-    struct Crypto {}
-    impl CryptoLayer for Crypto {
+    struct C {}
+    impl CryptoLayer for C {
         type Rng = rand_core::OsRng;
         type PrpEnc = OpenSSLAes256Enc;
         type PrpDec = OpenSSLAes256Dec;
@@ -261,7 +261,7 @@ fn test_cache() {
         type IncomingPacketBuffer = Vec<u8>;
     }
 
-    let mut cache = UnassociatedFragCache::<Crypto>::new();
+    let mut cache = UnassociatedFragCache::<C>::new();
     let mut assembled = Assembled::new();
 
     let mut time = 0;
@@ -317,38 +317,36 @@ fn test_cache() {
                 assert!(assembled.is_empty(), "Cache returned an incomplete packet");
             }
         }
-        if r > 200 {
-            if in_progress.len() > 0 {
-                let to_remain = (xorshift64_random() as usize % in_progress_fragments) + 16;
-                while in_progress_fragments > to_remain {
-                    let (id, fragment_count, mut packet) =
-                        in_progress.swap_remove(xorshift64_random() as usize % in_progress.len());
-                    for _ in 0..((xorshift64_random() as usize % packet.len()) + 1) {
-                        let (no, fragment) = packet.swap_remove(xorshift64_random() as usize % packet.len());
+        if r > 200 && !in_progress.is_empty() {
+            let to_remain = (xorshift64_random() as usize % in_progress_fragments) + 16;
+            while in_progress_fragments > to_remain {
+                let (id, fragment_count, mut packet) =
+                    in_progress.swap_remove(xorshift64_random() as usize % in_progress.len());
+                for _ in 0..((xorshift64_random() as usize % packet.len()) + 1) {
+                    let (no, fragment) = packet.swap_remove(xorshift64_random() as usize % packet.len());
 
-                        assembled.clear();
-                        let mut nonce = [0; 12];
-                        nonce[..4].copy_from_slice(&id.to_be_bytes());
-                        cache.assemble(
-                            &nonce,
-                            0,
-                            fragment.len(),
-                            fragment,
-                            no as usize,
-                            fragment_count as usize,
-                            time,
-                            &mut assembled,
-                        );
-                        time += 200;
-                        in_progress_fragments -= 1;
+                    assembled.clear();
+                    let mut nonce = [0; 12];
+                    nonce[..4].copy_from_slice(&id.to_be_bytes());
+                    cache.assemble(
+                        &nonce,
+                        0,
+                        fragment.len(),
+                        fragment,
+                        no as usize,
+                        fragment_count as usize,
+                        time,
+                        &mut assembled,
+                    );
+                    time += 200;
+                    in_progress_fragments -= 1;
 
-                        if packet.len() > 0 {
-                            assert!(assembled.is_empty(), "Cache returned an incomplete packet");
-                        }
+                    if !packet.is_empty() {
+                        assert!(assembled.is_empty(), "Cache returned an incomplete packet");
                     }
-                    if packet.len() > 0 {
-                        in_progress.push((id, fragment_count, packet));
-                    }
+                }
+                if !packet.is_empty() {
+                    in_progress.push((id, fragment_count, packet));
                 }
             }
         }

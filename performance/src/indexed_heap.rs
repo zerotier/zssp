@@ -31,7 +31,11 @@ pub struct IndexedBinaryHeap<T, P> {
     data: Vec<(T, P, usize)>,
     map: Vec<(usize, u64)>,
 }
-
+impl<T, P: Ord> Default for IndexedBinaryHeap<T, P> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 impl<T, P: Ord> IndexedBinaryHeap<T, P> {
     /// Create a new, empty binary heap.
     pub fn new() -> Self {

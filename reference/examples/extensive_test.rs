@@ -65,9 +65,7 @@ impl CryptoLayer for TestApplication {
     type SessionData = u128;
 }
 #[allow(unused)]
-impl ApplicationLayer for &mut TestApplication {
-    type Crypto = TestApplication;
-
+impl ApplicationLayer<TestApplication> for &mut TestApplication {
     fn hello_requires_recognized_ratchet(&mut self) -> bool {
         false
     }
@@ -159,7 +157,7 @@ fn alice_main(
                         &mut alice_app,
                         |b| alice_out.send(b).is_ok(),
                         TEST_MTU,
-                        bob_pubkey.clone(),
+                        bob_pubkey,
                         0,
                         Vec::new(),
                     )

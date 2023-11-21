@@ -182,7 +182,7 @@ pub trait CryptoLayer: Sized {
 ///
 /// Templating ZSSP on this trait lets the code here be almost entirely transport, OS,
 /// and use case independent.
-pub trait ApplicationLayer<Crypto: CryptoLayer>: Sized {
+pub trait ApplicationLayer<C: CryptoLayer>: Sized {
     /// Should return the current time in milliseconds. Does not have to be monotonic, nor synced
     /// with remote peers (although both of these properties would help reliability slightly).
     /// Used to determine if any current handshakes should be resent or timed-out, or if a session
@@ -228,7 +228,7 @@ pub trait ApplicationLayer<Crypto: CryptoLayer>: Sized {
     ///
     /// Corresponds to the "Initiator Disallows Downgrade, π_2" security flag of Transition
     /// Algorithm 3 within the ZSSP whitepaper.
-    fn initiator_disallows_downgrade(&mut self, session: &Arc<Session<Crypto>>) -> bool;
+    fn initiator_disallows_downgrade(&mut self, session: &Arc<Session<C>>) -> bool;
     /// Function to accept sessions after final negotiation.
     ///
     /// The implementor must verify that three arguments, `remote_static_key`, `identity` and
@@ -244,10 +244,10 @@ pub trait ApplicationLayer<Crypto: CryptoLayer>: Sized {
     /// Corresponds to the **Accept** call of Transition Algorithm 4 within the ZSSP whitepaper.
     fn check_accept_session(
         &mut self,
-        remote_static_key: &Crypto::PublicKey,
+        remote_static_key: &C::PublicKey,
         identity: &[u8],
-        fingerprint_data: Option<&Crypto::FingerprintData>,
-    ) -> AcceptAction<Crypto>;
+        fingerprint_data: Option<&C::FingerprintData>,
+    ) -> AcceptAction<C>;
 
     /// Lookup a specific ratchet state based on its ratchet fingerprint.
     /// This function will be called whenever Alice attempts to connect to us with a non-empty
@@ -272,7 +272,7 @@ pub trait ApplicationLayer<Crypto: CryptoLayer>: Sized {
     fn restore_by_fingerprint(
         &mut self,
         ratchet_fingerprint: &[u8; RATCHET_SIZE],
-    ) -> Result<Option<(RatchetState, Crypto::FingerprintData)>, std::io::Error>;
+    ) -> Result<Option<(RatchetState, C::FingerprintData)>, std::io::Error>;
     /// Lookup the specific ratchet states based on the identity of the peer being communicated with.
     /// This function will be called whenever Alice attempts to open a session, or Bob attempts
     /// to verify Alice's identity.
@@ -291,9 +291,9 @@ pub trait ApplicationLayer<Crypto: CryptoLayer>: Sized {
     /// Corresponds to the **Restore** call of Transition Algorithm 1 and 4 within the ZSSP whitepaper.
     fn restore_by_identity(
         &mut self,
-        remote_static_key: &Crypto::PublicKey,
-        session_data: &Crypto::SessionData,
-        fingerprint_data: Option<&Crypto::FingerprintData>,
+        remote_static_key: &C::PublicKey,
+        session_data: &C::SessionData,
+        fingerprint_data: Option<&C::FingerprintData>,
     ) -> Result<Option<RatchetStates>, std::io::Error>;
     /// Atomically commit the update specified by `update_data` to storage, or return an error if
     /// the update could not be made.
@@ -313,8 +313,8 @@ pub trait ApplicationLayer<Crypto: CryptoLayer>: Sized {
     /// Otherwise, when we restart, we will not be allowed to reconnect.
     fn save_ratchet_state(
         &mut self,
-        remote_static_key: &Crypto::PublicKey,
-        session_data: &Crypto::SessionData,
+        remote_static_key: &C::PublicKey,
+        session_data: &C::SessionData,
         update_data: RatchetUpdate<'_>,
     ) -> Result<(), std::io::Error>;
 
@@ -323,7 +323,7 @@ pub trait ApplicationLayer<Crypto: CryptoLayer>: Sized {
     /// nothing else. Do not base protocol-level decisions upon the events passed to this function.
     #[cfg(feature = "logging")]
     #[allow(unused)]
-    fn event_log(&mut self, event: crate::LogEvent<'_, Crypto>) {}
+    fn event_log(&mut self, event: crate::LogEvent<'_, C>) {}
 }
 
 /// Possible responses that can be made to Hello packets from an anonymous peer.
@@ -350,10 +350,10 @@ pub enum IncomingSessionAction {
 /// used by Bob, the responder, at the very last stage of the key exchange.
 ///
 /// Corresponds to the *Accept* callback of Transition Algorithm 4.
-pub struct AcceptAction<Crypto: CryptoLayer> {
+pub struct AcceptAction<C: CryptoLayer> {
     /// The data object to be attached to the session if we successfully connect.
     /// If this field is None then we will not connect to this remote peer.
-    pub session_data: Option<Crypto::SessionData>,
+    pub session_data: Option<C::SessionData>,
     /// Whether or not we will accept a connection with the remote peer when they do not have a
     /// ratchet key that we think they should have.
     ///
@@ -385,8 +385,8 @@ pub trait Sender {
 /// A trait to genericize the process of borrowing the resources necessary to repeatedly
 /// send packet fragments on some socket or network interface.
 ///
-/// Is implemented by `FnMut(&Arc<Session<Crypto>>) -> Option<(Sender, usize)>` closures.
-pub trait SendTo<Crypto: CryptoLayer> {
+/// Is implemented by `FnMut(&Arc<Session<C>>) -> Option<(Sender, usize)>` closures.
+pub trait SendTo<C: CryptoLayer> {
     /// The `Sender` implementation that this `SendTo` implementation will return.
     ///
     /// It is allowed to have a lifetime that is borrowed from the `SendTo` instance
@@ -394,7 +394,7 @@ pub trait SendTo<Crypto: CryptoLayer> {
     /// in situations where that is more efficient.
     type Sender<'a>: Sender
     where
-        Crypto: 'a,
+        C: 'a,
         Self: 'a;
     /// Attempt to process and borrow the resources necessary to repeatedly send fragments of a
     /// packet to the given session.
@@ -405,7 +405,7 @@ pub trait SendTo<Crypto: CryptoLayer> {
     /// only called once.
     ///
     /// If `None` is returned then sending to this session is cancelled.
-    fn init_send<'a>(&'a mut self, session: &'a Arc<Session<Crypto>>) -> Option<(Self::Sender<'a>, usize)>;
+    fn init_send<'a>(&'a mut self, session: &'a Arc<Session<C>>) -> Option<(Self::Sender<'a>, usize)>;
 }
 
 impl<F: FnMut(&mut [u8]) -> bool> Sender for F {
@@ -414,9 +414,9 @@ impl<F: FnMut(&mut [u8]) -> bool> Sender for F {
     }
 }
 
-impl<Crypto: CryptoLayer, F: FnMut(&Arc<Session<Crypto>>) -> Option<(S, usize)>, S: Sender> SendTo<Crypto> for F {
-    type Sender<'a> = S where Crypto: 'a, F: 'a;
-    fn init_send<'a>(&'a mut self, session: &'a Arc<Session<Crypto>>) -> Option<(S, usize)> {
+impl<C: CryptoLayer, F: FnMut(&Arc<Session<C>>) -> Option<(S, usize)>, S: Sender> SendTo<C> for F {
+    type Sender<'a> = S where C: 'a, F: 'a;
+    fn init_send<'a>(&'a mut self, session: &'a Arc<Session<C>>) -> Option<(S, usize)> {
         self(session)
     }
 }

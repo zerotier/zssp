@@ -166,7 +166,7 @@ fn alice_main(
                 alice_app,
                 |b: &mut [u8]| alice_out.send(b.to_vec()).is_ok(),
                 TEST_MTU,
-                bob_pubkey.clone(),
+                bob_pubkey,
                 0,
                 &[],
             );

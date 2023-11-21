@@ -5,19 +5,19 @@ use crate::zeta::Session;
 
 /// ZSSP events that might be interesting to log or aggregate into metrics.
 #[allow(missing_docs)]
-pub enum LogEvent<'a, Crypto: CryptoLayer> {
-    ResentX1(&'a Arc<Session<Crypto>>),
-    TimeoutX1(&'a Arc<Session<Crypto>>),
+pub enum LogEvent<'a, C: CryptoLayer> {
+    ResentX1(&'a Arc<Session<C>>),
+    TimeoutX1(&'a Arc<Session<C>>),
     TimeoutX2,
-    ResentX3(&'a Arc<Session<Crypto>>),
-    TimeoutX3(&'a Arc<Session<Crypto>>),
-    ResentKeyConfirm(&'a Arc<Session<Crypto>>),
-    TimeoutKeyConfirm(&'a Arc<Session<Crypto>>),
-    StartedRekeyingSentK1(&'a Arc<Session<Crypto>>),
-    ResentK1(&'a Arc<Session<Crypto>>),
-    TimeoutK1(&'a Arc<Session<Crypto>>),
-    ResentK2(&'a Arc<Session<Crypto>>),
-    TimeoutK2(&'a Arc<Session<Crypto>>),
+    ResentX3(&'a Arc<Session<C>>),
+    TimeoutX3(&'a Arc<Session<C>>),
+    ResentKeyConfirm(&'a Arc<Session<C>>),
+    TimeoutKeyConfirm(&'a Arc<Session<C>>),
+    StartedRekeyingSentK1(&'a Arc<Session<C>>),
+    ResentK1(&'a Arc<Session<C>>),
+    TimeoutK1(&'a Arc<Session<C>>),
+    ResentK2(&'a Arc<Session<C>>),
+    TimeoutK2(&'a Arc<Session<C>>),
     /// `(packet_type, packet_counter, fragment_no, fragment_count)`
     ReceivedRawFragment(u8, u64, usize, usize),
     ReceivedRawX1,
@@ -25,24 +25,24 @@ pub enum LogEvent<'a, Crypto: CryptoLayer> {
     X1SucceededChallenge,
     X1IsAuthSentX2,
     ReceivedRawChallenge,
-    ChallengeIsAuth(&'a Arc<Session<Crypto>>),
+    ChallengeIsAuth(&'a Arc<Session<C>>),
     ReceivedRawX2,
-    X2IsAuthSentX3(&'a Arc<Session<Crypto>>),
+    X2IsAuthSentX3(&'a Arc<Session<C>>),
     ReceivedRawX3,
-    X3IsAuthSentKeyConfirm(&'a Arc<Session<Crypto>>),
+    X3IsAuthSentKeyConfirm(&'a Arc<Session<C>>),
     ReceivedRawKeyConfirm,
-    KeyConfirmIsAuthSentAck(&'a Arc<Session<Crypto>>),
+    KeyConfirmIsAuthSentAck(&'a Arc<Session<C>>),
     ReceivedRawAck,
-    AckIsAuth(&'a Arc<Session<Crypto>>),
+    AckIsAuth(&'a Arc<Session<C>>),
     ReceivedRawK1,
-    K1IsAuthSentK2(&'a Arc<Session<Crypto>>),
+    K1IsAuthSentK2(&'a Arc<Session<C>>),
     ReceivedRawK2,
-    K2IsAuthSentKeyConfirm(&'a Arc<Session<Crypto>>),
+    K2IsAuthSentKeyConfirm(&'a Arc<Session<C>>),
     ReceivedRawD,
-    DIsAuthClosedSession(&'a Arc<Session<Crypto>>),
+    DIsAuthClosedSession(&'a Arc<Session<C>>),
 }
 
-impl<'a, Crypto: CryptoLayer> std::fmt::Debug for LogEvent<'a, Crypto> {
+impl<'a, C: CryptoLayer> std::fmt::Debug for LogEvent<'a, C> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::ResentX1(_) => f.debug_tuple("ResentX1").finish(),

@@ -24,7 +24,7 @@ pub fn respond_to_challenge_in_place<Rng: RngCore + CryptoRng, Hash: Sha512Hash>
     challenge: &[u8; CHALLENGE_SIZE],
     pre_response: &mut [u8; CHALLENGE_SIZE],
 ) {
-    if &challenge[POW_START..] == &pre_response[POW_START..] {
+    if challenge[POW_START..] == pre_response[POW_START..] {
         pre_response.copy_from_slice(challenge);
         let mut pow = rng.next_u64();
         loop {
@@ -80,7 +80,6 @@ impl ChallengeContext {
         hasher.write(&c.to_be_bytes());
         addr.hash(&mut hasher);
         hasher.write(&self.salt);
-        drop(hasher);
 
         let mac = h.finish();
         mac[..MAC_SIZE].try_into().unwrap()

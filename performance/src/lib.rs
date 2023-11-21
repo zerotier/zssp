@@ -37,6 +37,7 @@
 //!  - **AES-256**: Single block encryption of header to harden packet fragmentation protocol
 //!  - **AES-256-GCM**: Authenticated encryption
 //#![warn(missing_docs, rust_2018_idioms)]
+#![allow(clippy::too_many_arguments, clippy::type_complexity, clippy::assertions_on_constants)]
 pub mod crypto;
 pub mod crypto_impl;
 

@@ -37,43 +37,43 @@ pub(crate) use log;
 /// defragment incoming packets that are not yet associated with a session.
 ///
 /// Internally this is just a clonable Arc, so it can be safely shared with multiple threads.
-pub struct Context<Crypto: CryptoLayer>(pub Arc<ContextInner<Crypto>>);
-impl<Crypto: CryptoLayer> Clone for Context<Crypto> {
+pub struct Context<C: CryptoLayer>(pub Arc<ContextInner<C>>);
+impl<C: CryptoLayer> Clone for Context<C> {
     fn clone(&self) -> Self {
         Self(self.0.clone())
     }
 }
 
-pub(crate) type SessionMap<Crypto> = RwLock<HashMap<NonZeroU32, Weak<Session<Crypto>>>>;
+pub(crate) type SessionMap<C> = RwLock<HashMap<NonZeroU32, Weak<Session<C>>>>;
 
-pub(crate) type SessionQueue<Crypto> = IndexedBinaryHeap<Weak<Session<Crypto>>, Reverse<i64>>;
+pub(crate) type SessionQueue<C> = IndexedBinaryHeap<Weak<Session<C>>, Reverse<i64>>;
 
 /// The internal memory of the ZSSP context.
 /// One of these is allocated as an `Arc` to initialize this implementation of ZSSP.
 /// See `Context::new`.
-pub struct ContextInner<Crypto: CryptoLayer> {
+pub struct ContextInner<C: CryptoLayer> {
     /// The `CryptoRng` instance that was passed to ZSSP when this context was created.
-    pub rng: Mutex<Crypto::Rng>,
+    pub rng: Mutex<C::Rng>,
     pub(crate) next_service_time: AtomicI64,
-    pub(crate) s_secret: Crypto::KeyPair,
+    pub(crate) s_secret: C::KeyPair,
     /// `session_queue -> state_machine_lock -> state -> session_map`
-    pub(crate) session_queue: Mutex<SessionQueue<Crypto>>,
+    pub(crate) session_queue: Mutex<SessionQueue<C>>,
     /// `session_queue -> state_machine_lock -> state -> session_map`
-    pub(crate) session_map: SessionMap<Crypto>,
-    pub(crate) unassociated_defrag_cache: Mutex<UnassociatedFragCache<Crypto>>,
-    pub(crate) unassociated_handshake_states: UnassociatedHandshakeCache<Crypto>,
+    pub(crate) session_map: SessionMap<C>,
+    pub(crate) unassociated_defrag_cache: Mutex<UnassociatedFragCache<C>>,
+    pub(crate) unassociated_handshake_states: UnassociatedHandshakeCache<C>,
 
     pub(crate) challenge: ChallengeContext,
 }
-impl<Crypto: CryptoLayer> ContextInner<Crypto> {
+impl<C: CryptoLayer> ContextInner<C> {
     pub(crate) fn reduce_next_service_time(&self, time: i64) -> Option<i64> {
         (self.next_service_time.fetch_min(time, Ordering::Relaxed) > time).then_some(time)
     }
 }
 
-fn parse_fragment_header<Crypto: CryptoLayer>(
+fn parse_fragment_header<C: CryptoLayer>(
     incoming_fragment: &[u8],
-) -> Result<(usize, usize, [u8; AES_GCM_NONCE_SIZE]), ReceiveError<Crypto>> {
+) -> Result<(usize, usize, [u8; AES_GCM_NONCE_SIZE]), ReceiveError<C>> {
     let fragment_no = incoming_fragment[FRAGMENT_NO_IDX] as usize;
     let fragment_count = incoming_fragment[FRAGMENT_COUNT_IDX] as usize;
     if fragment_no >= fragment_count || fragment_count > MAX_FRAGMENTS {
@@ -122,9 +122,9 @@ fn send_with_fragmentation<PrpEnc: Aes256Enc>(
     true
 }
 
-impl<Crypto: CryptoLayer> Context<Crypto> {
+impl<C: CryptoLayer> Context<C> {
     /// Create a new session context.
-    pub fn new(static_secret_key: Crypto::KeyPair, mut rng: Crypto::Rng) -> Self {
+    pub fn new(static_secret_key: C::KeyPair, mut rng: C::Rng) -> Self {
         let challenge = ChallengeContext::new(&mut rng);
         Self(Arc::new(ContextInner {
             rng: Mutex::new(rng),
@@ -160,15 +160,15 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
     ///   object
     /// * `identity` - Payload to be sent to Bob that contains the information necessary
     ///   for the upper protocol to authenticate and approve of Alice's identity.
-    pub fn open<App: ApplicationLayer<Crypto>>(
+    pub fn open<App: ApplicationLayer<C>>(
         &self,
         app: App,
         send: impl Sender,
         mut mtu: usize,
-        static_remote_key: Crypto::PublicKey,
-        session_data: Crypto::SessionData,
+        static_remote_key: C::PublicKey,
+        session_data: C::SessionData,
         identity: &[u8],
-    ) -> Result<(Arc<Session<Crypto>>, Option<i64>), OpenError> {
+    ) -> Result<(Arc<Session<C>>, Option<i64>), OpenError> {
         mtu = mtu.max(MIN_TRANSPORT_MTU);
         if identity.len() > IDENTITY_MAX_SIZE {
             return Err(OpenError::IdentityTooLarge);
@@ -199,16 +199,16 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
     /// * `remote_address` - Whatever the remote address is, as long as you can Hash it
     /// * `incoming_fragment_buf` - Buffer containing incoming wire packet (the context takes ownership)
     /// * `output_buffer` - Buffer to receive decrypted and authenticated object data
-    pub fn receive<'a, App: ApplicationLayer<Crypto>>(
+    pub fn receive<App: ApplicationLayer<C>>(
         &self,
         mut app: App,
         mut send_unassociated_reply: impl Sender,
         mut send_unassociated_mtu: usize,
-        mut send_to: impl SendTo<Crypto>,
+        mut send_to: impl SendTo<C>,
         remote_address: &impl Hash,
-        mut incoming_fragment_buf: Crypto::IncomingPacketBuffer,
+        mut incoming_fragment_buf: C::IncomingPacketBuffer,
         output_buffer: impl Write,
-    ) -> Result<(ReceiveOk<Crypto>, Option<i64>), ReceiveError<Crypto>> {
+    ) -> Result<(ReceiveOk<C>, Option<i64>), ReceiveError<C>> {
         use crate::result::FaultType::*;
         let ctx = &self.0;
         send_unassociated_mtu = send_unassociated_mtu.max(MIN_TRANSPORT_MTU);
@@ -324,7 +324,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                         &mut incoming_fragment_buf.as_mut()[HEADER_SIZE..]
                     };
 
-                    let send_associated = |packet: &mut [u8], hk_send: Option<&Crypto::PrpEnc>| {
+                    let send_associated = |packet: &mut [u8], hk_send: Option<&C::PrpEnc>| {
                         if let Some((sender, mut mtu)) = send_to.init_send(&session) {
                             mtu = mtu.max(MIN_TRANSPORT_MTU);
                             send_with_fragmentation(sender, mtu, packet, hk_send);
@@ -416,7 +416,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                 // Check for and handle PACKET_TYPE_ALICE_NOISE_XK_PATTERN_3
                 let zeta = self.0.unassociated_handshake_states.get(kid_recv);
                 if let Some(zeta) = zeta {
-                    Crypto::PrpDec::new(&zeta.hk_recv).decrypt_in_place(
+                    C::PrpDec::new(&zeta.hk_recv).decrypt_in_place(
                         (&mut incoming_fragment[HEADER_AUTH_START..HEADER_AUTH_END])
                             .try_into()
                             .unwrap(),
@@ -535,7 +535,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                 }
                 // Process recv challenge layer.
                 let challenge_start = assembled_packet.len() - CHALLENGE_SIZE;
-                let hash = &mut Crypto::Hash::new();
+                let hash = &mut C::Hash::new();
                 match app.incoming_session() {
                     IncomingSessionAction::Allow => {}
                     IncomingSessionAction::Challenge => {
@@ -616,7 +616,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
     /// * `data` - Data to send
     pub fn send(
         &self,
-        session: &Session<Crypto>,
+        session: &Session<C>,
         send: impl Sender,
         mtu_sized_buffer: &mut [u8],
         data: &[u8],
@@ -631,7 +631,7 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
     ///
     /// * `app` - Interface to application using ZSSP
     /// * `send_to` - Function to get a sender and an MTU to send something over an active session
-    pub fn service<App: ApplicationLayer<Crypto>>(&self, mut app: App, mut send_to: impl SendTo<Crypto>) -> i64 {
+    pub fn service<App: ApplicationLayer<C>>(&self, mut app: App, mut send_to: impl SendTo<C>) -> i64 {
         let current_time = app.time();
         let next_service_time = loop {
             match self.service_inner(&mut app, send_to, current_time) {
@@ -639,10 +639,10 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
                 Err((_, s)) => send_to = s,
             }
         };
-        let max_interval = Crypto::SETTINGS
+        let max_interval = C::SETTINGS
             .fragment_assembly_timeout
-            .min(Crypto::SETTINGS.rekey_timeout)
-            .min(Crypto::SETTINGS.initial_offer_timeout);
+            .min(C::SETTINGS.rekey_timeout)
+            .min(C::SETTINGS.initial_offer_timeout);
 
         (next_service_time - current_time).min(max_interval as i64)
     }
@@ -667,20 +667,20 @@ impl<Crypto: CryptoLayer> Context<Crypto> {
     ///
     /// * `app` - Interface to application using ZSSP
     /// * `send_to` - Function to get a sender and an MTU to send something over an active session
-    pub fn service_scheduled<App: ApplicationLayer<Crypto>>(
+    pub fn service_scheduled<App: ApplicationLayer<C>>(
         &self,
         mut app: App,
-        send_to: impl SendTo<Crypto>,
-    ) -> Result<i64, ExpiredError<Crypto>> {
+        send_to: impl SendTo<C>,
+    ) -> Result<i64, ExpiredError<C>> {
         let current_time = app.time();
         self.service_inner(&mut app, send_to, current_time).map_err(|e| e.0)
     }
-    fn service_inner<App: ApplicationLayer<Crypto>, F: SendTo<Crypto>>(
+    fn service_inner<App: ApplicationLayer<C>, F: SendTo<C>>(
         &self,
         app: &mut App,
         mut send_to: F,
         current_time: i64,
-    ) -> Result<i64, (ExpiredError<Crypto>, F)> {
+    ) -> Result<i64, (ExpiredError<C>, F)> {
         let ctx = &self.0;
         let mut session_queue = ctx.session_queue.lock().unwrap();
         let mut queue_service_time = i64::MAX;
