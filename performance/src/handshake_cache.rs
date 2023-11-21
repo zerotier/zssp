@@ -10,10 +10,10 @@ pub(crate) struct UnassociatedHandshakeCache<Application: CryptoLayer> {
     cache: RwLock<CacheInner<Application>>,
 }
 /// SoA format
-struct CacheInner<Crypto: CryptoLayer> {
+struct CacheInner<C: CryptoLayer> {
     local_ids: [Option<NonZeroU32>; MAX_UNASSOCIATED_HANDSHAKE_STATES],
     expiries: [i64; MAX_UNASSOCIATED_HANDSHAKE_STATES],
-    handshakes: [Option<Arc<StateB2<Crypto>>>; MAX_UNASSOCIATED_HANDSHAKE_STATES],
+    handshakes: [Option<Arc<StateB2<C>>>; MAX_UNASSOCIATED_HANDSHAKE_STATES],
 }
 
 /// Linear-search cache for capping the memory consumption of handshake data.
