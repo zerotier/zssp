@@ -201,7 +201,7 @@ impl<C: CryptoLayer> Context<C> {
                     let (p, _) = from_nonce(&pn);
                     let ret = match p {
                         PACKET_TYPE_DATA => {
-                            received_payload_in_place::<C, App>(
+                            received_payload_in_place::<C>(
                                 &mut zeta,
                                 kid_recv,
                                 to_aes_nonce(&pn),
@@ -291,7 +291,7 @@ impl<C: CryptoLayer> Context<C> {
                         }
                         PACKET_TYPE_SESSION_REJECTED => {
                             log!(app, ReceivedRawD);
-                            received_d_trans::<C, App>(&mut zeta, kid_recv, to_aes_nonce(&pn), assembled_packet)?;
+                            received_d_trans::<C>(&mut zeta, kid_recv, to_aes_nonce(&pn), assembled_packet)?;
                             log!(app, DIsAuthClosedSession(&session));
                             SessionEvent::Rejected
                         }
@@ -432,7 +432,7 @@ impl<C: CryptoLayer> Context<C> {
                     {
                         if let Some(Some(session)) = ctx.session_map.borrow_mut().get(&kid_recv).map(|r| r.upgrade()) {
                             let mut zeta = session.0.borrow_mut();
-                            respond_to_challenge::<C, App>(
+                            respond_to_challenge::<C>(
                                 &mut zeta,
                                 &ctx.rng,
                                 &assembled_packet[KID_SIZE..].try_into().unwrap(),

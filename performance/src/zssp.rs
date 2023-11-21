@@ -199,7 +199,7 @@ impl<C: CryptoLayer> Context<C> {
     /// * `remote_address` - Whatever the remote address is, as long as you can Hash it
     /// * `incoming_fragment_buf` - Buffer containing incoming wire packet (the context takes ownership)
     /// * `output_buffer` - Buffer to receive decrypted and authenticated object data
-    pub fn receive<'a, App: ApplicationLayer<C>>(
+    pub fn receive<App: ApplicationLayer<C>>(
         &self,
         mut app: App,
         mut send_unassociated_reply: impl Sender,

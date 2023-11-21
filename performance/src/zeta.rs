@@ -432,7 +432,7 @@ pub(crate) fn received_x1_trans<C: CryptoLayer, App: ApplicationLayer<C>>(
         return Err(fault!(InvalidPacket, true));
     }
 
-    if &n[AES_GCM_NONCE_SIZE - 8..] != &x1[x1.len() - 8..] {
+    if n[AES_GCM_NONCE_SIZE - 8..] != x1[x1.len() - 8..] {
         return Err(fault!(FailedAuth, true));
     }
     let hmac = &mut C::Hmac::new();
@@ -591,7 +591,7 @@ pub(crate) fn received_x2_trans<C: CryptoLayer, App: ApplicationLayer<C>>(
         return Err(fault!(UnknownLocalKeyId, true, session));
     }
     let (_, c) = from_nonce(n);
-    if c >= COUNTER_WINDOW_MAX_SKIP_AHEAD || &n[AES_GCM_NONCE_SIZE - 3..] != &x2[x2.len() - 3..] {
+    if c >= COUNTER_WINDOW_MAX_SKIP_AHEAD || n[AES_GCM_NONCE_SIZE - 3..] != x2[x2.len() - 3..] {
         return Err(fault!(FailedAuth, true, session));
     }
 
@@ -690,7 +690,7 @@ pub(crate) fn received_x2_trans<C: CryptoLayer, App: ApplicationLayer<C>>(
         let tag = noise.encrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_HANDSHAKE_COMPLETION, 0), &mut x3[i..]);
         x3.extend(tag);
 
-        let new_ratchet_state = create_ratchet_state(hmac, &mut noise, chain_len);
+        let new_ratchet_state = create_ratchet_state(hmac, &noise, chain_len);
 
         let (ratchet_to_preserve, ratchet_to_delete) = if ratchet_i == 1 {
             (Some(&state.ratchet_state1), state.ratchet_state2.as_ref())
@@ -859,7 +859,7 @@ pub(crate) fn received_x3_trans<C: CryptoLayer, App: ApplicationLayer<C>>(
                 let RatchetStates { state1, state2 } = rss.unwrap_or_default();
                 let mut should_warn_missing_ratchet = false;
 
-                if (&zeta.ratchet_state != &state1) & (Some(&zeta.ratchet_state) != state2.as_ref()) {
+                if (zeta.ratchet_state != state1) & (Some(&zeta.ratchet_state) != state2.as_ref()) {
                     if !responder_disallows_downgrade && zeta.ratchet_state.fingerprint().is_none() {
                         should_warn_missing_ratchet = true;
                     } else {
@@ -873,7 +873,7 @@ pub(crate) fn received_x3_trans<C: CryptoLayer, App: ApplicationLayer<C>>(
                 let mut noise_kk_ss = Zeroizing::new([0u8; P384_ECDH_SHARED_SECRET_SIZE]);
                 ctx.s_secret.agree(&s_remote, &mut noise_kk_ss);
 
-                let new_ratchet_state = create_ratchet_state(hmac, &mut noise, zeta.ratchet_state.chain_len);
+                let new_ratchet_state = create_ratchet_state(hmac, &noise, zeta.ratchet_state.chain_len);
                 let mut nk_recv = Zeroizing::new([0u8; HASHLEN]);
                 let mut nk_send = Zeroizing::new([0u8; HASHLEN]);
                 noise.split(hmac, &mut nk_send, &mut nk_recv);
