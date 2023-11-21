@@ -38,6 +38,7 @@ pub use openssl_sys;
 #[cfg(feature = "default-crypto")]
 pub trait DefaultCrypto {
     type SessionData;
+    type LookupData;
     type IncomingPacketBuffer: AsMut<[u8]> + AsRef<[u8]>;
 }
 #[cfg(feature = "default-crypto")]
@@ -54,5 +55,6 @@ impl<C: DefaultCrypto> crate::application::CryptoLayer for C {
     type Kem = CrateKyber1024PrivateKey;
 
     type SessionData = C::SessionData;
+    type FingerprintData = C::LookupData;
     type IncomingPacketBuffer = C::IncomingPacketBuffer;
 }
