@@ -93,7 +93,7 @@ impl<Crypto: CryptoLayer> UnassociatedFragCache<Crypto> {
         } else if self.map[idx1].key == key {
             idx1
         } else if self.map[idx0].key == 0 || self.map[idx1].key == 0 {
-            if (fragment_count as usize) > self.frags_unused_size {
+            if fragment_count > self.frags_unused_size {
                 // There are not enough free fragment slots so attempt to expire a bunch of entries.
                 let _ = self.check_for_expiry_inner(Crypto::SETTINGS.resend_time as i64, current_time);
             }
@@ -117,7 +117,7 @@ impl<Crypto: CryptoLayer> UnassociatedFragCache<Crypto> {
         let mut new_expiry = None;
         if self.map[idx].key == 0 {
             // This is a new entry so initialize it.
-            if (fragment_count as usize) <= self.frags_unused_size {
+            if fragment_count <= self.frags_unused_size {
                 new_expiry = Some(current_time + Crypto::SETTINGS.fragment_assembly_timeout as i64);
                 let entry = &mut self.map[idx];
                 entry.key = key;
@@ -148,7 +148,7 @@ impl<Crypto: CryptoLayer> UnassociatedFragCache<Crypto> {
             entry.packet_size = new_size;
             entry.fragment_have |= got;
 
-            let frag_idx = (entry.frags_idx as usize + fragment_no as usize) % self.frags.len();
+            let frag_idx = (entry.frags_idx as usize + fragment_no) % self.frags.len();
             self.frags[frag_idx].write(fragment);
 
             if entry.fragment_have == 1u64.wrapping_shl(fragment_count as u32) - 1 {
@@ -183,7 +183,7 @@ impl<Crypto: CryptoLayer> UnassociatedFragCache<Crypto> {
                 return expiry;
             }
         }
-        return i64::MAX;
+        i64::MAX
     }
 
     fn invalidate<const DROP: bool>(&mut self, idx: usize) {

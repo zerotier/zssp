@@ -19,7 +19,7 @@ impl<Crypto: CryptoLayer> Clone for SymmetricState<Crypto> {
         Self {
             k: self.k.clone(),
             ck: self.ck.clone(),
-            h: self.h.clone(),
+            h: self.h,
             _app: PhantomData,
         }
     }

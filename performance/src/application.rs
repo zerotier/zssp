@@ -323,7 +323,7 @@ pub trait Sender {
     /// Send the given fragment on this interface and then return whether or not an error occured.
     ///
     /// If `true` is returned then sending is cancelled and this instance of `Sender` is dropped.
-    fn send_frag<'a>(&'a mut self, frag: &mut [u8]) -> bool;
+    fn send_frag(&mut self, frag: &mut [u8]) -> bool;
 }
 
 /// A trait to genericize the process of borrowing the resources necessary to repeatedly
@@ -353,7 +353,7 @@ pub trait SendTo<Crypto: CryptoLayer> {
 }
 
 impl<F: FnMut(&mut [u8]) -> bool> Sender for F {
-    fn send_frag<'a>(&'a mut self, frag: &mut [u8]) -> bool {
+    fn send_frag(&mut self, frag: &mut [u8]) -> bool {
         self(frag)
     }
 }

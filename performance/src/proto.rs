@@ -94,8 +94,8 @@ pub(crate) const LABEL_RATCHET_STATE: &[u8; 4] = b"ASKR";
 pub(crate) const LABEL_HEADER_KEY: &[u8; 4] = b"ASKH";
 pub(crate) const LABEL_KEX_KEY: &[u8; 4] = b"ASKK";
 
-pub(crate) const EXPIRE_AFTER_USES: u64 = 1 << 32 - 1;
-pub(crate) const THREAD_SAFE_COUNTER_HARD_EXPIRE: u64 = u64::MAX - 1 << 16;
+pub(crate) const EXPIRE_AFTER_USES: u64 = (1 << 32) - 1;
+pub(crate) const THREAD_SAFE_COUNTER_HARD_EXPIRE: u64 = u64::MAX - (1 << 16);
 /// Determines the number of counters a session will remember. If a counter arrives over
 /// this amount out of order relative to other received counters, it is likely to be
 /// rejected on the basis that the session can't remember if this counter was replayed.
@@ -137,7 +137,7 @@ pub(crate) const HANDSHAKE_RESPONSE_SIZE: usize =
     P384_PUBLIC_KEY_SIZE + KYBER_CIPHERTEXT_SIZE + AES_GCM_TAG_SIZE + KID_SIZE + AES_GCM_TAG_SIZE;
 pub(crate) const HEADERED_HANDSHAKE_RESPONSE_SIZE: usize = HANDSHAKE_RESPONSE_SIZE + HEADER_SIZE;
 
-pub(crate) const HANDSHAKE_COMPLETION_MIN_SIZE: usize = P384_PUBLIC_KEY_SIZE + AES_GCM_TAG_SIZE + 0 + AES_GCM_TAG_SIZE;
+pub(crate) const HANDSHAKE_COMPLETION_MIN_SIZE: usize = P384_PUBLIC_KEY_SIZE + AES_GCM_TAG_SIZE + AES_GCM_TAG_SIZE;
 pub(crate) const HANDSHAKE_COMPLETION_MAX_SIZE: usize = HANDSHAKE_COMPLETION_MIN_SIZE + IDENTITY_MAX_SIZE;
 
 pub(crate) const HEADERED_HANDSHAKE_COMPLETION_MAX_SIZE: usize = HANDSHAKE_COMPLETION_MAX_SIZE + HEADER_SIZE;
