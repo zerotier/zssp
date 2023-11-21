@@ -63,6 +63,7 @@ impl CryptoLayer for TestApplication {
     type SessionData = u128;
 
     type IncomingPacketBuffer = Vec<u8>;
+    type FingerprintData = ();
 }
 #[allow(unused)]
 impl ApplicationLayer<TestApplication> for &TestApplication {
@@ -82,6 +83,7 @@ impl ApplicationLayer<TestApplication> for &TestApplication {
         &mut self,
         remote_static_key: &CrateP384PublicKey,
         identity: &[u8],
+        _: Option<&()>,
     ) -> AcceptAction<TestApplication> {
         AcceptAction {
             session_data: Some(1),
@@ -93,15 +95,16 @@ impl ApplicationLayer<TestApplication> for &TestApplication {
     fn restore_by_fingerprint(
         &mut self,
         ratchet_fingerprint: &[u8; RATCHET_SIZE],
-    ) -> Result<Option<RatchetState>, std::io::Error> {
+    ) -> Result<Option<(RatchetState, ())>, std::io::Error> {
         let ratchets = self.ratchets.lock().unwrap();
-        Ok(ratchets.rf_map.get(ratchet_fingerprint).cloned())
+        Ok(ratchets.rf_map.get(ratchet_fingerprint).cloned().map(|r| (r, ())))
     }
 
     fn restore_by_identity(
         &mut self,
         remote_static_key: &CrateP384PublicKey,
         session_data: &u128,
+        _: Option<&()>,
     ) -> Result<Option<RatchetStates>, std::io::Error> {
         let ratchets = self.ratchets.lock().unwrap();
         Ok(ratchets.peer_map.get(session_data).cloned())

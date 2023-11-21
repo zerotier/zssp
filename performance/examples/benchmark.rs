@@ -53,6 +53,7 @@ impl AsRef<[u8]> for PooledVec {
 #[allow(unused)]
 impl DefaultCrypto for TestApplication {
     type SessionData = ();
+    type LookupData = ();
     type IncomingPacketBuffer = PooledVec;
 }
 
@@ -76,6 +77,7 @@ impl ApplicationLayer<TestApplication> for &TestApplication {
         &mut self,
         remote_static_key: &CrateP384PublicKey,
         identity: &[u8],
+        _: Option<&()>,
     ) -> AcceptAction<TestApplication> {
         AcceptAction {
             session_data: Some(()),
@@ -87,7 +89,7 @@ impl ApplicationLayer<TestApplication> for &TestApplication {
     fn restore_by_fingerprint(
         &mut self,
         ratchet_fingerprint: &[u8; RATCHET_SIZE],
-    ) -> Result<Option<RatchetState>, std::io::Error> {
+    ) -> Result<Option<(RatchetState, ())>, std::io::Error> {
         Ok(None)
     }
 
@@ -95,6 +97,7 @@ impl ApplicationLayer<TestApplication> for &TestApplication {
         &mut self,
         remote_static_key: &CrateP384PublicKey,
         session_data: &(),
+        _: Option<&()>,
     ) -> Result<Option<RatchetStates>, std::io::Error> {
         Ok(None)
     }

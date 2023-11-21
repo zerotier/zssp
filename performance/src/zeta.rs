@@ -68,6 +68,7 @@ pub(crate) struct MutableState<Crypto: CryptoLayer> {
 /// Corresponds to State B_2 of the Zeta State Machine found in Section 4.1 - Definition 3.
 pub(crate) struct StateB2<Crypto: CryptoLayer> {
     ratchet_state: RatchetState,
+    lookup_data: Option<Crypto::FingerprintData>,
     kid_send: NonZeroU32,
     pub kid_recv: NonZeroU32,
     pub hk_send: Zeroizing<[u8; AES_256_KEY_SIZE]>,
@@ -331,7 +332,7 @@ pub(crate) fn trans_to_a1<Crypto: CryptoLayer, App: ApplicationLayer<Crypto>>(
     send: impl FnOnce(&mut [u8], Option<&Crypto::PrpEnc>),
 ) -> Result<(Arc<Session<Crypto>>, Option<i64>), OpenError> {
     let RatchetStates { state1, state2 } = app
-        .restore_by_identity(&s_remote, &session_data)
+        .restore_by_identity(&s_remote, &session_data, None)
         .map_err(OpenError::StorageError)?
         .unwrap_or_default();
 
@@ -472,11 +473,13 @@ pub(crate) fn received_x1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
         return Err(fault!(FailedAuth, true));
     }
 
+    let mut lookup_data = None;
     let mut ratchet_state = None;
     while i + RATCHET_SIZE <= j {
         match app.restore_by_fingerprint((&x1[i..i + RATCHET_SIZE]).try_into().unwrap()) {
             Ok(None) => {}
-            Ok(Some(rs)) => {
+            Ok(Some((rs, data))) => {
+                lookup_data = Some(data);
                 ratchet_state = Some(rs);
                 break;
             }
@@ -551,6 +554,7 @@ pub(crate) fn received_x1_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
             e_secret,
             noise,
             defrag: Mutex::new(Fragged::new()),
+            lookup_data,
         }),
         app.time(),
     );
@@ -838,7 +842,7 @@ pub(crate) fn received_x3_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
     noise.get_ask(hmac, LABEL_KEX_KEY, &mut kek_send, &mut kek_recv);
     let c = 0;
 
-    let action = app.check_accept_session(&s_remote, &x3[identity_start..identity_end]);
+    let action = app.check_accept_session(&s_remote, &x3[identity_start..identity_end], zeta.lookup_data.as_ref());
     let responder_disallows_downgrade = action.responder_disallows_downgrade;
     let responder_silently_rejects = action.responder_silently_rejects;
     let create_reject = || {
@@ -854,7 +858,7 @@ pub(crate) fn received_x3_trans<Crypto: CryptoLayer, App: ApplicationLayer<Crypt
         d
     };
     if let Some(session_data) = action.session_data {
-        let result = app.restore_by_identity(&s_remote, &session_data);
+        let result = app.restore_by_identity(&s_remote, &session_data, zeta.lookup_data.as_ref());
         match result {
             Ok(rss) => {
                 let RatchetStates { state1, state2 } = rss.unwrap_or_default();

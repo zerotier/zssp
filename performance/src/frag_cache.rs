@@ -257,6 +257,7 @@ fn test_cache() {
         type Kem = CrateKyber1024PrivateKey;
 
         type SessionData = ();
+        type FingerprintData = ();
         type IncomingPacketBuffer = Vec<u8>;
     }
 
