@@ -321,14 +321,16 @@ where
     Session<C>: fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ByzantineFault")
-            .field("session", &self.session)
-            .field("caused_expiration", &self.caused_expiration)
+        let mut a = f.debug_struct("ByzantineFault");
+        a.field("session", &self.session)
             .field("error", &self.error)
             .field("unnatural", &self.unnatural)
-            .field("file", &self.file)
-            .field("line", &self.line)
-            .finish()
+            .field("caused_expiration", &self.caused_expiration);
+        #[cfg(feature = "debug")]
+        {
+            a.field("file", &self.file).field("line", &self.line);
+        }
+        a.finish()
     }
 }
 impl<C: CryptoLayer> fmt::Display for ByzantineFault<C> {
