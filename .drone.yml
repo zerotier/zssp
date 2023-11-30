@@ -1,0 +1,42 @@
+---
+kind: pipeline
+type: docker
+name: zssp-amd64
+platform:
+  arch: amd64
+  os: linux
+
+steps:
+  - name: build-zssp-amd64
+    image: 084037375216.dkr.ecr.us-east-2.amazonaws.com/honda-builder
+    pull: always
+    environment:
+      PATH: /bin:/usr/bin:/usr/local/bin:/sbin:/usr/sbin:/usr/local/sbin:/root/.cargo/bin
+    commands:
+      - cargo build
+      - cargo test
+trigger:
+  event:
+    - custom
+    - push
+---
+kind: pipeline
+type: docker
+name: zssp-arm64
+platform:
+  arch: arm64
+  os: linux
+
+steps:
+  - name: build-zssp-arm64
+    image: 084037375216.dkr.ecr.us-east-2.amazonaws.com/honda-builder
+    pull: always
+    environment:
+      PATH: /bin:/usr/bin:/usr/local/bin:/sbin:/usr/sbin:/usr/local/sbin:/root/.cargo/bin
+    commands:
+      - cargo build
+      - cargo test
+trigger:
+  event:
+    - custom
+    - push
