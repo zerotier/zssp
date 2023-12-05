@@ -45,7 +45,7 @@ steps:
       - CARGO_INCREMENTAL=0 RUSTFLAGS='-Cinstrument-coverage' LLVM_PROFILE_FILE='coverage/cargo-test-%p-%m.profraw' cargo test
       - mkdir -p target/coverage
       - grcov . --binary-path ./target/debug/deps/ -s . -t lcov --branch --ignore-not-existing --ignore '../*' --ignore "/*" -o target/coverage/tests.lcov
-      - codecov -B ${DRONE_BRANCH} -b ${DRONE_BUILD_NUMBER} -f target/coverage/tests.lcov -F amd64
+      - codecov -B ${DRONE_BRANCH} -b ${DRONE_BUILD_NUMBER} -f target/coverage/tests.lcov -F arm64
 trigger:
   event:
     - custom
