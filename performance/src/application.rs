@@ -277,8 +277,9 @@ pub trait ApplicationLayer<C: CryptoLayer>: Sized {
     /// This function will be called whenever Alice attempts to open a session, or Bob attempts
     /// to verify Alice's identity.
     ///
-    /// If the peer's ratchet states could not be could, this function should return
-    /// `RatchetState::new_initial_states()`.
+    /// If the peer's ratchet states could not be found, this function should return `None`.
+    /// A return value of `None` is equivalent to a return value of
+    /// `Some(RatchetState::new_initial_states())`.
     ///
     /// If a one-time-password has been pre-shared with this peer, `RatchetState::new_otp_states(...)`
     /// should be pre-saved to the storage backend as if it is a normal ratchet state.
