@@ -162,12 +162,61 @@ impl<C: CryptoLayer> Context<C> {
     ///   for the upper protocol to authenticate and approve of Alice's identity.
     pub fn open<App: ApplicationLayer<C>>(
         &self,
+        mut app: App,
+        send: impl Sender,
+        mtu: usize,
+        static_remote_key: C::PublicKey,
+        session_data: C::SessionData,
+        identity: &[u8],
+    ) -> Result<(Arc<Session<C>>, Option<i64>), OpenError> {
+        let ratchet_states = app
+            .restore_by_identity(&static_remote_key, &session_data, None)
+            .map_err(OpenError::StorageError)?
+            .unwrap_or_default();
+        self.open_with_ratchet(app, send, mtu, static_remote_key, session_data, identity, ratchet_states)
+    }
+    /// Create a new session and send initialization packets to Bob, our remote peer.
+    /// This function will use the specified `ratchet_states` to connect to Bob, as opposed to
+    /// calling `app.restore_by_identity`. This can be used to open a session with a specific
+    /// one-time-password using `RatchetStates::new_otp_states()`, or in situations where it is
+    /// desireable to avoid having Alice call `app.restore_by_identity`.
+    ///
+    /// If using a one-time-password, a call to `app.initiator_disallows_downgrade` on the created
+    /// session **MUST** return `true`. Otherwise the remote peer would be able to avoid having
+    /// to demonstrate knowledge of the otp by requesting a ratchet downgrade.
+    /// Only after the created session is established may a call to
+    /// `app.initiator_disallows_downgrade` return false.
+    ///
+    /// The session will not be "established" right away, and so will not be able to send data to
+    /// the remote peer until they respond and finish the handshake. A `SessionEvent` variant of
+    /// `Established` will be returned by `Context::receive` when this session is able to send data.
+    ///
+    /// This function returns an `Option<i64>`, which can safely be ignored if not using
+    /// `Context::service_scheduled`. `Context::service_scheduled` contains documentation on how to
+    /// handle the return value.
+    ///
+    /// To prevent desync, when this function is called, no other open session with the same remote
+    /// peer must exist. Drop or call expire on any pre-existing sessions before calling.
+    ///
+    /// * `app` - Application layer instance
+    /// * `send` - Function to be called to send one or more initial packets to the remote being
+    ///   contacted
+    /// * `mtu` - MTU for initial packets
+    /// * `static_remote_key` - Remote side's static public NIST P-384 key
+    /// * `session_data` - Arbitrary data meaningful to the application to include with session
+    ///   object
+    /// * `identity` - Payload to be sent to Bob that contains the information necessary
+    ///   for the upper protocol to authenticate and approve of Alice's identity.
+    /// * `ratchet_states` - The set of ratchet states that Alice should use to connect to Bob.
+    pub fn open_with_ratchet<App: ApplicationLayer<C>>(
+        &self,
         app: App,
         send: impl Sender,
         mut mtu: usize,
         static_remote_key: C::PublicKey,
         session_data: C::SessionData,
         identity: &[u8],
+        ratchet_states: RatchetStates,
     ) -> Result<(Arc<Session<C>>, Option<i64>), OpenError> {
         mtu = mtu.max(MIN_TRANSPORT_MTU);
         if identity.len() > IDENTITY_MAX_SIZE {
@@ -180,6 +229,7 @@ impl<C: CryptoLayer> Context<C> {
             static_remote_key,
             session_data,
             identity,
+            ratchet_states,
             |packet, hk_send| {
                 send_with_fragmentation(send, mtu, packet, hk_send);
             },

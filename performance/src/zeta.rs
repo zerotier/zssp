@@ -325,12 +325,10 @@ pub(crate) fn trans_to_a1<C: CryptoLayer, App: ApplicationLayer<C>>(
     s_remote: C::PublicKey,
     session_data: C::SessionData,
     identity: &[u8],
+    ratchet_states: RatchetStates,
     send: impl FnOnce(&mut [u8], Option<&C::PrpEnc>),
 ) -> Result<(Arc<Session<C>>, Option<i64>), OpenError> {
-    let RatchetStates { state1, state2 } = app
-        .restore_by_identity(&s_remote, &session_data, None)
-        .map_err(OpenError::StorageError)?
-        .unwrap_or_default();
+    let RatchetStates { state1, state2 } = ratchet_states;
 
     let mut session_queue = ctx.session_queue.lock().unwrap();
     let mut session_map = ctx.session_map.write().unwrap();
