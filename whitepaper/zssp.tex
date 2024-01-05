@@ -596,7 +596,7 @@ ZKE uses a 64-bit (8 byte) counter, but AES-GCM uses a 96-bit (12 byte) nonce/IV
 
 	$\texttt{rk}$ is a tuple of up to two 256-bit \emph{ratchet keys}. Similarly, $\texttt{rf}$ is a tuple of up to two 256-bit \emph{ratchet fingerprints}. $\texttt{rk}$ is initialized to $(0^{256}, \bot)$ and $\texttt{rf}$ is initialized to $(\varepsilon, \bot)$.
 
-	If two peers are in persistent mode, and wish to connect for the first time, they may use a preshared one time password, $p$, to do so. $p$ should be a randomized string, and it must not be correlated with the identity of either peer. If a one time password is being used then $r\gets \KDF(p, \texttt{"ZSSP\_OTP\_TO\_RATCHET"}, \varepsilon, 2)$ must be computed. Both peers then initialize $\texttt{rk}$ to $(r_1, \bot)$ and $\texttt{rf}$ to $(r_2, \bot)$.
+	If two peers are in persistent mode, and wish to connect for the first time, they may use a preshared one time password, $p$, to do so. $p$ must be a random string with at least 256-bits of entropy. If a one time password is being used then $r\gets \KDF(p, \texttt{"ZSSP\_OTP\_TO\_RATCHET"}, \varepsilon, 2)$ must be computed. Both peers then initialize $\texttt{rk}$ to $(r_1, \bot)$ and $\texttt{rf}$ to $(r_2, \bot)$. $p$ must only be used once; A fresh instance of $p$ must be generated for every new pair of peers who wish to connect.
 \end{definition}
 
 $\bot$ represents the ``null'' value. When a variable is set to $\bot$, it means whatever was previous stored within the variable is being permanently deleted from memory. All variables are initialized to $\bot$ unless otherwise stated. $\varepsilon$ is the empty string.
