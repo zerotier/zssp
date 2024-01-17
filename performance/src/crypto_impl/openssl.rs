@@ -190,7 +190,7 @@ impl HighThroughputAesGcmPool for OpenSSLAesGcmPool {
         }
     }
 
-    fn start_enc<'a>(&'a self, nonce: &[u8; AES_GCM_NONCE_SIZE]) -> OpenSSLAesGcmEnc {
+    fn start_enc(&self, nonce: &[u8; AES_GCM_NONCE_SIZE]) -> OpenSSLAesGcmEnc {
         let ctx = self.enc.lock().unwrap().pop();
         unsafe {
             if let Some(ctx) = ctx {
@@ -205,7 +205,7 @@ impl HighThroughputAesGcmPool for OpenSSLAesGcmPool {
             }
         }
     }
-    fn start_dec<'a>(&'a self, nonce: &[u8; AES_GCM_NONCE_SIZE]) -> OpenSSLAesGcmDec {
+    fn start_dec(&self, nonce: &[u8; AES_GCM_NONCE_SIZE]) -> OpenSSLAesGcmDec {
         let ctx = self.dec.lock().unwrap().pop();
         unsafe {
             if let Some(ctx) = ctx {
@@ -221,7 +221,7 @@ impl HighThroughputAesGcmPool for OpenSSLAesGcmPool {
         }
     }
 
-    fn finish_enc<'a>(&'a self, ctx: OpenSSLAesGcmEnc) -> [u8; AES_GCM_TAG_SIZE] {
+    fn finish_enc(&self, ctx: OpenSSLAesGcmEnc) -> [u8; AES_GCM_TAG_SIZE] {
         let mut output = [0u8; AES_GCM_TAG_SIZE];
         unsafe {
             assert!(ctx.0.finalize::<true>());
@@ -230,7 +230,7 @@ impl HighThroughputAesGcmPool for OpenSSLAesGcmPool {
         let _ = self.enc.lock().unwrap().try_push(ctx.0);
         output
     }
-    fn finish_dec<'a>(&'a self, ctx: OpenSSLAesGcmDec, tag: &[u8; AES_GCM_TAG_SIZE]) -> bool {
+    fn finish_dec(&self, ctx: OpenSSLAesGcmDec, tag: &[u8; AES_GCM_TAG_SIZE]) -> bool {
         let output = unsafe { ctx.0.set_tag(tag) && ctx.0.finalize::<false>() };
         let _ = self.dec.lock().unwrap().try_push(ctx.0);
         output

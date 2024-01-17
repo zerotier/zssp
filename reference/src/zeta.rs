@@ -115,7 +115,7 @@ impl<C: CryptoLayer> SymmetricState<C> {
         self.mix_key(&pub_key);
         e_secret
     }
-    fn read_e(&mut self, i: &mut usize, packet: &Vec<u8>) -> Option<C::PublicKey> {
+    fn read_e(&mut self, i: &mut usize, packet: &[u8]) -> Option<C::PublicKey> {
         let j = *i + P384_PUBLIC_KEY_SIZE;
         let pub_key = &packet[*i..j];
         self.mix_hash(pub_key);
@@ -421,10 +421,8 @@ pub(crate) fn received_x1_trans<C: CryptoLayer, App: ApplicationLayer<C>>(
                 Err(e) => return Err(ReceiveError::StorageError(e)),
             }
         }
-        if ratchet_state.is_none() {
-            if app.hello_requires_recognized_ratchet() {
-                return Err(fault!(FailedAuth, true));
-            }
+        if ratchet_state.is_none() && app.hello_requires_recognized_ratchet() {
+            return Err(fault!(FailedAuth, true));
         }
     }
     // If we get to this point and haven't found a full ratchet state,

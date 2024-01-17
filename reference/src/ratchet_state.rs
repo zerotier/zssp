@@ -271,10 +271,8 @@ impl<'a> CompareAndSwap<'a> {
     /// There may be a second ratchet fingerprint to be deleted, which function
     /// `deleted_fingerprint2` will return.
     pub fn deleted_fingerprint1(&self) -> Option<&[u8; RATCHET_SIZE]> {
-        if self.cur_state1_was_just_deleted {
-            if !self.cur_state1.is_empty() {
-                return Some(self.cur_state1.fingerprint());
-            }
+        if self.cur_state1_was_just_deleted && !self.cur_state1.is_empty() {
+            return Some(self.cur_state1.fingerprint());
         }
         None
     }
