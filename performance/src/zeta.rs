@@ -1653,15 +1653,6 @@ pub(crate) fn send_payload<C: CryptoLayer>(
     };
     let nonce = to_nonce(PACKET_TYPE_DATA, c);
 
-    let key = state.key_ref(false);
-    let kid_send = key.send.kid.ok_or(SessionNotEstablished)?.get().to_ne_bytes();
-    let mut cipher = key.nk.as_ref().ok_or(SessionNotEstablished)?.start_enc(&nonce);
-
-    debug_assert!(matches!(
-        &state.beta,
-        ZetaAutomata::S1 | ZetaAutomata::S2 | ZetaAutomata::R1 { .. } | ZetaAutomata::R2 { .. }
-    ));
-
     let payload_mtu = mtu - HEADER_SIZE;
     debug_assert!(payload_mtu >= 4);
     let tagged_payload_len = payload.len() + AES_GCM_TAG_SIZE;
@@ -1671,6 +1662,16 @@ pub(crate) fn send_payload<C: CryptoLayer>(
     if fragment_count > MAX_FRAGMENTS {
         return Err(DataTooLarge);
     }
+
+    debug_assert!(matches!(
+        &state.beta,
+        ZetaAutomata::S1 | ZetaAutomata::S2 | ZetaAutomata::R1 { .. } | ZetaAutomata::R2 { .. }
+    ));
+
+    let key = state.key_ref(false);
+    let kid_send = key.send.kid.ok_or(SessionNotEstablished)?.get().to_ne_bytes();
+    let cipher_pool = key.nk.as_ref().ok_or(SessionNotEstablished)?;
+    let mut cipher = cipher_pool.start_enc(&nonce);
 
     let mut header = [0u8; HEADER_SIZE];
     header[..KID_SIZE].copy_from_slice(&kid_send);
@@ -1691,6 +1692,9 @@ pub(crate) fn send_payload<C: CryptoLayer>(
         state.hk_send.encrypt_in_place(header_auth.try_into().unwrap());
 
         if !send.send_frag(&mut mtu_sized_buffer[..HEADER_SIZE + fragment_len]) {
+            // We need to give the cipher back to the pool instead of dropping it,
+            // so it can do memory cleanup.
+            cipher_pool.finish_enc(cipher);
             return Ok(false);
         }
         i = j;
@@ -1704,7 +1708,8 @@ pub(crate) fn send_payload<C: CryptoLayer>(
     mtu_sized_buffer[FRAGMENT_NO_IDX] = fragment_no as u8;
     let fragment_start = &mut mtu_sized_buffer[HEADER_SIZE..HEADER_SIZE + payload_rem];
     cipher.encrypt(&payload[i..], fragment_start);
-    mtu_sized_buffer[HEADER_SIZE + payload_rem..HEADER_SIZE + fragment_len].copy_from_slice(&cipher.finish());
+    mtu_sized_buffer[HEADER_SIZE + payload_rem..HEADER_SIZE + fragment_len]
+        .copy_from_slice(&cipher_pool.finish_enc(cipher));
 
     let header_auth = &mut mtu_sized_buffer[HEADER_AUTH_START..HEADER_AUTH_END];
     state.hk_send.encrypt_in_place(header_auth.try_into().unwrap());
@@ -1751,9 +1756,8 @@ pub(crate) fn receive_payload_in_place<C: CryptoLayer>(
         return Err(fault!(UnknownLocalKeyId, true, session));
     };
 
-    let mut cipher = specified_key
-        .ok_or_else(|| fault!(OutOfSequence, true, session))?
-        .start_dec(nonce);
+    let cipher_pool = specified_key.ok_or_else(|| fault!(OutOfSequence, true, session))?;
+    let mut cipher = cipher_pool.start_dec(nonce);
     let (_, c) = from_nonce(nonce);
 
     // NOTE: This only works because we check the size of every received fragment in the receive
@@ -1768,7 +1772,7 @@ pub(crate) fn receive_payload_in_place<C: CryptoLayer>(
     let tag_idx = fragment.len() - AES_GCM_TAG_SIZE;
     cipher.decrypt_in_place(&mut fragment[..tag_idx]);
 
-    if !cipher.finish((&fragment[tag_idx..]).try_into().unwrap()) {
+    if !cipher_pool.finish_dec(cipher, (&fragment[tag_idx..]).try_into().unwrap()) {
         return Err(fault!(FailedAuth, true, session));
     }
 

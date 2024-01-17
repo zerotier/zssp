@@ -49,15 +49,10 @@ pub trait Aes256Dec: Sized + Send + Sync {
 
 pub trait AesGcmEncContext {
     fn encrypt(&mut self, input: &[u8], output: &mut [u8]);
-
-    fn finish(self) -> [u8; AES_GCM_TAG_SIZE];
 }
 
 pub trait AesGcmDecContext {
     fn decrypt_in_place(&mut self, data: &mut [u8]);
-
-    #[must_use]
-    fn finish(self, tag: &[u8; AES_GCM_TAG_SIZE]) -> bool;
 }
 
 /// A trait for implementing AES-GCM-256 in a way that allows for extremely high throughput.
@@ -86,6 +81,10 @@ pub trait HighThroughputAesGcmPool: Send + Sync {
     /// `nonce` must be set as the AEAD nonce.
     /// There is no additional associated data to be used.
     fn start_dec<'a>(&'a self, nonce: &[u8; AES_GCM_NONCE_SIZE]) -> Self::DecContext<'a>;
+
+    fn finish_enc<'a>(&'a self, enc: Self::EncContext<'a>) -> [u8; AES_GCM_TAG_SIZE];
+    #[must_use]
+    fn finish_dec<'a>(&'a self, dec: Self::DecContext<'a>, tag: &[u8; AES_GCM_TAG_SIZE]) -> bool;
 }
 
 /// A trait for implementing AES-GCM-256 to handle the more varied, but much lower throughput
