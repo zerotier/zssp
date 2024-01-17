@@ -214,13 +214,13 @@ So Alice and Bob will need to allow potentially the last two derived ratchet key
 
 To minimize the number of ratchet keys Alice and Bob have to store in memory, the final step of every key exchange in ZSSP is to delete the previous ratchet key, once both peers are certain the other peer has derived the new one. So usually Alice and Bob will only have and use the most recently derived ratchet key, but if a peer disappears during key exchange, Alice and Bob will have up to the last two ratchet keys, and will be able to coordinate using the one they are certain both peers have access to.
 
-If this is the first time Alice and Bob are communicating, Alice will send an empty string instead of a ratchet fingerprint to signal this fact. Both Alice and Bob understand this to mean they ought to complete the key exchange with a ratchet key of all zeros. When Alice reveals their identity in the third message of Noise XK, Bob will have to check that it is indeed true that Alice has never communicated with Bob before, and they don't already have a ratchet key and fingerprint. Similarly, if Alice does use a valid ratchet fingerprint and key, Bob must check if the pair is actually associated with Alice, and isn't being stolen from a different peer.
+If this is the first time Alice and Bob are communicating, Alice will send a string of all zeros instead of a ratchet fingerprint to signal this fact. Both Alice and Bob understand this to mean they ought to complete the key exchange with a ratchet key of all zeros. When Alice reveals their identity in the third message of Noise XK, Bob will have to check that it is indeed true that Alice has never communicated with Bob before, and they don't already have a ratchet key and fingerprint. Similarly, if Alice does use a valid ratchet fingerprint and key, Bob must check if the pair is actually associated with Alice, and isn't being stolen from a different peer.
 
 Since the ratchet fingerprint is included in the first message of Noise XK, with weak forward secrecy, there is some concern it could violate identity hiding. However, since the ratchet fingerprint is a constantly rotating ASK, information about the communicating peers can only be leaked by it if the same ratchet fingerprint is used twice. In normal operation, not only will the ratchet fingerprint only be used once, but it will be deleted with the ratchet key when the key exchange is completed, providing replay protection. Furthermore, if the same ratchet fingerprint is used more than once, all this will reveal is that the same pair of peers are initiating a session with each other, and only if Bob's private key is compromised.
 
-Actually this protocol give ZSSP a lot of useful properties. For one thing Bob can require Alice to include a recognized, nonempty ratchet fingerprint in their first message. This is how ZSSP can achieve ``Silence is Golden'' despite the fact that the first Noise XK packet is usually anonymous and replayable. It also allows Bob to authenticate Alice's identity immediately, as opposed to waiting for Alice's next message. This protocol also is integral to how Alice and Bob are able to coordinate the ratchet key management described in \sectionref{sec:key_management} without any additional round trips.
+Actually this protocol give ZSSP a lot of useful properties. For one thing Bob can require Alice to include a recognized, non-zero ratchet fingerprint in their first message. This is how ZSSP can achieve ``Silence is Golden'' despite the fact that the first Noise XK packet is usually anonymous and replayable. It also allows Bob to authenticate Alice's identity immediately, as opposed to waiting for Alice's next message. This protocol also is integral to how Alice and Bob are able to coordinate the ratchet key management described in \sectionref{sec:key_management} without any additional round trips.
 
-If Alice has corrupted their storage, Alice can either send the empty string or send whatever corrupted ratchet fingerprint they still have to Bob. If Bob sees the empty string, and Bob is in opportunistic mode, Bob completes the key exchange with the zero ratchet key, making it possible for Alice to connect. If Alice sent a corrupted ratchet fingerprint, or Bob is the one who corrupted their storage, and if Bob is in opportunistic mode, Bob will ignore the unrecognized ratchet fingerprint and instead uses the zero ratchet key as the PSK. When Alice receives Bob's reply, if Alice is in opportunistic mode, Alice will decrypt Bob's reply with both the ratchet key they intended to use and the zero ratchet key, and go with the one that successfully decrypts the reply. This allows Alice and Bob to reset their ratchet keys in such a way that an attacker cannot perform a downgrade attack without at least one peer's static private key. And if Alice and Bob are in persistent mode, a downgrade attack is simply not possible.
+If Alice has corrupted their storage, Alice can either send zeros or send whatever corrupted ratchet fingerprint they still have to Bob. If Bob sees zeros instead of a ratchet fingerprint, and Bob is in opportunistic mode, Bob completes the key exchange with the zero ratchet key, making it possible for Alice to connect. If Alice sent a corrupted ratchet fingerprint, or Bob is the one who corrupted their storage, and if Bob is in opportunistic mode, Bob will ignore the unrecognized ratchet fingerprint and instead uses the zero ratchet key as the PSK. When Alice receives Bob's reply, if Alice is in opportunistic mode, Alice will decrypt Bob's reply with both the ratchet key they intended to use and the zero ratchet key, and go with the one that successfully decrypts the reply. This allows Alice and Bob to reset their ratchet keys in such a way that an attacker cannot perform a downgrade attack without at least one peer's static private key. And if Alice and Bob are in persistent mode, a downgrade attack is simply not possible.
 
 \section{Zeta Key Exchange}
 
@@ -271,8 +271,8 @@ The next section will be dedicated to describing ZKE in explicit detail. We will
 		\wordbox[tlr]{2}{\texttt{e1} (1568 bytes)} \\
 		\bitbox[blr]{2}{} & \bitbox{2}{\texttt{e1\_tag} (16 bytes)} \\
 		\begin{rightwordgroup}{Noise XK\\Payload}
-			\wordbox{2}{$\texttt{rf}_1$ (optional 32 bytes)} \\
-			\wordbox{2}{$\texttt{rf}_2$ (optional 32 bytes)} \\
+			\wordbox{2}{$\texttt{rf}_1$ (32 bytes)} \\
+			\wordbox{2}{$\texttt{rf}_2$ (32 bytes)} \\
 			\wordbox{1}{\texttt{rf\_tag} (16 bytes)}
 		\end{rightwordgroup} \\
 	\end{bytefield}
@@ -542,7 +542,9 @@ Given $(x, g^x)$ and $(y, g^y)$, two output keypairs from $\DHGEN()$, a \emph{ke
 
 \subsection{Transition Algorithms}\label{sec:trans_alg}
 
-With the necessary background established, we can now define the final component of the Zeta state machine, the state transition algorithms. As is described in \definitionref{def:state_machine}, each state transition within $\zeta$ has a corresponding algorithm that must be computed. All of these algorithms are described in this section. They have access to a collection of global variables, defined below.
+With the necessary background established, we can now define the final component of the Zeta state machine, the state transition algorithms. Anyone looking to implement the Zeta state machine must read this section in its entireity. Many paragraphs contain rules not represented within the diagrams or algorithm psuedocode. Each rule qualified with \emph{must} must be implemented.
+
+As is described in \definitionref{def:state_machine}, each state transition within $\zeta$ has a corresponding algorithm. These algorithms \emph{must} be computed atomically with the state transition. If the algorithm fails or aborts, then the corresponding state transition \emph{must} not occur. All of these algorithms are described in this section. They have access to a collection of global variables, defined below.
 
 \begin{itemize}
 	\item Persistent ratchet keys $\texttt{rk}_1, \texttt{rk}_2$, to be used as a handshake PSK
@@ -562,16 +564,20 @@ With the necessary background established, we can now define the final component
 	\item Confirmed key index $\texttt{i}$, used so peers know the most recently confirmed Noise key.
 \end{itemize}
 
-All of these variables are independent \emph{per instance of} $\zeta$. So each instance of $\zeta$ stores a unique and independent set of these variables, and they are never shared between separate instances of $\zeta$. The persistent state variables $\texttt{rk}$ and $\texttt{rf}$ are a partial exception to this rule, as they can be accessed by multiple instances of $\zeta$ over time. However each of these instances must be associated with a single, unique remote peer, and two instances of $\zeta$ must never access the same set of persistent state variables at the same time.
+All of these variables, except $\texttt{rk}$ and $\texttt{rf}$, are independent \emph{per instance of} $\zeta$. So each instance of $\zeta$ stores a unique and independent set of these variables, and they are never shared between separate instances of $\zeta$.
 
-What constitutes a ``single, unique remote peer'' is up to the upper protocol to decide. Usually remote peers are identified and differentiated by their static public keys ($g^u$ or $g^v$). However ZKE does not strictly enforce a one-to-one relationship between static public keys and identity specifically so the upper protocol is able to rotate the static public keys of peers.
+Variables $\texttt{rk}$ and $\texttt{rf}$ are stored on a persistent storage device, and can be accessed by multiple instances of $\zeta$ over time. Implementations \emph{must} guarantee each instance of persistent variables $\texttt{rk}$ and $\texttt{rf}$ is associated with a single, unique remote peer. When implementing $\zeta$, each instance of $\zeta$ \emph{must} store a local copy of $\texttt{rf}$. Writes to $\texttt{rk}$ and $\texttt{rf}$ \emph{must} be batched together as one atomic operation. Implementations \emph{must} check that the local copy of $\texttt{rf}$ is consistent with $\texttt{rf}$ prior to every write. If they are inconsistent, then the entire write \emph{must} be cancelled, and $\zeta$ \emph{must} immediately abort the transition algorithm which triggered the write. Then, $\zeta$ \emph{must} be deleted (i.e. $\zeta$ \emph{must} perform the timeout transition, $\tau$). This policy guarantees that if multiple, concurrent instances of $\zeta$ exist for the same remote peer, only one of them will be allowed to write to $\texttt{rk}$ and $\texttt{rf}$, while the others will be deleted.
+
+It \emph{must} be infeasible to recover a non-zero value of $\texttt{rk}$ or $\texttt{rf}$ based on the amount of time read and write operations on $\texttt{rk}$ or $\texttt{rf}$ take. To this end, implementations must not directly operate on ratchet keys (check for equality, create a search index, etc.). Instead, these operations must be performed indirectly upon their ratchet fingerprints. This is to ensure that, in the event a side-channel attack is found, only the ratchet fingerprint can be leaked.
+
+What constitutes a ``single, unique remote peer'' is up to the upper protocol to decide. Usually remote peers are identified and differentiated by their static public keys ($g^u$ or $g^v$). However ZKE does not strictly enforce a one-to-one relationship between static public keys and identity specifically so the upper protocol is able to rotate the static public keys of peers. There \emph{must} be a well-defined equality relation between peers.
 
 \begin{definition}[H][Session Counter]
 	Every instance of $\zeta$ contains a single monotonically increasing counter, that is initialized to 0. We will use the notation $\COUNTER()$ to represent incrementing this counter by 1 and returning the previous counter value.
 
 	So the very first call to $\COUNTER()$ within $\zeta$ will return 0, the second call will return 1, and so on.
 
-	It is assumed that that output of $\COUNTER()$, the counter value, will be used as an AES-GCM nonce. When a remote peer decrypts an AES-GCM ciphertext that uses a counter value nonce, they must first statefully check that this counter has never been received before, and fail authentication if it has been replayed.
+	It is assumed that that output of $\COUNTER()$, the counter value, will be used as an AES-GCM nonce. When a remote peer decrypts an AES-GCM ciphertext that uses a counter value nonce, they \emph{must} first statefully check that this counter has never been received before, and fail authentication if it has been replayed.
 \end{definition}
 
 ZKE uses a 64-bit (8 byte) counter, but AES-GCM uses a 96-bit (12 byte) nonce/IV. The Noise protocol does specify that, in order to use a counter value as an AES nonce, it should be encoded as a big-endian integer with 4 bytes of zero padding to the left of it. However, for good reason, we have decided to utilize the rightmost byte of that 4 byte padding to store the packet type number, as depicted in \figureref{fig:nonce}. This accomplishes two goals. First it explicitly authenticates the packet type of a packet, which makes it infeasible for an attacker to change the packet type field of a header without triggering an authentication failure. We could have used the additional authentication data parameter of AES-GCM to accomplish this, but the Noise protocol already makes extensive use of this parameter. Second, this nonce construction reduces the risk of catastrophic nonce reuse due to implementation error, specifically during key exchanges. While a correctly implemented counter would be sufficient for security, this adds an extra layer of defence. Given a packet type number $p$, and a counter value $c$, we will use the notation $p||c$ to represent this nonce construction.
@@ -587,16 +593,15 @@ ZKE uses a 64-bit (8 byte) counter, but AES-GCM uses a 96-bit (12 byte) nonce/IV
 \end{figure}
 
 \begin{definition}[H][Key Id Generation]
-	\algn{KID-Gen} is a stateful algorithm that outputs a locally unique, uniform random 32-bit string. The output of this algorithm will be used as the \emph{key id} for a session key, allowing the local peer to multiplex many keys for many remote peers simultaneously. The output of $\algn{KID-Gen}()$ must be locally unique from all other key ids currently in use. $\algn{KID-Gen}()$ may only repeat an output if that output is currently not being used as a key id.
+	\algn{KID-Gen} is a stateful algorithm that outputs a locally unique, uniform random 32-bit string. The output of this algorithm will be used as the \emph{key id} for a session key, allowing the local peer to multiplex many keys for many remote peers simultaneously. The output of $\algn{KID-Gen}()$ \emph{must} be locally unique from all other key ids currently in use. $\algn{KID-Gen}()$ may only repeat an output if that output is currently not being used as a key id.
 \end{definition}
-
 
 \begin{definition}[H][Persistent State]
 	The variables $\texttt{rk}$ and $\texttt{rf}$ are considered the \emph{persistent state} of ZKE. The values stored in these variables are not lost when a session ends, and can be \emph{restored} at any time to initiate a new session.
 
-	$\texttt{rk}$ is a tuple of up to two 256-bit \emph{ratchet keys}. Similarly, $\texttt{rf}$ is a tuple of up to two 256-bit \emph{ratchet fingerprints}. $\texttt{rk}$ is initialized to $(0^{256}, \bot)$ and $\texttt{rf}$ is initialized to $(\varepsilon, \bot)$.
+	$\texttt{rk}$ is a tuple of up to two 256-bit \emph{ratchet keys}. Similarly, $\texttt{rf}$ is a tuple of up to two 256-bit \emph{ratchet fingerprints}. Both $\texttt{rk}$ and $\texttt{rf}$ are initialized to $(0^{256}, \bot)$.
 
-	If two peers are in persistent mode, and wish to connect for the first time, they may use a preshared one time password, $p$, to do so. $p$ must be a random string with at least 256-bits of entropy. If a one time password is being used then $r\gets \KDF(p, \texttt{"ZSSP\_OTP\_TO\_RATCHET"}, \varepsilon, 2)$ must be computed. Both peers then initialize $\texttt{rk}$ to $(r_1, \bot)$ and $\texttt{rf}$ to $(r_2, \bot)$. $p$ must only be used once; A fresh instance of $p$ must be generated for every new pair of peers who wish to connect.
+	If two peers are in persistent mode, and wish to connect for the first time, they may use a preshared one time password, $p$, to do so. $p$ \emph{must} be a random string with at least 256-bits of entropy. If a one time password is being used then $r\gets \KDF(p, \texttt{"ZSSP\_OTP\_TO\_RATCHET"}, \varepsilon, 2)$ \emph{must} be computed. Both peers then initialize $\texttt{rk}$ to $(r_1, \bot)$ and $\texttt{rf}$ to $(r_2, \bot)$. $p$ \emph{must} only be used once; A fresh instance of $p$ \emph{must} be generated for every new pair of peers who wish to connect.
 \end{definition}
 
 $\bot$ represents the ``null'' value. When a variable is set to $\bot$, it means whatever was previous stored within the variable is being permanently deleted from memory. All variables are initialized to $\bot$ unless otherwise stated. $\varepsilon$ is the empty string.
@@ -666,7 +671,11 @@ Prior to the execution of any of the following algorithms, $\zeta$ will check if
 		\State $X_1\texttt{.key\_id} \gets \texttt{kid}^1_1$
 		\State $X_1\texttt{.e} \gets g^x$
 		\State $X_1\texttt{.e1} \gets \AEAD(k_4, 0||0, h_3, e_{pub})$
-		\State $X_1\texttt{.rf} \gets \AEAD(k_4, 0||1, h_5, \texttt{rf})$
+		\If{$\texttt{rf}_2=\bot$}
+			\State $X_1\texttt{.rf} \gets \AEAD(k_4, 0||1, h_5,\,\texttt{rf}_1||0^{256})$
+		\Else
+			\State $X_1\texttt{.rf} \gets \AEAD(k_4, 0||1, h_5,\,\texttt{rf}_1||\texttt{rf}_2)$
+		\EndIf
 		\State $\texttt{hk} \gets \KDF(h_6, \texttt{"ASKH"}, c_4, 2)$
 		\State $c \gets X_1\texttt{.rf\_tag}\ \text{(last 8 bytes)}$
 		\State $\textbf{Send } (0,\ 0||c,\ X_1)$
@@ -686,15 +695,15 @@ Including the ratchet fingerprint in the Hello packet does not compromise identi
 		\EndIf
 		\State $\textbf{Decrypt } X_1$ according to Noise XK
 		\State $\texttt{rf}' \gets X_1\texttt{.rf}_1$
-		\State $\textbf{Restore } \texttt{rk}' \text{ based on } \texttt{rf}'$
+		\State $\textbf{Restore } \texttt{rk}' \text{ based on } \texttt{rf}'$ (or $\texttt{rk}'\gets \bot$ if $\texttt{rf}' = 0^{256}$)
 		\If{$\texttt{rk}' = \bot$}
 			\State $\texttt{rf}' \gets X_1\texttt{.rf}_2$
-			\State $\textbf{Restore } \texttt{rk}' \text{ based on } \texttt{rf}'$
+			\State $\textbf{Restore } \texttt{rk}' \text{ based on } \texttt{rf}'$ (or $\texttt{rk}'\gets \bot$ if $\texttt{rf}' = 0^{256}$)
 			\If{$\texttt{rk}' = \bot$}
 				\If{$\pi_1=1$}
 					\State \textbf{Fail authentication}
 				\Else
-					\State $\texttt{rf}' \gets \varepsilon$
+					\State $\texttt{rf}' \gets 0^{256}$
 					\State $\texttt{rk}' \gets 0^{256}$
 				\EndIf
 			\EndIf
@@ -719,12 +728,12 @@ Including the ratchet fingerprint in the Hello packet does not compromise identi
 		\If{$c \geq 2^{24} \orb c \neq X_2\texttt{.key\_id\_tag}$ (last 3 bytes)}
 			\State \textbf{Fail authentication}
 		\EndIf
-		\State $\textbf{Decrypt } X_2$ according to Noise XK using PSK $\texttt{rk}_1$
 		\State $i \gets 1$
-		\If{$X_2$ failed authentication}
-			\State $\textbf{Decrypt } X_2$ according to Noise XK using PSK $\texttt{rk}_2$
+		\State $\textbf{Decrypt } X_2$ according to Noise XK using PSK $\texttt{rk}_1$
+		\If{$X_2$ failed to decrypt}
 			\State $i \gets 2$
-			\If{$X_2$ failed authentication}
+			\State $\textbf{Decrypt } X_2$ according to Noise XK using PSK $\texttt{rk}_2$
+			\If{$X_2$ failed to decrypt}
 				\If{$\pi_2=1$}
 					\State \textbf{Fail authentication}
 				\Else
@@ -736,10 +745,10 @@ Including the ratchet fingerprint in the Hello packet does not compromise identi
 		\State $\texttt{kid}^1_2 \gets X_2\texttt{.key\_id}$
 		\State $X_3\texttt{.s} \gets \AEAD(k_{10}, 2||1, h_{11}, g^u)$
 		\State $X_3\texttt{.identity} \gets \AEAD(k_{13}, 2||0, h_{12}, \texttt{identity})$
-		\State $\texttt{kek}^1 \gets \KDF(h_{14}, \texttt{"ASKK"}, c_{13}, 2)$
-		\State $\texttt{nk}^1 \gets \KDF(\varepsilon, L, c_{13}, 2)$
 		\State $(\texttt{rk}_2, \texttt{rf}_2) \gets (\texttt{rk}_i, \texttt{rf}_i)$
 		\State $(\texttt{rk}_1, \texttt{rf}_1) \gets \KDF(h_{14}, \texttt{"ASKR"}, c_{13}, 2)$
+		\State $\texttt{kek}^1 \gets \KDF(h_{14}, \texttt{"ASKK"}, c_{13}, 2)$
+		\State $\texttt{nk}^1 \gets \KDF(\varepsilon, L, c_{13}, 2)$
 		\State $\texttt{r} \gets 1$
 		\State $\texttt{i} \gets 0$
 		\State $\textbf{Send } (\texttt{kid}^1_2,\ 2||0,\ X_3)$
@@ -748,7 +757,7 @@ Including the ratchet fingerprint in the Hello packet does not compromise identi
 
 Packet types $X_2$ and $K_1$ represent the second to last message of Noise XK and Noise KK. The remote peer will not have derived the Noise key yet, so if this peer attempted to encrypt with this key immediately, there is a risk its packets will arrive out of order and be undecryptable. Receiving a valid $C_1$ packet from the remote peer confirms that they have successfully derived the correct Noise key, which signals it can now be reliably used for encryption.
 
-Similarly, the new ratchet key and fingerprint will not have been derived by the remote peer yet. So this peer will have to save these keys to persistent storage, but not yet delete the previous ratchet key and fingerprint until the remote peer sends a key confirmation. This means that for a brief period of time Alice has two sets of ratchet keys and fingerprints saved, instead of just one. We want to make sure Alice and Bob never have more than two of these keys saved at a time. So during the Noise XK handshake if Alice has two sets of keys and fingerprints, they must send both fingerprints to Bob, and delete the key and fingerprint that Bob chooses not to use as the PSK.
+Similarly, the new ratchet key and fingerprint will not have been derived by the remote peer yet. So this peer will have to save these keys to persistent storage, but not yet delete the previous ratchet key and fingerprint until the remote peer sends a key confirmation. This means that for a brief period of time Alice has two sets of ratchet keys and fingerprints saved, instead of just one. We want to make sure Alice and Bob never have more than two of these keys saved at a time. So during the Noise XK handshake if Alice has two sets of keys and fingerprints, they \emph{must} send both fingerprints to Bob, and delete the key and fingerprint that Bob chooses not to use as the PSK.
 
 \begin{algorithm}[H]
 	\caption{Transition $\delta(B_2, X_3)=S_1$ -- Bob receives the final packet of Noise XK. Input $\algn{Accept}$ is a function provided by the upper protocol that takes as input Alice's identity and outputs security flags $(\pi_3, \pi_4)$, $\pi_3$ can be $\bot$. If $\pi_3=\bot$, Bob will reject Alice's session. If $\pi_3=1$, and Bob is aware of a ratchet key Alice should have, but Alice is not connecting with it, Bob will reject Alice's session (similar to when $\pi_2=1$). If Bob rejects Alice's session and $\pi_4 = 0$, Bob will send a packet to Alice explicitly rejecting their session.}\label{alg:recv_x3}
@@ -760,8 +769,8 @@ Similarly, the new ratchet key and fingerprint will not have been derived by the
 		\State $(\pi_3, \pi_4) \gets \algn{Accept}(X_3\texttt{.s}, X_3\texttt{.identity})$
 		\If{$\pi_3 \neq \bot$}
 			\State $\textbf{Restore } (\texttt{rk}, \texttt{rf}) \text{ based on } (X_3\texttt{.s}, X_3\texttt{.identity})$
-			\If{$(\texttt{rf}', \texttt{rk}') \neq (\texttt{rf}_1, \texttt{rk}_1) \andb (\texttt{rf}', \texttt{rk}') \neq (\texttt{rf}_2, \texttt{rk}_2)$}
-				\If{$\pi_3 = 0 \andb \texttt{rf}' = \varepsilon$}
+			\If{$\texttt{rf}' \neq \texttt{rf}_1 \andb \texttt{rf}' \neq \texttt{rf}_2$}
+				\If{$\pi_3 = 0 \andb \texttt{rf}' = 0^{256}$}
 					\State \textbf{Warn} the upper protocol that Alice does not have the ratchet key
 				\Else
 					\If{$\pi_4 = 0$}
@@ -771,9 +780,9 @@ Similarly, the new ratchet key and fingerprint will not have been derived by the
 					\State \textbf{Fail authentication}
 				\EndIf
 			\EndIf
-			\State $\texttt{nk}^1 \gets \KDF(\varepsilon, L, c_{13}, 2)$
 			\State $(\texttt{rk}_2, \texttt{rf}_2) \gets \bot$
 			\State $(\texttt{rk}_1, \texttt{rf}_1) \gets \KDF(h_{14}, \texttt{"ASKR"}, c_{13}, 2)$
+			\State $\texttt{nk}^1 \gets \KDF(\varepsilon, L, c_{13}, 2)$
 			\State $\texttt{r} \gets 2$
 			\State $\texttt{i} \gets 1$
 			\State $C_1\texttt{.kek\_tag} \gets \AEAD(\texttt{kek}^1_1, 3||c, \varepsilon, \varepsilon)$
@@ -788,12 +797,14 @@ Similarly, the new ratchet key and fingerprint will not have been derived by the
 	\end{algorithmic}
 \end{algorithm}
 
-When packet $X_3$ is received, Bob might refuse to start a session with Alice based on their static key and identity. The preferred way for Bob to do this is to simply do nothing, and ignore Alice's packets. This would follow the ``Silence is Golden" principle of security. However there are some applications where, usually for UX reasons, Alice needs to be able tell apart having a bad connection with Bob from Bob rejecting Alice's identity. If Bob always goes silent Alice has no reliable way to tell these two situations apart. Since both Bob and Alice have the key exchange key at this point in the handshake, it was a very natural and secure extension of the protocol to allow Bob to notify Alice that the session has been refused.
+If, when function $\algn{Accept}$ is called, any other instance of $\zeta$ exists with the same remote peer, then $\algn{Accept}$ \emph{must} be implemented to do one of the following: Either the other instance of $\zeta$ is deleted, or $\algn{Accept}$ returns $\pi_3=\bot$ to reject the new session. Instances of $\zeta$ in state $B_2$ \emph{must} be ignored in regards to the prior rule, since the identity of the remote peer will not have been confirmed and might not be known. Keep in mind that this rule implies that if Alice attempts to open multiple sessions with Bob at once, only one of them will be accepted.
+
+When packet $X_3$ is received, Bob might refuse to start a session with Alice based on their static key and identity. The preferred way for Bob to do this is to simply do nothing, and ignore Alice's packets. This would follow the ``Silence is Golden" principle of security. However there are some applications where, usually for UX reasons, Alice needs to be able tell apart having a bad connection with Bob from Bob rejecting Alice's identity. If Bob always goes silent, Alice has no reliable way to tell these two situations apart. This is the reason why packet $D$ is created and sent at the bottom of \algorithmref{alg:recv_x3}. Receipt of packet $D$ implies Bob has explicitly rejected a session with Alice.
 
 Packet types $X_3$ and $K_2$ represent the final messages of Noise XK and Noise KK, respectively. The peer who receives these packets can be sure that the remote peer has derived an identical Noise key already, and so the new key can be reliably used immediately.
 
 \begin{algorithm}[H]
-	\caption{Transition $\delta(A_3, C_1)=S_2$ and $\delta(R_2, C_1)=S_2$ -- A key confirmation for either the Noise XK initial handshake or Noise KK rekeying has been received. This peer must send an Acknowledgement, \figureref{packet:key_conf}, to let the remote peer know that it has been received.}\label{alg:key_conf}
+	\caption{Transition $\delta(A_3, C_1)=S_2$ and $\delta(R_2, C_1)=S_2$ -- A key confirmation for either the Noise XK initial handshake or Noise KK rekeying has been received. This peer \emph{must} send an Acknowledgement, \figureref{packet:key_conf}, to let the remote peer know that it has been received.}\label{alg:key_conf}
 	\begin{algorithmic}
 		\Require $(\texttt{kid}^{\texttt{i} + 1}_{\texttt{r}},\ 3||c,\ C_1)$
 		\State $\textbf{Decrypt } C_1$ using $\texttt{kek}^{\texttt{i} + 1}_{\texttt{r}}$
@@ -820,7 +831,6 @@ Packet types $C_2$ and $D$ have trivial transition algorithms. They merely decry
 	\end{algorithmic}
 \end{algorithm}
 
-
 \begin{algorithm}[H]
 	\caption{Transition $\delta(S_2, K_1)=R_2$ and $\delta(R_1, K_1)=R_2$ -- Bob has received Alice's request to rekey and sends a Rekey Completion packet, \figureref{packet:rekey}, in reply. Bob has now finished Noise KK and has obtained a new Noise key. A new pair of key ids are generated so Bob can tell apart packets encrypted with the new key from those encrypted with the previous key.}
 	\begin{algorithmic}
@@ -833,16 +843,15 @@ Packet types $C_2$ and $D$ have trivial transition algorithms. They merely decry
 		\State $K_2\texttt{.key\_id} \gets \AEAD(k_{10}', 6||0, h_{8}, \texttt{kid}^{\texttt{i} + 1}_\texttt{r})$
 		\State $c \gets \COUNTER()$
 		\State $K_2 \gets \AEAD(\texttt{kek}^\texttt{i}_{3 - \texttt{r}}, 6||c, \varepsilon, K_2)$
+		\State $(\texttt{rk}_2, \texttt{rf}_2) \gets (\texttt{rk}_1, \texttt{rf}_1)$
+		\State $(\texttt{rk}_1, \texttt{rf}_1) \gets \KDF(h_{11}', \texttt{"ASKR"}, c_{10}', 2)$
 		\State $\texttt{kek}^{\texttt{i} - 1} \gets \bot$
 		\State $(\texttt{kek}^{\texttt{i} + 1}_{3 - \texttt{r}}, \texttt{kek}^{\texttt{i} + 1}_\texttt{r}) \gets \KDF(h_{11}', \texttt{"ASKK"}, c_{10}', 2)$
 		\State $\texttt{nk}^{\texttt{i} - 1} \gets \bot$
 		\State $(\texttt{nk}^{\texttt{i} + 1}_{3 - \texttt{r}}, \texttt{nk}^{\texttt{i} + 1}_\texttt{r}) \gets \KDF(\varepsilon, L, c_{10}', 2)$
-		\State $(\texttt{rk}_2, \texttt{rf}_2) \gets (\texttt{rk}_1, \texttt{rf}_1)$
-		\State $(\texttt{rk}_1, \texttt{rf}_1) \gets \KDF(h_{11}', \texttt{"ASKR"}, c_{10}', 2)$
 		\State $\textbf{Send } (\texttt{kid}^\texttt{i}_{3 - \texttt{r}},\ 6||c,\ K_2)$
 	\end{algorithmic}
 \end{algorithm}
-
 
 \begin{algorithm}[H]
 	\caption{Transition $\delta(R_1, K_2)=S_1$ -- Alice has received Bob's reply and so can also finish Noise KK. They send a Key Confirmation, \figureref{packet:key_conf}, to signal the completion of the handshake. The second to last Noise key is deleted for forward secrecy.}
@@ -850,11 +859,11 @@ Packet types $C_2$ and $D$ have trivial transition algorithms. They merely decry
 		\Require $(\texttt{kid}^\texttt{i}_\texttt{r},\ 6||c,\ K_2)$
 		\State $\textbf{Decrypt } K_2$ using $\texttt{kek}^\texttt{i}_\texttt{r}$, and Noise KK
 		\State $\texttt{kid}^{\texttt{i} + 1}_{3 - \texttt{r}} \gets K_2\texttt{.key\_id}$
+		\State $(\texttt{rk}_1, \texttt{rf}_1) \gets \KDF(h_{11}', \texttt{"ASKR"}, c_{10}', 2)$
 		\State $\texttt{kek}^{\texttt{i} - 1} \gets \bot$
 		\State $(\texttt{kek}^{\texttt{i} + 1}_\texttt{r}, \texttt{kek}^{\texttt{i} + 1}_{3 - \texttt{r}}) \gets \KDF(h_{11}', \texttt{"ASKK"}, c_{10}', 2)$
 		\State $\texttt{nk}^{\texttt{i} - 1} \gets \bot$
 		\State $(\texttt{nk}^{\texttt{i} + 1}_\texttt{r}, \texttt{nk}^{\texttt{i} + 1}_{3 - \texttt{r}}) \gets \KDF(\varepsilon, L, c_{10}', 2)$
-		\State $(\texttt{rk}_1, \texttt{rf}_1) \gets \KDF(h_{11}', \texttt{"ASKR"}, c_{10}', 2)$
 		\State $\texttt{i} \gets \texttt{i} + 1$
 		\State $c \gets \COUNTER()$
 		\State $C_1\texttt{.kek\_tag} \gets \AEAD(\texttt{kek}^\texttt{i}_{3 - \texttt{r}}, 3||c, \varepsilon, \varepsilon)$

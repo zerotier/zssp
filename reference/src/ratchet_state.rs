@@ -12,31 +12,24 @@ use crate::proto::*;
 /// Corresponds to the Ratchet Key and Ratchet Fingerprint described in Section 3.
 #[derive(Clone, Eq)]
 pub struct RatchetState {
-    key: Zeroizing<[u8; RATCHET_SIZE]>,
-    fingerprint: Option<Zeroizing<[u8; RATCHET_SIZE]>>,
-    chain_len: u64,
+    pub(crate) key: Zeroizing<[u8; RATCHET_SIZE]>,
+    pub(crate) fingerprint: Zeroizing<[u8; RATCHET_SIZE]>,
+    pub(crate) chain_len: u64,
 }
 impl PartialEq for RatchetState {
     fn eq(&self, other: &Self) -> bool {
-        let ret = match (self.fingerprint.as_ref(), other.fingerprint.as_ref()) {
-            (Some(rf1), Some(rf2)) => secure_eq(rf1, rf2),
-            (None, None) => true,
-            _ => false,
-        };
-        ret & secure_eq(&self.key, &other.key) & (self.chain_len == other.chain_len)
+        self.fingerprint.eq(&other.fingerprint) & (self.chain_len == other.chain_len)
     }
 }
 impl std::hash::Hash for RatchetState {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        if let Some(rf) = &self.fingerprint {
-            state.write_u64(u64::from_ne_bytes(rf[..8].try_into().unwrap()))
-        }
+        state.write(self.fingerprint.as_ref())
     }
 }
 impl RatchetState {
     /// Creates a new ratchet state from the given ratchet key, ratchet fingerprint and chain length.
     pub fn new(key: Zeroizing<[u8; RATCHET_SIZE]>, fingerprint: Zeroizing<[u8; RATCHET_SIZE]>, chain_len: u64) -> Self {
-        RatchetState { key, fingerprint: Some(fingerprint), chain_len }
+        RatchetState { key, fingerprint, chain_len }
     }
     /// Creates a new ratchet state from the given ratchet key, ratchet fingerprint and chain length.
     ///
@@ -45,27 +38,9 @@ impl RatchetState {
     pub fn new_raw(key: [u8; RATCHET_SIZE], fingerprint: [u8; RATCHET_SIZE], chain_len: u64) -> Self {
         RatchetState {
             key: Zeroizing::new(key),
-            fingerprint: Some(Zeroizing::new(fingerprint)),
+            fingerprint: Zeroizing::new(fingerprint),
             chain_len,
         }
-    }
-    /// The ratchet key for this ratchet state. This is directly mixed into the master secret of a
-    /// session and so is very sensitive. All operations upon a ratchet key must be implemented
-    /// in constant time. The user should prefer to do nothing with the ratchet key besides copying
-    /// it to or from a storage device.
-    ///
-    /// If `fingerprint` returns `None` then this is the "empty" ratchet state and the key will be
-    /// all zeros.
-    pub fn key(&self) -> &[u8; RATCHET_SIZE] {
-        &self.key
-    }
-    /// Ratchet keys and fingerprints are "chained together", where each set is derived from the
-    /// previous set.
-    ///
-    /// This function outputs the total length of that chain, as in the total number of previous
-    /// ratchet states that this ratchet state was derived from.
-    pub fn chain_len(&self) -> u64 {
-        self.chain_len
     }
     /// Creates a new "empty" ratchet state, where the ratchet fingerprint is the
     /// empty string, the ratchet key is all zeros, and the chain length is 0.
@@ -74,7 +49,7 @@ impl RatchetState {
     pub fn empty() -> Self {
         RatchetState {
             key: Zeroizing::new([0u8; RATCHET_SIZE]),
-            fingerprint: None,
+            fingerprint: Zeroizing::new([0u8; RATCHET_SIZE]),
             chain_len: 0,
         }
     }
@@ -84,7 +59,7 @@ impl RatchetState {
     pub fn new_from_otp<Hmac: Sha512Hash>(otp: &[u8]) -> RatchetState {
         let mut buffer = Vec::new();
         buffer.push(1);
-        buffer.extend(LABEL_OTP_TO_RATCHET);
+        buffer.extend(*LABEL_OTP_TO_RATCHET);
         buffer.push(0x00);
         buffer.extend((1024u16).to_be_bytes());
         let r1 = Hmac::hmac(otp, &buffer);
@@ -96,15 +71,15 @@ impl RatchetState {
             1,
         )
     }
-    /// Returns true if this is the "empty" ratchet state, where the ratchet fingerprint is the
-    /// empty string, the ratchet key is all zeros, and the chain length is 0.
-    pub fn is_empty(&self) -> bool {
-        self.fingerprint.is_none()
-    }
-    /// Checks if the fingerprint of this ratchet state equals the fingerprint contained in argument
-    /// `rf`. Uses constant time equality.
-    pub fn fingerprint_eq(&self, rf: &[u8; RATCHET_SIZE]) -> bool {
-        self.fingerprint.as_ref().map_or(false, |rf0| secure_eq(rf0, rf))
+    /// The ratchet key for this ratchet state. This is directly mixed into the master secret of a
+    /// session and so is very sensitive. All operations upon a ratchet key must be implemented
+    /// in constant time. The user should prefer to do nothing with the ratchet key besides copying
+    /// it to or from a storage device.
+    ///
+    /// If `fingerprint` returns `None` then this is the "empty" ratchet state and the key will be
+    /// all zeros.
+    pub fn key(&self) -> &[u8; RATCHET_SIZE] {
+        &self.key
     }
     /// The ratchet fingerprint for this ratchet state.
     ///
@@ -115,8 +90,43 @@ impl RatchetState {
     /// but the security of ZSSP can survive having this value leaked.
     /// Operations on a ratchet fingerprint should be implemented in constant time,
     /// but it is ok if they are not.
-    pub fn fingerprint(&self) -> Option<&[u8; RATCHET_SIZE]> {
-        self.fingerprint.as_deref()
+    pub fn fingerprint(&self) -> &[u8; RATCHET_SIZE] {
+        &self.fingerprint
+    }
+    /// Ratchet keys and fingerprints are "chained together", where each set is derived from the
+    /// previous set.
+    ///
+    /// This function outputs the total length of that chain, as in the total number of previous
+    /// ratchet states that this ratchet state was derived from.
+    pub fn chain_len(&self) -> u64 {
+        self.chain_len
+    }
+    /// Returns true if this is the "empty" ratchet state, where the ratchet fingerprint is the
+    /// empty string, the ratchet key is all zeros, and the chain length is 0.
+    pub fn is_empty(&self) -> bool {
+        secure_eq(self.fingerprint(), &[0u8; RATCHET_SIZE])
+    }
+    /// Checks if the fingerprint of this ratchet state equals the
+    ///  fingerprint contained in argument `rf`.
+    ///
+    /// Uses constant time equality.
+    pub fn fingerprint_eq(&self, rf: &[u8; RATCHET_SIZE]) -> bool {
+        secure_eq(self.fingerprint(), rf)
+    }
+    /// Returns true if the fingerprint of argument `this` equals the fingerprint represented by
+    /// argument `rf`.
+    /// If `this` is `None`, `this` is considered to be "null", as in a ratchet state that does not
+    /// exist or has been deleted.
+    /// If `rf` is `None`, `rf` is considered to be "null" as well.
+    /// If `rf` is `Some(None)`, `rf` is considered to be the empty ratchet fingerprint.
+    ///
+    /// Uses constant time equality.
+    pub fn fingerprint_eq_nullable(this: Option<&Self>, rf: Option<&[u8; RATCHET_SIZE]>) -> bool {
+        match (this, rf) {
+            (Some(this), Some(rf)) => this.fingerprint_eq(rf),
+            (None, None) => true,
+            _ => false,
+        }
     }
 }
 impl Default for RatchetState {
@@ -134,7 +144,8 @@ impl Default for RatchetState {
 pub struct RatchetStates {
     /// The first ratchet state from the pair.
     pub state1: RatchetState,
-    /// The second ratchet state from the pair. It can, and usually will be `None`.
+    /// The second ratchet state from the pair.
+    /// It can, and usually will be `None`, which means that this ratchet state is "null".
     pub state2: Option<RatchetState>,
 }
 impl RatchetStates {
@@ -169,7 +180,6 @@ impl Default for RatchetStates {
         Self::new_initial_states()
     }
 }
-
 /// A set of references to ratchet states specifying how a remote peer's persistent storage should
 /// be updated. This struct is designed to provide any and all potentially needed data for
 /// maintaining a store of these ratchet states. It should be straightforward to commit these updates
@@ -178,69 +188,138 @@ impl Default for RatchetStates {
 /// There will only be up to two ratchet states saved to storage at a time per peer.
 /// Every time a third ratchet state is generated, a previous ratchet state will be deleted.
 ///
-/// These are sensitive values should they ought to be securely stored, with restricted read-write
-/// permissions if stored on disk.
+/// As the name implies, these updates should be applied as one atomic compare-and-swap operation.
+/// If the two ratchet states currently in storage equal `cur_state1` and `cur_state2`,
+/// then `new_state1` and `new_state2` should overwrite them.
+/// If not, then storage must not be modified.
 ///
-/// To prevent desync or resource leakage, these updates should be committed atomically. If that is
-/// not possible, then new ratchet states should be written before old ratchet states are deleted
-#[derive(Clone, Copy)]
-pub struct RatchetUpdate<'a> {
-    /// The ratchet key and fingerprint to store in the first slot.
-    pub state1: &'a RatchetState,
-    /// The ratchet key and fingerprint to store in the second slot.
-    pub state2: Option<&'a RatchetState>,
-    /// Whether `state1` is a brand new ratchet state, or if it was previously saved.
-    pub state1_was_just_added: bool,
-    /// A previous ratchet key and fingerprint that now must be deleted from storage.
-    /// This will have been a previously given value of `state1` or `state2`.
-    pub deleted_state1: Option<&'a RatchetState>,
-    /// A previous ratchet key and fingerprint that now must be deleted from storage.
-    /// It is extremely rare that this field is occupied.
-    pub deleted_state2: Option<&'a RatchetState>,
+/// Ratchet keys must never be checked for equality. Instead, if two ratchet states have equal
+/// ratchet fingerprints, it should be assumed that they also have equal ratchet keys.
+/// This policy exists to reduce the security impact of timing and other side-channel attacks.
+///
+/// These are sensitive values and ought to be securely stored, with restricted read-write
+/// permissions if stored on disk.
+#[derive(Clone)]
+pub struct CompareAndSwap<'a> {
+    /// The ratchet state to store in the first slot.
+    pub new_state1: &'a RatchetState,
+    /// The ratchet state to store in the second slot.
+    /// A value of `None` implies that the second slot should be set to null.
+    pub new_state2: Option<&'a RatchetState>,
+    /// This field is `true` if and only if `new_state1 != cur_state1` and `new_state1 != cur_state2`.
+    ///
+    /// This implies whether `state1` is a brand new ratchet state, or if it was previously saved.
+    pub new_state1_was_just_added: bool,
+    /// The ratchet state that we expect to see in the first slot.
+    /// If this value is not currently stored in the first slot, the entire update must be aborted.
+    pub cur_state1: &'a RatchetState,
+    /// The ratchet state that we expect to see in the second slot.
+    /// A value of `None` implies we expect the second slot to be set to "null".
+    ///
+    /// If this value is not currently stored in the second slot, the entire update must be aborted.
+    pub cur_state2: Option<&'a RatchetState>,
+    /// This field is `true` if and only if `cur_state1 != new_state1` and `cur_state1 != new_state2`.
+    pub cur_state1_was_just_deleted: bool,
+    /// This field is `true` if and only if `cur_state2 != new_state1` and `cur_state2 != new_state2`.
+    pub cur_state2_was_just_deleted: bool,
 }
-impl<'a> RatchetUpdate<'a> {
-    /// Returns the final `RatchetStates` that should be the only thing saved after this update is
-    /// fully committed. Future calls to `ApplicationLayer::restore_by_identity` should return this struct.
-    pub fn to_states(&self) -> RatchetStates {
-        RatchetStates::new(self.state1.clone(), self.state2.cloned())
+impl<'a> CompareAndSwap<'a> {
+    pub(crate) fn new(
+        new_state1: &'a RatchetState,
+        new_state2: Option<&'a RatchetState>,
+        new_state1_was_just_added: bool,
+        cur_state1: &'a RatchetState,
+        cur_state2: Option<&'a RatchetState>,
+        cur_state1_was_just_deleted: bool,
+        cur_state2_was_just_deleted: bool,
+    ) -> Self {
+        Self {
+            new_state1,
+            new_state2,
+            new_state1_was_just_added,
+            cur_state1,
+            cur_state2,
+            cur_state1_was_just_deleted,
+            cur_state2_was_just_deleted,
+        }
+    }
+    /// Returns the final `RatchetStates` that must be swapped into storage if this update is
+    /// fully committed.
+    /// Future calls to `ApplicationLayer::restore_by_identity` should return this struct.
+    pub fn to_new_states(&self) -> RatchetStates {
+        RatchetStates::new(self.new_state1.clone(), self.new_state2.cloned())
+    }
+    /// Returns the `RatchetStates` that is expected to currently be in storage for this peer.
+    /// This value must be compared with the current value in storage, and if they are equal,
+    /// the return value of `CompareAndSwap::to_new_states` must overwrite it.
+    pub fn to_cur_states(&self) -> RatchetStates {
+        RatchetStates::new(self.cur_state1.clone(), self.cur_state2.cloned())
     }
     /// If this update specifies adding a brand new ratchet fingerprint, this function will return it.
     /// The returned ratchet fingerprint will always be the ratchet fingerprint of field `state1`.
     ///
-    /// If a fingerprint is returned then it is guaranteed that `state1_was_just_added` will be true.
+    /// If a fingerprint is returned then it is guaranteed that `state1_was_just_added` will be `true`.
     pub fn added_fingerprint(&self) -> Option<&[u8; RATCHET_SIZE]> {
-        if self.state1_was_just_added {
-            self.state1.fingerprint()
-        } else {
-            None
-        }
+        self.new_state1_was_just_added.then_some(self.new_state1.fingerprint())
     }
-    /// If this updated specifies to delete an old ratchet fingerprint, this function will return it.
-    /// The returned ratchet fingerprint will always be the ratchet fingerprint of field
-    /// `deleted_state1`.
+    /// If this updated specifies to delete `cur_state1`, and `cur_state1` has a non-zero ratchet
+    /// fingerprint, this function will return the ratchet fingerprint.
+    ///
+    /// If `cur_state1` is not being deleted (i.e. `cur_state1 == new_state1` or
+    /// `cur_state1 == new_state2`), then this will return `None`.
     ///
     /// There may be a second ratchet fingerprint to be deleted, which function
     /// `deleted_fingerprint2` will return.
     pub fn deleted_fingerprint1(&self) -> Option<&[u8; RATCHET_SIZE]> {
-        if let Some(rs) = &self.deleted_state1 {
-            rs.fingerprint()
-        } else {
-            None
+        if self.cur_state1_was_just_deleted {
+            if !self.cur_state1.is_empty() {
+                return Some(self.cur_state1.fingerprint());
+            }
         }
+        None
     }
-    /// If this updated specifies to delete two ratchet fingerprints, this function will return the
-    /// second one. `deleted_fingerprint1` will return the first one.
-    /// The returned ratchet fingerprint will always be the ratchet fingerprint of field
-    /// `deleted_state2`.
+    /// If this updated specifies to delete `cur_state2`, and `cur_state2` has a non-zero ratchet
+    /// fingerprint, this function will return the ratchet fingerprint.
     ///
-    /// It is exceptionally rare that there will be more than one ratchet fingerprint to be deleted.
-    /// Care should be taken to make sure that this update will still be correctly committed in the
-    /// rare event that this returns `Some`.
+    /// If `cur_state2` is not being deleted (i.e. `cur_state2 == new_state1` or
+    /// `cur_state2 == new_state2`), then this will return `None`.
+    ///
+    /// There may be a second ratchet fingerprint to be deleted, which function
+    /// `deleted_fingerprint1` will return.
     pub fn deleted_fingerprint2(&self) -> Option<&[u8; RATCHET_SIZE]> {
-        if let Some(rs) = &self.deleted_state2 {
-            rs.fingerprint()
-        } else {
-            None
+        if self.cur_state2_was_just_deleted {
+            if let Some(rf) = self.cur_state2 {
+                if !rf.is_empty() {
+                    return Some(rf.fingerprint());
+                }
+            }
         }
+        None
+    }
+    /// Returns true if the currently stored ratchet states are expected to be the initial ratchet
+    /// states. This is the default value for a peer's ratchet states in the event they could not
+    /// be found in storage.
+    ///
+    /// If a peer could not be found in storage, and this function returns true,
+    /// then the peer should be added to storage with the new ratchet states specified by this
+    /// `CompareAndSwap` struct.
+    pub fn cur_is_initial_states(&self) -> bool {
+        self.cur_state1.is_empty() && self.cur_state2.is_none()
+    }
+    /// Compares the ratchet fingerprints of `cur_state1` and `cur_state2` with `rf1` and `rf2`.
+    /// If they are equal this function will return `true`.
+    ///
+    /// If this function returns `true`, then the implementation may proceed to swap out the ratchet
+    /// states these fingerprints come from with `new_state1` and `new_state2`.
+    pub fn compare_fingerprints(&self, rf1: &[u8; RATCHET_SIZE], rf2: Option<&[u8; RATCHET_SIZE]>) -> bool {
+        self.cur_state1.fingerprint_eq(rf1) & RatchetState::fingerprint_eq_nullable(self.cur_state2, rf2)
+    }
+    /// Compares `cur_state1` and `cur_state2` with `other.state1` and `other.state2`.
+    /// If they are equal this function will return `true`.
+    ///
+    /// If this function returns `true`, then the implementation may proceed to swap `other.state1`
+    /// and `other.state2` with `new_state1` and `new_state2`.
+    pub fn compare(&self, other: &RatchetStates) -> bool {
+        self.cur_state1.eq(&other.state1) & self.cur_state2.eq(&other.state2.as_ref())
     }
 }

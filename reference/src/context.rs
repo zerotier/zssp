@@ -11,7 +11,7 @@ use crate::challenge::ChallengeContext;
 use crate::crypto::{AES_256_KEY_SIZE, AES_GCM_NONCE_SIZE};
 use crate::fragmentation::{send_with_fragmentation, DefragBuffer};
 use crate::proto::*;
-use crate::result::{byzantine_fault, OpenError, ReceiveError, ReceiveOk, SendError, SessionEvent};
+use crate::result::{fault, OpenError, ReceiveError, ReceiveOk, SendError, SessionEvent};
 use crate::zeta::*;
 #[cfg(feature = "logging")]
 use crate::LogEvent::*;
@@ -161,24 +161,24 @@ impl<C: CryptoLayer> Context<C> {
                                 if !matches!(&zeta.beta, ZetaAutomata::A1(_)) {
                                     // A resent handshake response from Bob may have arrived out of order,
                                     // after we already received one.
-                                    return Err(byzantine_fault!(OutOfSequence, false));
+                                    return Err(fault!(OutOfSequence, false));
                                 }
                                 if c >= COUNTER_WINDOW_MAX_SKIP_AHEAD {
-                                    return Err(byzantine_fault!(ExpiredCounter, true));
+                                    return Err(fault!(ExpiredCounter, true));
                                 }
                                 Ok(())
                             } else if PACKET_TYPE_USES_COUNTER_RANGE.contains(&p) {
                                 if !zeta.check_counter_window(c) {
                                     // The counter window has finite memory and so will occasionally give
                                     // false positives on very out-of-order packets.
-                                    return Err(byzantine_fault!(ExpiredCounter, false));
+                                    return Err(fault!(ExpiredCounter, false));
                                 }
                                 Ok(())
                             } else if p == PACKET_TYPE_HANDSHAKE_COMPLETION {
                                 // The handshake completion packet could have been resent.
-                                return Err(byzantine_fault!(InvalidPacket, false));
+                                return Err(fault!(InvalidPacket, false));
                             } else {
-                                return Err(byzantine_fault!(InvalidPacket, true));
+                                return Err(fault!(InvalidPacket, true));
                             }
                         })?;
                 if let Some((pn, mut assembled_packet)) = result {
@@ -295,7 +295,7 @@ impl<C: CryptoLayer> Context<C> {
                             log!(app, DIsAuthClosedSession(&session));
                             SessionEvent::Rejected
                         }
-                        _ => return Err(byzantine_fault!(InvalidPacket, true)), // This is unreachable.
+                        _ => return Err(fault!(InvalidPacket, true)), // This is unreachable.
                     };
                     drop(zeta);
                     Ok(ReceiveOk::Session(session, ret))
@@ -315,7 +315,7 @@ impl<C: CryptoLayer> Context<C> {
                                 if p == PACKET_TYPE_HANDSHAKE_COMPLETION && c == 0 {
                                     Ok(())
                                 } else {
-                                    Err(byzantine_fault!(InvalidPacket, true))
+                                    Err(fault!(InvalidPacket, true))
                                 }
                             })?;
                     if let Some((_, assembled_packet)) = result {
@@ -351,7 +351,7 @@ impl<C: CryptoLayer> Context<C> {
                 } else {
                     // When sessions are added or dropped or packets arrive extremely delayed it is
                     // possible to receive no longer recognized key ids.
-                    Err(byzantine_fault!(UnknownLocalKeyId, false))
+                    Err(fault!(UnknownLocalKeyId, false))
                 }
             }
         } else {
@@ -365,7 +365,7 @@ impl<C: CryptoLayer> Context<C> {
                     if p == PACKET_TYPE_HANDSHAKE_HELLO || p == PACKET_TYPE_CHALLENGE {
                         Ok(())
                     } else {
-                        Err(byzantine_fault!(InvalidPacket, true))
+                        Err(fault!(InvalidPacket, true))
                     }
                 },
             )?;
@@ -394,7 +394,7 @@ impl<C: CryptoLayer> Context<C> {
                             None,
                         );
                         // If we issue a challenge the first hello packet will always fail.
-                        return Err(byzantine_fault!(FailedAuth, false));
+                        return Err(fault!(FailedAuth, false));
                     } else if let Ok(true) = result {
                         log!(app, X1SucceededChallenge);
                     }
@@ -423,7 +423,7 @@ impl<C: CryptoLayer> Context<C> {
                     log!(app, ReceivedRawChallenge);
                     // Process recv challenge layer.
                     if assembled_packet.len() != KID_SIZE + CHALLENGE_SIZE {
-                        return Err(byzantine_fault!(InvalidPacket, true));
+                        return Err(fault!(InvalidPacket, true));
                     }
                     if let Some(kid_recv) =
                         NonZeroU32::new(u32::from_be_bytes(assembled_packet[..KID_SIZE].try_into().unwrap()))
@@ -439,9 +439,9 @@ impl<C: CryptoLayer> Context<C> {
                             return Ok(ReceiveOk::Unassociated);
                         }
                     }
-                    Err(byzantine_fault!(UnknownLocalKeyId, true))
+                    Err(fault!(UnknownLocalKeyId, true))
                 } else {
-                    Err(byzantine_fault!(InvalidPacket, true))
+                    Err(fault!(InvalidPacket, true))
                 }
             } else {
                 Ok(ReceiveOk::Unassociated)

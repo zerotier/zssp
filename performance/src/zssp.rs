@@ -173,16 +173,25 @@ impl<C: CryptoLayer> Context<C> {
             .restore_by_identity(&static_remote_key, &session_data, None)
             .map_err(OpenError::StorageError)?
             .unwrap_or_default();
-        self.open_with_ratchet(app, send, mtu, static_remote_key, session_data, identity, ratchet_states)
+        self.open_with_ratchet(
+            app,
+            send,
+            mtu,
+            static_remote_key,
+            session_data,
+            identity,
+            ratchet_states,
+        )
     }
     /// Create a new session and send initialization packets to Bob, our remote peer.
     /// This function will use the specified `ratchet_states` to connect to Bob, as opposed to
     /// calling `app.restore_by_identity`. This can be used to open a session with a specific
     /// one-time-password using `RatchetStates::new_otp_states()`, or in situations where it is
-    /// desireable to avoid having Alice call `app.restore_by_identity`.
+    /// desireable to avoid having Alice call `app.restore_by_identity`. Keep in mind that
+    /// `save_ratchet_state` likely will eventually be called to delete this ratchet state.
     ///
     /// If using a one-time-password, a call to `app.initiator_disallows_downgrade` on the created
-    /// session **MUST** return `true`. Otherwise the remote peer would be able to avoid having
+    /// session **must** return `true`. Otherwise the remote peer would be able to avoid having
     /// to demonstrate knowledge of the otp by requesting a ratchet downgrade.
     /// Only after the created session is established may a call to
     /// `app.initiator_disallows_downgrade` return false.
@@ -546,7 +555,7 @@ impl<C: CryptoLayer> Context<C> {
                 return Err(fault!(InvalidPacket, true));
             }
 
-            let mut buffer = ArrayVec::<u8, HANDSHAKE_HELLO_CHALLENGE_MAX_SIZE>::new();
+            let mut buffer = ArrayVec::<u8, HANDSHAKE_HELLO_CHALLENGE_SIZE>::new();
             let assembled_packet = if fragment_count > 1 {
                 let mut next_service_time = self.0.unassociated_defrag_cache.lock().unwrap().assemble(
                     &nonce,
@@ -578,9 +587,7 @@ impl<C: CryptoLayer> Context<C> {
             if packet_type == PACKET_TYPE_HANDSHAKE_HELLO {
                 log!(app, ReceivedRawX1);
 
-                if !(HANDSHAKE_HELLO_CHALLENGE_MIN_SIZE..=HANDSHAKE_HELLO_CHALLENGE_MAX_SIZE)
-                    .contains(&assembled_packet.len())
-                {
+                if HANDSHAKE_HELLO_CHALLENGE_SIZE != assembled_packet.len() {
                     return Err(fault!(InvalidPacket, true));
                 }
                 // Process recv challenge layer.

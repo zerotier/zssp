@@ -296,11 +296,16 @@ pub trait ApplicationLayer<C: CryptoLayer>: Sized {
         session_data: &C::SessionData,
         fingerprint_data: Option<&C::FingerprintData>,
     ) -> Result<Option<RatchetStates>, std::io::Error>;
-    /// Atomically commit the update specified by `update_data` to storage, or return an error if
-    /// the update could not be made.
-    /// The implementor is free to choose how to apply these updates to storage.
+    /// Atomically compare-and-swap (a.k.a. compare-exchange) `update` to storage.
     ///
-    /// If this returns `Err(())`, the packet which triggered this function to be called will be
+    /// If `update.cur_state1` and `update.cur_state2` are currently in storage, they must
+    /// be swapped with `update.new_state1` and `update.new_state2`.
+    /// Otherwise, storage must remain unchanged.
+    ///
+    /// `Ok(true)` must be returned if the compare-and-swap was successful.
+    /// `Ok(false)` must be returned if comparison failed and the swap was cancelled.
+    ///
+    /// If this returns `Err`, the packet which triggered this function to be called will be
     /// dropped, and no session state will be mutated, preserving synchronization. The remote peer
     /// will eventually resend that packet and so this function will be called again.
     ///
@@ -312,12 +317,20 @@ pub trait ApplicationLayer<C: CryptoLayer>: Sized {
     /// This function may also save state to volatile storage, in which case all peers which connect
     /// to us will have to allow downgrade across the board.
     /// Otherwise, when we restart, we will not be allowed to reconnect.
+    ///
+    /// # Security
+    /// Implementations must not perform comparison operations (equals, less than, etc.) directly
+    /// on two ratchet keys. Instead, comparison operations must be performed indirectly
+    /// upon their ratchet fingerprints. If two ratchet states have the same ratchet fingerprint,
+    /// it should be assumed that they also have the same ratchet key.
+    ///
+    /// The implementations of `PartialEq` for `RatchetState` and `RatchetStates` do this by default.
     fn save_ratchet_state(
         &mut self,
         remote_static_key: &C::PublicKey,
         session_data: &C::SessionData,
-        update_data: RatchetUpdate<'_>,
-    ) -> Result<(), std::io::Error>;
+        update: CompareAndSwap<'_>,
+    ) -> Result<bool, std::io::Error>;
 
     /// Receives a stream of events that occur during an execution of ZSSP.
     /// These are provided for debugging, logging or metrics purposes, and must be used for
