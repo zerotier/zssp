@@ -53,7 +53,6 @@ impl AsRef<[u8]> for PooledVec {
 #[allow(unused)]
 impl DefaultCrypto for TestApplication {
     type SessionData = ();
-    type LookupData = ();
     type IncomingPacketBuffer = PooledVec;
 }
 

@@ -47,26 +47,27 @@ pub trait Aes256Dec: Sized + Send + Sync {
     fn decrypt_in_place(&self, block: &mut [u8; AES_256_BLOCK_SIZE]);
 }
 
-pub trait AesGcmEncContext {
-    fn encrypt(&mut self, input: &[u8], output: &mut [u8]);
-}
-
-pub trait AesGcmDecContext {
-    fn decrypt_in_place(&mut self, data: &mut [u8]);
-}
 
 /// A trait for implementing AES-GCM-256 in a way that allows for extremely high throughput.
 /// One instance of this trait is created whenever a new pair of noise keys are created,
-/// and it handles all data encryption that passes through that session.
+/// and it handles all data encryption and decryption that passes through that session.
+///
+/// It is highly recommended to implement this trait such that encryption and decryption
+/// are hardware accelerated and parallelized.
+/// ZSSP's throughput is near 90% determined by this trait.
 ///
 /// Instances must securely delete their keys when dropped.
 pub trait HighThroughputAesGcmPool: Send + Sync {
-    type EncContext<'a>: AesGcmEncContext
-    where
-        Self: 'a;
-    type DecContext<'a>: AesGcmDecContext
-    where
-        Self: 'a;
+    /// This type represents the state needed to stream a single plaintext for
+    /// AES-GCM Authenticated Encryption.
+    /// It should be set to whatever object, struct, handle or pointer your chosen library
+    /// uses for its stream encryption API.
+    type EncContext<'a> where Self: 'a;
+    /// This type represents the state needed to stream a single ciphertext for
+    /// AES-GCM Authenticated Decryption.
+    /// It should be set to whatever object, struct, handle or pointer your chosen library
+    /// uses for its stream decryption API.
+    type DecContext<'a> where Self: 'a;
 
     /// Create a new instance of this trait.
     /// `encrypt_key` must be used as the encryption key.
@@ -82,7 +83,38 @@ pub trait HighThroughputAesGcmPool: Send + Sync {
     /// There is no additional associated data to be used.
     fn start_dec<'a>(&'a self, nonce: &[u8; AES_GCM_NONCE_SIZE]) -> Self::DecContext<'a>;
 
+    /// Stream-encrypt `input` using the specified encryption context `enc`, and write the
+    /// resulting ciphertext to `output`.
+    ///
+    /// `input` and `output` are guaranteed to have the same length.
+    ///
+    /// Be sure to update the internal state of `enc` so the authentication tag can be correctly
+    /// computed.
+    fn encrypt<'a>(&'a self, enc: &mut Self::EncContext<'a> , input: &[u8], output: &mut [u8]);
+
+    /// Stream-decrypt `data` using the specified encryption context `dec`.
+    /// The resulting plaintext should be written back into `data`.
+    ///
+    /// Be sure to update the internal state of `dec` so the authentication tag can be correctly
+    /// computed.
+    fn decrypt_in_place<'a>(&'a self, dec: &mut Self::DecContext<'a>, data: &mut [u8]);
+
+    /// Finish streaming to `enc` and output the resulting authentication tag.
+    ///
+    /// Perform any pooling or cleanup required on `enc`.
+    /// For many libraries it is much faster to return `enc` to some pool to be reused
+    /// by `start_enc`, rather than dropping it.
+    /// Be sure to perform your own benchmark.
     fn finish_enc<'a>(&'a self, enc: Self::EncContext<'a>) -> [u8; AES_GCM_TAG_SIZE];
+    /// Finish streaming to `dec` and check that the expected authentication tag matches `tag`.
+    /// Make sure that comparing `tag` to the expected authentication tag is performed
+    /// in constant-time. Many libraries provide functions which will do this for you.
+    /// Output `true` only if `tag` is correct.
+    ///
+    /// Afterwards, perform any pooling or cleanup required on `dec`.
+    /// For many libraries it is much faster to return `dec` to some pool to be reused
+    /// by `start_dec`, rather than dropping it.
+    /// Be sure to perform your own benchmark.
     #[must_use]
     fn finish_dec<'a>(&'a self, dec: Self::DecContext<'a>, tag: &[u8; AES_GCM_TAG_SIZE]) -> bool;
 }
@@ -90,12 +122,25 @@ pub trait HighThroughputAesGcmPool: Send + Sync {
 /// A trait for implementing AES-GCM-256 to handle the more varied, but much lower throughput
 /// requirements of a Noise handshake.
 pub trait LowThroughputAesGcm {
+    /// A pure function (no side effects) that implements AESGCM AEAD enryption.
+    ///
+    /// Encryption must be performed on `data` in-place.
+    /// The initial plaintext of `data` must be overwriten with its ciphertext.
+    ///
+    /// The resulting GCM authentication tag must be returned.
     fn encrypt_in_place(
         key: &[u8; AES_256_KEY_SIZE],
         nonce: &[u8; AES_GCM_NONCE_SIZE],
         aad: &[u8],
         data: &mut [u8],
     ) -> [u8; AES_GCM_TAG_SIZE];
+    /// A pure function (no side effects) that implements AESGCM AEAD decryption.
+    ///
+    /// Encryption must be performed on `data` in-place.
+    /// The initial ciphertext of `data` must be overwriten with its plaintext.
+    ///
+    /// This function must check that the expected authentication tag matches `tag`,
+    /// and only return `true` if they match. This must be done in constant-time.
     #[must_use]
     fn decrypt_in_place(
         key: &[u8; AES_256_KEY_SIZE],

@@ -1684,7 +1684,7 @@ pub(crate) fn send_payload<C: CryptoLayer>(
         mtu_sized_buffer[..HEADER_SIZE].copy_from_slice(&header);
         mtu_sized_buffer[FRAGMENT_NO_IDX] = fragment_no as u8;
         let fragment_start = &mut mtu_sized_buffer[HEADER_SIZE..HEADER_SIZE + fragment_len];
-        cipher.encrypt(&payload[i..j], fragment_start);
+        cipher_pool.encrypt(&mut cipher, &payload[i..j], fragment_start);
 
         let header_auth = &mut mtu_sized_buffer[HEADER_AUTH_START..HEADER_AUTH_END];
         state.hk_send.encrypt_in_place(header_auth.try_into().unwrap());
@@ -1705,7 +1705,7 @@ pub(crate) fn send_payload<C: CryptoLayer>(
     mtu_sized_buffer[..HEADER_SIZE].copy_from_slice(&header);
     mtu_sized_buffer[FRAGMENT_NO_IDX] = fragment_no as u8;
     let fragment_start = &mut mtu_sized_buffer[HEADER_SIZE..HEADER_SIZE + payload_rem];
-    cipher.encrypt(&payload[i..], fragment_start);
+    cipher_pool.encrypt(&mut cipher, &payload[i..], fragment_start);
     mtu_sized_buffer[HEADER_SIZE + payload_rem..HEADER_SIZE + fragment_len]
         .copy_from_slice(&cipher_pool.finish_enc(cipher));
 
@@ -1763,12 +1763,12 @@ pub(crate) fn receive_payload_in_place<C: CryptoLayer>(
     for i in 0..fragments.len() - 1 {
         let fragment = &mut fragments[i].as_mut()[HEADER_SIZE..];
         debug_assert!(fragment.len() >= AES_GCM_TAG_SIZE);
-        cipher.decrypt_in_place(fragment);
+        cipher_pool.decrypt_in_place(&mut cipher, fragment);
     }
     let fragment = &mut fragments[fragments.len() - 1].as_mut()[HEADER_SIZE..];
     debug_assert!(fragment.len() >= AES_GCM_TAG_SIZE);
     let tag_idx = fragment.len() - AES_GCM_TAG_SIZE;
-    cipher.decrypt_in_place(&mut fragment[..tag_idx]);
+    cipher_pool.decrypt_in_place(&mut cipher, &mut fragment[..tag_idx]);
 
     if !cipher_pool.finish_dec(cipher, (&fragment[tag_idx..]).try_into().unwrap()) {
         return Err(fault!(FailedAuth, true, session));

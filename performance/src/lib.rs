@@ -36,9 +36,34 @@
 //!  - **KBKDF**: Key mixing, sub-key derivation
 //!  - **AES-256**: Single block encryption of header to harden packet fragmentation protocol
 //!  - **AES-256-GCM**: Authenticated encryption
-//#![warn(missing_docs, rust_2018_idioms)]
+#![warn(missing_docs, rust_2018_idioms)]
 #![allow(clippy::too_many_arguments, clippy::type_complexity, clippy::assertions_on_constants)]
+
+/// A collection of implementation-independent traits for the various specific cryptographic
+/// algorithms ZSSP depends on.
+///
+/// Each trait is very specific about the semantics of the algorithms and the lengths of their
+/// inputs and outputs.
+/// This is to enforced a basic sanity-check upon anyone trying to connect this library to
+/// someone else's implementation.
+///
+/// You should not use this module to implement your own crypto from scratch.
+///
+/// The `crypto_impl` module contains implementations of these traits in terms of popular Rust
+/// crates.
 pub mod crypto;
+/// A module containing optional implementations of the ZSSP `crypto` traits in terms of popular
+/// Rust crates. Some of these crates are not thoroughly audited, so use at your own risk.
+///
+/// The current version of the AES crate does not support stream encryption. For this reason
+/// ZSSP's AES trait is implemented with OpenSSL instead. It has been optimized for
+/// hardware accelerated, parrallel encryption and decryption.
+///
+/// Note that none of these crates are FIPS certified, meaning a build of ZSSP using them will not
+/// be FIPS compliant. However lack of FIPS compliance by no means implies lack of security or lack
+/// of confidence.
+///
+/// This module contains the trait implementations as well as re-exports of those crates.
 pub mod crypto_impl;
 
 mod antireplay;
@@ -58,8 +83,14 @@ mod symmetric_state;
 mod zeta;
 mod zssp;
 
+/// An abstraction over OS and use-case specific resources and queries.
+/// This allows this library to be platform independent.
+/// A user of this library will need to implement the `ApplicationLayer` trait.
 pub mod application;
+/// This module contains several ZSSP constants that a user might want to know for key management,
+/// or in order to avoid "data too large" or "mtu too small" errors.
 pub mod proto;
+/// The collection of the major return types for ZSSP.
 pub mod result;
 
 pub use crate::log_event::*;
