@@ -1,7 +1,5 @@
-use std::{
-    ptr::{self, NonNull},
-    sync::Mutex,
-};
+use std::ptr::{self, NonNull};
+use std::sync::Mutex;
 
 use arrayvec::ArrayVec;
 use openssl_sys::*;
