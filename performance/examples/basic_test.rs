@@ -227,8 +227,6 @@ fn alice_main(
                             }
                         }
                     }
-                    //} else if OsRng.next_u32() | 1 > 0 {
-                    //    let _ = recursive_out.send(pkt);
                 }
             } else {
                 break;
@@ -326,8 +324,6 @@ fn bob_main(
                         }
                     }
                 }
-                //} else if OsRng.next_u32() | 1 > 0 {
-                //    let _ = recursive_out.try_send(pkt);
             }
         }
 
@@ -419,6 +415,16 @@ fn main() {
 }
 
 #[test]
-fn test_main() {
-    core(2, u32::MAX / 2)
+fn test_50() {
+    core(10, u32::MAX / 2)
+}
+
+#[test]
+fn test_75() {
+    core(10, u32::MAX / 4 * 3)
+}
+
+#[test]
+fn test_99() {
+    core(10, u32::MAX / 100 * 99)
 }

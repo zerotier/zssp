@@ -219,7 +219,8 @@ fn alice_main(
                             }
                         }
                     }
-                } else if OsRng.next_u32() | 1 > 0 {
+                } else if (OsRng.next_u32() & 1) > 0 {
+                    // There is a 50% chance that a packet will be re-ordered instead of dropped.
                     let _ = recursive_out.send(pkt);
                 }
             } else {
@@ -307,7 +308,8 @@ fn bob_main(
                         }
                     }
                 }
-            } else if OsRng.next_u32() | 1 > 0 {
+            } else if (OsRng.next_u32() & 1) > 0 {
+                // There is a 50% chance that a packet will be re-ordered instead of dropped.
                 let _ = recursive_out.try_send(pkt);
             }
         }
@@ -393,7 +395,18 @@ fn main() {
     core(60 * 60, packet_success_rate)
 }
 
+
 #[test]
-fn test_main() {
-    core(2, u32::MAX / 2)
+fn test_50() {
+    core(10, u32::MAX / 2)
+}
+
+#[test]
+fn test_75() {
+    core(10, u32::MAX / 4 * 3)
+}
+
+#[test]
+fn test_99() {
+    core(10, u32::MAX / 100 * 99)
 }

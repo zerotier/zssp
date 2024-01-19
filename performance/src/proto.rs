@@ -184,4 +184,6 @@ pub(crate) const MAX_UNASSOCIATED_FRAGMENTS: usize = 32 * 32;
 /// Excludes the size of headers for fragmentation.
 pub(crate) const MAX_UNASSOCIATED_PACKET_SIZE: usize = HANDSHAKE_HELLO_CHALLENGE_SIZE;
 
+/// This number determines how many defragmentation buffers are created per session.
+/// Each defragmentation buffer handles one packet at a time.
 pub(crate) const SESSION_MAX_FRAGMENTS_OOO: usize = 64;

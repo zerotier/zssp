@@ -88,7 +88,7 @@ pub(crate) const HARD_EXPIRATION: u64 = u64::MAX;
 /// this amount out of order relative to other received counters, it is likely to be
 /// rejected on the basis that the session can't remember if this counter was replayed.
 /// Increasing this value makes a session consume more memory.
-pub(crate) const COUNTER_WINDOW_MAX_OOO: usize = 64;
+pub(crate) const COUNTER_WINDOW_MAX_OOO: usize = 128;
 /// Maximum number of counter steps that the counter is allowed to skip ahead.
 /// This cannot be changed away from 2^24 without changing the header nonce handling code.
 pub(crate) const COUNTER_WINDOW_MAX_SKIP_AHEAD: u64 = 1 << 24;

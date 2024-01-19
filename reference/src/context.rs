@@ -169,6 +169,7 @@ impl<C: CryptoLayer> Context<C> {
                                 Ok(())
                             } else if PACKET_TYPE_USES_COUNTER_RANGE.contains(&p) {
                                 if !zeta.check_counter_window(c) {
+                                    println!("{} {} {}", c, p, kid_recv);
                                     // The counter window has finite memory and so will occasionally give
                                     // false positives on very out-of-order packets.
                                     return Err(fault!(ExpiredCounter, false));
