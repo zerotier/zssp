@@ -47,7 +47,6 @@ pub trait Aes256Dec: Sized + Send + Sync {
     fn decrypt_in_place(&self, block: &mut [u8; AES_256_BLOCK_SIZE]);
 }
 
-
 /// A trait for implementing AES-GCM-256 in a way that allows for extremely high throughput.
 /// One instance of this trait is created whenever a new pair of noise keys are created,
 /// and it handles all data encryption and decryption that passes through that session.
@@ -62,12 +61,16 @@ pub trait HighThroughputAesGcmPool: Send + Sync {
     /// AES-GCM Authenticated Encryption.
     /// It should be set to whatever object, struct, handle or pointer your chosen library
     /// uses for its stream encryption API.
-    type EncContext<'a> where Self: 'a;
+    type EncContext<'a>
+    where
+        Self: 'a;
     /// This type represents the state needed to stream a single ciphertext for
     /// AES-GCM Authenticated Decryption.
     /// It should be set to whatever object, struct, handle or pointer your chosen library
     /// uses for its stream decryption API.
-    type DecContext<'a> where Self: 'a;
+    type DecContext<'a>
+    where
+        Self: 'a;
 
     /// Create a new instance of this trait.
     /// `encrypt_key` must be used as the encryption key.
@@ -90,7 +93,7 @@ pub trait HighThroughputAesGcmPool: Send + Sync {
     ///
     /// Be sure to update the internal state of `enc` so the authentication tag can be correctly
     /// computed.
-    fn encrypt<'a>(&'a self, enc: &mut Self::EncContext<'a> , input: &[u8], output: &mut [u8]);
+    fn encrypt<'a>(&'a self, enc: &mut Self::EncContext<'a>, input: &[u8], output: &mut [u8]);
 
     /// Stream-decrypt `data` using the specified encryption context `dec`.
     /// The resulting plaintext should be written back into `data`.

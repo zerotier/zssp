@@ -395,7 +395,6 @@ fn main() {
     core(60 * 60, packet_success_rate)
 }
 
-
 #[test]
 fn test_50() {
     core(10, u32::MAX / 2)

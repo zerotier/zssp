@@ -69,7 +69,6 @@ impl OpenSSLCtx {
         ) > 0
     }
 
-
     /// Finish encryption or decryption.
     /// If performing decryption this will return whether the set tag is correct.
     pub unsafe fn finalize<const ENCRYPT: bool>(&self) -> bool {

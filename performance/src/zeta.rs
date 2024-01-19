@@ -490,7 +490,7 @@ pub(crate) fn received_x1_trans<C: CryptoLayer, App: ApplicationLayer<C>>(
                 Err(e) => return Err(ReceiveError::StorageError(e)),
             }
         }
-        if ratchet_state.is_none() &&  app.hello_requires_recognized_ratchet() {
+        if ratchet_state.is_none() && app.hello_requires_recognized_ratchet() {
             return Err(fault!(FailedAuth, true));
         }
     }
