@@ -124,14 +124,12 @@ pub(crate) const PACKET_TYPE_DATA: u8 = 8;
 pub(crate) const PACKET_TYPE_CHALLENGE: u8 = 9;
 pub(crate) const PACKET_TYPE_USES_COUNTER_RANGE: std::ops::Range<u8> = 3..9;
 
-pub(crate) const HANDSHAKE_HELLO_MIN_SIZE: usize =
-    KID_SIZE + P384_PUBLIC_KEY_SIZE + KYBER_PUBLIC_KEY_SIZE + AES_GCM_TAG_SIZE + AES_GCM_TAG_SIZE;
-pub(crate) const HANDSHAKE_HELLO_MAX_SIZE: usize = HANDSHAKE_HELLO_MIN_SIZE + RATCHET_SIZE + RATCHET_SIZE;
+pub(crate) const HANDSHAKE_HELLO_SIZE: usize =
+    KID_SIZE + P384_PUBLIC_KEY_SIZE + KYBER_PUBLIC_KEY_SIZE + AES_GCM_TAG_SIZE + 2 * RATCHET_SIZE + AES_GCM_TAG_SIZE;
 
-pub(crate) const HANDSHAKE_HELLO_CHALLENGE_MIN_SIZE: usize = HANDSHAKE_HELLO_MIN_SIZE + CHALLENGE_SIZE;
-pub(crate) const HANDSHAKE_HELLO_CHALLENGE_MAX_SIZE: usize = HANDSHAKE_HELLO_MAX_SIZE + CHALLENGE_SIZE;
+pub(crate) const HANDSHAKE_HELLO_CHALLENGE_SIZE: usize = HANDSHAKE_HELLO_SIZE + CHALLENGE_SIZE;
 
-pub(crate) const HEADERED_HANDSHAKE_HELLO_CHALLENGE_MAX_SIZE: usize = HANDSHAKE_HELLO_CHALLENGE_MAX_SIZE + HEADER_SIZE;
+pub(crate) const HEADERED_HANDSHAKE_HELLO_CHALLENGE_SIZE: usize = HANDSHAKE_HELLO_CHALLENGE_SIZE + HEADER_SIZE;
 
 pub(crate) const HANDSHAKE_RESPONSE_SIZE: usize =
     P384_PUBLIC_KEY_SIZE + KYBER_CIPHERTEXT_SIZE + AES_GCM_TAG_SIZE + KID_SIZE + AES_GCM_TAG_SIZE;
@@ -184,6 +182,8 @@ pub(crate) const MAX_UNASSOCIATED_FRAGMENTS: usize = 32 * 32;
 
 /// The maximum size a packet that is not associated to a session may be.
 /// Excludes the size of headers for fragmentation.
-pub(crate) const MAX_UNASSOCIATED_PACKET_SIZE: usize = HANDSHAKE_HELLO_CHALLENGE_MAX_SIZE;
+pub(crate) const MAX_UNASSOCIATED_PACKET_SIZE: usize = HANDSHAKE_HELLO_CHALLENGE_SIZE;
 
+/// This number determines how many defragmentation buffers are created per session.
+/// Each defragmentation buffer handles one packet at a time.
 pub(crate) const SESSION_MAX_FRAGMENTS_OOO: usize = 64;

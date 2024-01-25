@@ -50,18 +50,21 @@ mod symmetric_state;
 mod zeta;
 
 /// An abstraction over OS and use-case specific resources and queries.
-/// This allows this library to be platform independent, but a user of this library must implement
-/// the `ApplicationLayer` trait.
+/// This allows this library to be platform independent.
+/// A user of this library will need to implement the `ApplicationLayer` trait.
 pub mod application;
 /// A collection of implementation-independent traits for the various specific cryptographic
 /// algorithms ZSSP depends on.
 ///
-/// Each trait is hyper-specific about the semantics of the algorithms and the lengths of their
+/// Each trait is very specific about the semantics of the algorithms and the lengths of their
 /// inputs and outputs.
-/// This is to enforced a basic sanity-check upon anyone trying to use their own implementations.
+/// This is to enforced a basic sanity-check upon anyone trying to connect this library to
+/// someone else's implementation.
+///
+/// You should not use this module to implement your own crypto from scratch.
 ///
 /// The `crypto_impl` module contains implementations of these traits in terms of popular Rust
-/// implementations of these algorithms.
+/// crates.
 pub mod crypto;
 /// A module containing optional implementations of the ZSSP `crypto` traits in terms of popular
 /// Rust crates. Some of these crates are not thoroughly audited, so use at your own risk.
@@ -72,7 +75,7 @@ pub mod crypto;
 ///
 /// This module contains the trait implementations as well as re-exports of those crates.
 pub mod crypto_impl;
-/// The collection of major return types of this library.
+/// The collection of the major return types for ZSSP.
 pub mod result;
 
 pub use context::Context;

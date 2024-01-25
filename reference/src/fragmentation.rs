@@ -7,7 +7,7 @@ use zeroize::Zeroizing;
 use crate::application::CryptoLayer;
 use crate::crypto::{Aes256Prp, AES_256_KEY_SIZE};
 use crate::proto::*;
-use crate::result::{byzantine_fault, ReceiveError};
+use crate::result::{fault, ReceiveError};
 
 /// Corresponds to Figure 13 found in Section 6.
 fn create_fragment_header(
@@ -94,7 +94,7 @@ impl DefragBuffer {
     ) -> Result<Option<([u8; PACKET_NONCE_SIZE], Vec<u8>)>, ReceiveError> {
         use crate::result::FaultType::*;
         if raw_fragment.len() < MIN_PACKET_SIZE {
-            return Err(byzantine_fault!(InvalidPacket, true));
+            return Err(fault!(InvalidPacket, true));
         }
 
         if let Some(hk_recv) = self.hk_recv.as_ref() {
@@ -109,7 +109,7 @@ impl DefragBuffer {
         let fragment_no = raw_fragment[FRAGMENT_NO_IDX] as usize;
         let fragment_count = raw_fragment[FRAGMENT_COUNT_IDX] as usize;
         if fragment_no >= fragment_count || fragment_count > MAX_FRAGMENTS {
-            return Err(byzantine_fault!(InvalidPacket, true));
+            return Err(fault!(InvalidPacket, true));
         }
 
         let n = raw_fragment[PACKET_NONCE_START..HEADER_SIZE].try_into().unwrap();
@@ -125,7 +125,7 @@ impl DefragBuffer {
                     || raw_fragment.len() > buffer.fragment_max_size
                 {
                     // Some parts of the protocol can cause duplicate fragments to be sent.
-                    return Err(byzantine_fault!(InvalidPacket, false));
+                    return Err(fault!(InvalidPacket, false));
                 }
                 buffer.fragments[fragment_no] = Some(raw_fragment);
                 buffer.total += 1;

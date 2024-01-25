@@ -35,10 +35,22 @@ pub use openssl::*;
 #[cfg(feature = "openssl-sys")]
 pub use openssl_sys;
 
+/// Any type which implements this trait will also auto-implement the `CryptoLayer` trait,
+/// using the default set of cryptography implementations.
+///
+/// If you want to use this library, and don't care which specific implementations it uses,
+/// then implement this trait instead of the `CryptoLayer` trait.
 #[cfg(feature = "default-crypto")]
 pub trait DefaultCrypto {
+    /// Type for arbitrary opaque object for use by the application that is attached to
+    /// each session.
     type SessionData;
-    type LookupData;
+    /// Data type for incoming packet buffers.
+    ///
+    /// This can be something like `Vec<u8>` or `Box<[u8]>` or it can be something like a pooled
+    /// reusable buffer that automatically returns to its pool when ZSSP is done with it. ZSSP may
+    /// hold these for a short period of time when assembling fragmented packets on the receive
+    /// path.
     type IncomingPacketBuffer: AsMut<[u8]> + AsRef<[u8]>;
 }
 #[cfg(feature = "default-crypto")]
@@ -53,8 +65,8 @@ impl<C: DefaultCrypto> crate::application::CryptoLayer for C {
     type PublicKey = CrateP384PublicKey;
     type KeyPair = CrateP384KeyPair;
     type Kem = CrateKyber1024PrivateKey;
+    type FingerprintData = ();
 
     type SessionData = C::SessionData;
-    type FingerprintData = C::LookupData;
     type IncomingPacketBuffer = C::IncomingPacketBuffer;
 }

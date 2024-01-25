@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use zssp_proto::application::{
-    AcceptAction, ApplicationLayer, CryptoLayer, RatchetState, RatchetStates, RatchetUpdate, RATCHET_SIZE,
+    AcceptAction, ApplicationLayer, CompareAndSwap, CryptoLayer, RatchetState, RatchetStates, RATCHET_SIZE,
 };
 use zssp_proto::crypto::{rand_core::OsRng, P384KeyPair};
 use zssp_proto::crypto_impl::{
@@ -81,9 +81,9 @@ impl ApplicationLayer<MyApp> for &mut MyApp {
         &mut self,
         remote_static_key: &P384CratePublicKey,
         session_data: &(),
-        update_data: RatchetUpdate<'_>,
-    ) -> Result<(), std::io::Error> {
-        Ok(())
+        update_data: CompareAndSwap<'_>,
+    ) -> Result<bool, std::io::Error> {
+        Ok(true)
     }
 
     fn time(&mut self) -> i64 {

@@ -190,7 +190,7 @@ pub enum ReceiveOk<C: CryptoLayer> {
     Unassociated,
     /// The received packet was authentic and belongs to this specific session.
     Associated(Arc<Session<C>>, SessionEvent),
-    /// The received packet was a fragment of a larger packet.
+    /// The received packet was an incomplete fragment of a larger packet.
     ///
     /// ***The authenticity of this fragment cannot be fully known yet.***
     /// This return value should only be used for debugging and tracing purposes.

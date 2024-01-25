@@ -8,7 +8,7 @@ use rand_core::OsRng;
 use rand_core::RngCore;
 
 use zssp::application::{
-    AcceptAction, ApplicationLayer, IncomingSessionAction, RatchetState, RatchetStates, RatchetUpdate, RATCHET_SIZE,
+    AcceptAction, ApplicationLayer, CompareAndSwap, IncomingSessionAction, RatchetState, RatchetStates, RATCHET_SIZE,
 };
 use zssp::crypto::P384KeyPair;
 use zssp::crypto_impl::*;
@@ -53,7 +53,6 @@ impl AsRef<[u8]> for PooledVec {
 #[allow(unused)]
 impl DefaultCrypto for TestApplication {
     type SessionData = ();
-    type LookupData = ();
     type IncomingPacketBuffer = PooledVec;
 }
 
@@ -106,9 +105,9 @@ impl ApplicationLayer<TestApplication> for &TestApplication {
         &mut self,
         remote_static_key: &CrateP384PublicKey,
         session_data: &(),
-        update_data: RatchetUpdate<'_>,
-    ) -> Result<(), std::io::Error> {
-        Ok(())
+        update_data: CompareAndSwap<'_>,
+    ) -> Result<bool, std::io::Error> {
+        Ok(true)
     }
 
     fn time(&mut self) -> i64 {

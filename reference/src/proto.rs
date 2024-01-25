@@ -88,7 +88,7 @@ pub(crate) const HARD_EXPIRATION: u64 = u64::MAX;
 /// this amount out of order relative to other received counters, it is likely to be
 /// rejected on the basis that the session can't remember if this counter was replayed.
 /// Increasing this value makes a session consume more memory.
-pub(crate) const COUNTER_WINDOW_MAX_OOO: usize = 64;
+pub(crate) const COUNTER_WINDOW_MAX_OOO: usize = 128;
 /// Maximum number of counter steps that the counter is allowed to skip ahead.
 /// This cannot be changed away from 2^24 without changing the header nonce handling code.
 pub(crate) const COUNTER_WINDOW_MAX_SKIP_AHEAD: u64 = 1 << 24;
@@ -112,9 +112,8 @@ pub(crate) const PACKET_TYPE_DATA: u8 = 8;
 pub(crate) const PACKET_TYPE_CHALLENGE: u8 = 9;
 pub(crate) const PACKET_TYPE_USES_COUNTER_RANGE: std::ops::Range<u8> = 3..9;
 
-pub(crate) const HANDSHAKE_HELLO_MIN_SIZE: usize =
-    KID_SIZE + P384_PUBLIC_KEY_SIZE + KYBER_PUBLIC_KEY_SIZE + AES_GCM_TAG_SIZE + AES_GCM_TAG_SIZE;
-pub(crate) const HANDSHAKE_HELLO_MAX_SIZE: usize = HANDSHAKE_HELLO_MIN_SIZE + RATCHET_SIZE + RATCHET_SIZE;
+pub(crate) const HANDSHAKE_HELLO_SIZE: usize =
+    KID_SIZE + P384_PUBLIC_KEY_SIZE + KYBER_PUBLIC_KEY_SIZE + AES_GCM_TAG_SIZE + 2 * RATCHET_SIZE + AES_GCM_TAG_SIZE;
 
 pub(crate) const HANDSHAKE_RESPONSE_SIZE: usize =
     P384_PUBLIC_KEY_SIZE + KYBER_CIPHERTEXT_SIZE + AES_GCM_TAG_SIZE + KID_SIZE + AES_GCM_TAG_SIZE;

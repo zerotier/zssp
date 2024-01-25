@@ -1,3 +1,4 @@
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::iter::ExactSizeIterator;
 use std::str::FromStr;
@@ -10,7 +11,7 @@ use rand_core::OsRng;
 use rand_core::RngCore;
 
 use zssp::application::{
-    AcceptAction, ApplicationLayer, CryptoLayer, IncomingSessionAction, RatchetState, RatchetStates, RatchetUpdate,
+    AcceptAction, ApplicationLayer, CompareAndSwap, CryptoLayer, IncomingSessionAction, RatchetState, RatchetStates,
     Settings, RATCHET_SIZE,
 };
 use zssp::crypto::P384KeyPair;
@@ -114,14 +115,29 @@ impl ApplicationLayer<TestApplication> for &TestApplication {
         &mut self,
         remote_static_key: &CrateP384PublicKey,
         session_data: &u128,
-        update_data: RatchetUpdate<'_>,
-    ) -> Result<(), std::io::Error> {
+        update_data: CompareAndSwap<'_>,
+    ) -> Result<bool, std::io::Error> {
         let mut ratchets = self.ratchets.lock().unwrap();
-        ratchets.peer_map.insert(*session_data, update_data.to_states());
+        match ratchets.peer_map.entry(*session_data) {
+            Entry::Occupied(mut entry) => {
+                if update_data.compare(&entry.get()) {
+                    entry.insert(update_data.to_new_states());
+                } else {
+                    return Ok(false);
+                }
+            }
+            Entry::Vacant(entry) => {
+                if update_data.cur_is_initial_states() {
+                    entry.insert(update_data.to_new_states());
+                } else {
+                    return Ok(false);
+                }
+            }
+        }
 
         if let Some(rf) = update_data.added_fingerprint() {
-            ratchets.rf_map.insert(*rf, update_data.state1.clone());
-            println!("[{}] new ratchet #{}", self.name, update_data.state1.chain_len());
+            ratchets.rf_map.insert(*rf, update_data.new_state1.clone());
+            println!("[{}] new ratchet #{}", self.name, update_data.new_state1.chain_len());
         }
         if let Some(rf) = update_data.deleted_fingerprint1() {
             ratchets.rf_map.remove(rf);
@@ -129,7 +145,7 @@ impl ApplicationLayer<TestApplication> for &TestApplication {
         if let Some(rf) = update_data.deleted_fingerprint2() {
             ratchets.rf_map.remove(rf);
         }
-        Ok(())
+        Ok(true)
     }
 
     fn time(&mut self) -> i64 {
@@ -211,8 +227,6 @@ fn alice_main(
                             }
                         }
                     }
-                    //} else if OsRng.next_u32() | 1 > 0 {
-                    //    let _ = recursive_out.send(pkt);
                 }
             } else {
                 break;
@@ -310,8 +324,6 @@ fn bob_main(
                         }
                     }
                 }
-                //} else if OsRng.next_u32() | 1 > 0 {
-                //    let _ = recursive_out.try_send(pkt);
             }
         }
 
@@ -403,6 +415,16 @@ fn main() {
 }
 
 #[test]
-fn test_main() {
-    core(2, u32::MAX / 2)
+fn test_50() {
+    core(10, u32::MAX / 2)
+}
+
+#[test]
+fn test_75() {
+    core(10, u32::MAX / 4 * 3)
+}
+
+#[test]
+fn test_99() {
+    core(10, u32::MAX / 100 * 99)
 }

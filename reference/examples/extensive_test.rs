@@ -6,6 +6,7 @@
  * https://www.zerotier.com/
  */
 
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::iter::ExactSizeIterator;
 use std::str::FromStr;
@@ -18,7 +19,7 @@ use rand_core::OsRng;
 use rand_core::RngCore;
 
 use zssp_proto::application::{
-    AcceptAction, ApplicationLayer, CryptoLayer, RatchetState, RatchetStates, RatchetUpdate, Settings, RATCHET_SIZE,
+    AcceptAction, ApplicationLayer, CompareAndSwap, CryptoLayer, RatchetState, RatchetStates, Settings, RATCHET_SIZE,
 };
 use zssp_proto::crypto::P384KeyPair;
 use zssp_proto::crypto_impl::{
@@ -105,21 +106,37 @@ impl ApplicationLayer<TestApplication> for &mut TestApplication {
         &mut self,
         remote_static_key: &P384CratePublicKey,
         session_data: &u128,
-        update_data: RatchetUpdate<'_>,
-    ) -> Result<(), std::io::Error> {
-        self.ratchets.peer_map.insert(*session_data, update_data.to_states());
+        update_data: CompareAndSwap<'_>,
+    ) -> Result<bool, std::io::Error> {
+        let mut ratchets = &mut self.ratchets;
+        match ratchets.peer_map.entry(*session_data) {
+            Entry::Occupied(mut entry) => {
+                if update_data.compare(&entry.get()) {
+                    entry.insert(update_data.to_new_states());
+                } else {
+                    return Ok(false);
+                }
+            }
+            Entry::Vacant(entry) => {
+                if update_data.cur_is_initial_states() {
+                    entry.insert(update_data.to_new_states());
+                } else {
+                    return Ok(false);
+                }
+            }
+        }
 
         if let Some(rf) = update_data.added_fingerprint() {
-            self.ratchets.rf_map.insert(*rf, update_data.state1.clone());
-            println!("[{}] new ratchet #{}", self.name, update_data.state1.chain_len());
+            ratchets.rf_map.insert(*rf, update_data.new_state1.clone());
+            println!("[{}] new ratchet #{}", self.name, update_data.new_state1.chain_len());
         }
         if let Some(rf) = update_data.deleted_fingerprint1() {
-            self.ratchets.rf_map.remove(rf);
+            ratchets.rf_map.remove(rf);
         }
         if let Some(rf) = update_data.deleted_fingerprint2() {
-            self.ratchets.rf_map.remove(rf);
+            ratchets.rf_map.remove(rf);
         }
-        Ok(())
+        Ok(true)
     }
 
     fn time(&mut self) -> i64 {
@@ -202,7 +219,8 @@ fn alice_main(
                             }
                         }
                     }
-                } else if OsRng.next_u32() | 1 > 0 {
+                } else if (OsRng.next_u32() & 1) > 0 {
+                    // There is a 50% chance that a packet will be re-ordered instead of dropped.
                     let _ = recursive_out.send(pkt);
                 }
             } else {
@@ -290,7 +308,8 @@ fn bob_main(
                         }
                     }
                 }
-            } else if OsRng.next_u32() | 1 > 0 {
+            } else if (OsRng.next_u32() & 1) > 0 {
+                // There is a 50% chance that a packet will be re-ordered instead of dropped.
                 let _ = recursive_out.try_send(pkt);
             }
         }
@@ -377,6 +396,16 @@ fn main() {
 }
 
 #[test]
-fn test_main() {
-    core(2, u32::MAX / 2)
+fn test_50() {
+    core(10, u32::MAX / 2)
+}
+
+#[test]
+fn test_75() {
+    core(10, u32::MAX / 4 * 3)
+}
+
+#[test]
+fn test_99() {
+    core(10, u32::MAX / 100 * 99)
 }

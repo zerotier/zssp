@@ -97,7 +97,7 @@ pub(crate) struct StateA1<C: CryptoLayer> {
     e_secret: C::KeyPair,
     e1_secret: C::Kem,
     identity: ArrayVec<u8, IDENTITY_MAX_SIZE>,
-    x1: ArrayVec<u8, HEADERED_HANDSHAKE_HELLO_CHALLENGE_MAX_SIZE>,
+    x1: ArrayVec<u8, HEADERED_HANDSHAKE_HELLO_CHALLENGE_SIZE>,
 }
 
 pub(crate) struct StateA3 {
@@ -280,7 +280,7 @@ fn create_a1_state<C: CryptoLayer>(
     //    ...
     //    -> e, es, e1
     let mut noise = SymmetricState::<C>::initialize(PROTOCOL_NAME_NOISE_XK);
-    let mut x1 = ArrayVec::<u8, HEADERED_HANDSHAKE_HELLO_CHALLENGE_MAX_SIZE>::new();
+    let mut x1 = ArrayVec::<u8, HEADERED_HANDSHAKE_HELLO_CHALLENGE_SIZE>::new();
     x1.extend([0u8; HEADER_SIZE]);
     // Noise process prologue.
     let kid = kid_recv.get().to_ne_bytes();
@@ -299,12 +299,9 @@ fn create_a1_state<C: CryptoLayer>(
     x1.extend(tag);
     // Process message pattern 1 payload.
     let i = x1.len();
-    if let Some(rf) = ratchet_state1.fingerprint() {
-        x1.try_extend_from_slice(rf).unwrap();
-    }
-    if let Some(Some(rf)) = ratchet_state2.map(|rs| rs.fingerprint()) {
-        x1.try_extend_from_slice(rf).unwrap();
-    }
+    x1.try_extend_from_slice(ratchet_state1.fingerprint()).unwrap();
+    x1.try_extend_from_slice(ratchet_state2.map_or(&[0u8; RATCHET_SIZE], |r| r.fingerprint()))
+        .unwrap();
     let tag = noise.encrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_HANDSHAKE_HELLO, 1), &mut x1[i..]);
     x1.extend(tag);
 
@@ -325,12 +322,10 @@ pub(crate) fn trans_to_a1<C: CryptoLayer, App: ApplicationLayer<C>>(
     s_remote: C::PublicKey,
     session_data: C::SessionData,
     identity: &[u8],
+    ratchet_states: RatchetStates,
     send: impl FnOnce(&mut [u8], Option<&C::PrpEnc>),
 ) -> Result<(Arc<Session<C>>, Option<i64>), OpenError> {
-    let RatchetStates { state1, state2 } = app
-        .restore_by_identity(&s_remote, &session_data, None)
-        .map_err(OpenError::StorageError)?
-        .unwrap_or_default();
+    let RatchetStates { state1, state2 } = ratchet_states;
 
     let mut session_queue = ctx.session_queue.lock().unwrap();
     let mut session_map = ctx.session_map.write().unwrap();
@@ -428,11 +423,11 @@ pub(crate) fn received_x1_trans<C: CryptoLayer, App: ApplicationLayer<C>>(
     //    ...
     //    -> e, es, e1
     //    <- e, ee, ekem1, psk
-    if !(HANDSHAKE_HELLO_MIN_SIZE..=HANDSHAKE_HELLO_MAX_SIZE).contains(&x1.len()) {
+    if x1.len() != HANDSHAKE_HELLO_SIZE {
         return Err(fault!(InvalidPacket, true));
     }
 
-    if n[AES_GCM_NONCE_SIZE - 8..] != x1[x1.len() - 8..] {
+    if !secure_eq(&n[AES_GCM_NONCE_SIZE - 8..], &x1[x1.len() - 8..]) {
         return Err(fault!(FailedAuth, true));
     }
     let hmac = &mut C::Hmac::new();
@@ -462,35 +457,46 @@ pub(crate) fn received_x1_trans<C: CryptoLayer, App: ApplicationLayer<C>>(
     let e1_end = j;
     i = k;
     // Process message pattern 1 payload.
-    let k = x1.len();
-    let j = k - AES_GCM_TAG_SIZE;
+    let j = i + RATCHET_SIZE + RATCHET_SIZE;
+    let k = j + AES_GCM_TAG_SIZE;
     let tag = x1[j..k].try_into().unwrap();
     if !noise.decrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_HANDSHAKE_HELLO, 1), &mut x1[i..j], tag) {
         return Err(fault!(FailedAuth, true));
     }
+    debug_assert_eq!(k, x1.len());
 
+    let rf1 = &x1[i..i + RATCHET_SIZE];
+    let rf2 = &x1[i + RATCHET_SIZE..j];
     let mut lookup_data = None;
     let mut ratchet_state = None;
-    while i + RATCHET_SIZE <= j {
-        match app.restore_by_fingerprint((&x1[i..i + RATCHET_SIZE]).try_into().unwrap()) {
+    if !secure_eq(rf1, &[0u8; RATCHET_SIZE]) {
+        match app.restore_by_fingerprint(rf1.try_into().unwrap()) {
             Ok(None) => {}
             Ok(Some((rs, data))) => {
                 lookup_data = Some(data);
                 ratchet_state = Some(rs);
-                break;
             }
             Err(e) => return Err(ReceiveError::StorageError(e)),
         }
-        i += RATCHET_SIZE;
     }
-    let ratchet_state = if let Some(rs) = ratchet_state {
-        rs
-    } else {
-        if app.hello_requires_recognized_ratchet() {
+    if ratchet_state.is_none() {
+        if !secure_eq(rf2, &[0u8; RATCHET_SIZE]) {
+            match app.restore_by_fingerprint(rf1.try_into().unwrap()) {
+                Ok(None) => {}
+                Ok(Some((rs, data))) => {
+                    lookup_data = Some(data);
+                    ratchet_state = Some(rs);
+                }
+                Err(e) => return Err(ReceiveError::StorageError(e)),
+            }
+        }
+        if ratchet_state.is_none() && app.hello_requires_recognized_ratchet() {
             return Err(fault!(FailedAuth, true));
         }
-        RatchetState::empty()
-    };
+    }
+    // If we get to this point and haven't found a full ratchet state,
+    // set it to the empty ratchet state.
+    let ratchet_state = ratchet_state.unwrap_or_default();
 
     let mut hk_recv = Zeroizing::new([0u8; HASHLEN]);
     let mut hk_send = Zeroizing::new([0u8; HASHLEN]);
@@ -591,7 +597,7 @@ pub(crate) fn received_x2_trans<C: CryptoLayer, App: ApplicationLayer<C>>(
         return Err(fault!(UnknownLocalKeyId, true, session));
     }
     let (_, c) = from_nonce(n);
-    if c >= COUNTER_WINDOW_MAX_SKIP_AHEAD || n[AES_GCM_NONCE_SIZE - 3..] != x2[x2.len() - 3..] {
+    if c >= COUNTER_WINDOW_MAX_SKIP_AHEAD || !secure_eq(&n[AES_GCM_NONCE_SIZE - 3..], &x2[x2.len() - 3..]) {
         return Err(fault!(FailedAuth, true, session));
     }
 
@@ -692,23 +698,27 @@ pub(crate) fn received_x2_trans<C: CryptoLayer, App: ApplicationLayer<C>>(
 
         let new_ratchet_state = create_ratchet_state(hmac, &noise, chain_len);
 
-        let (ratchet_to_preserve, ratchet_to_delete) = if ratchet_i == 1 {
-            (Some(&state.ratchet_state1), state.ratchet_state2.as_ref())
+        let ratchet_to_preserve = if ratchet_i == 1 {
+            Some(&state.ratchet_state1)
         } else {
-            (state.ratchet_state2.as_ref(), Some(&state.ratchet_state1))
+            state.ratchet_state2.as_ref()
         };
-        app.save_ratchet_state(
+        let result = app.save_ratchet_state(
             &session.s_remote,
             &session.session_data,
-            RatchetUpdate {
-                state1: &new_ratchet_state,
-                state2: ratchet_to_preserve,
-                state1_was_just_added: true,
-                deleted_state1: ratchet_to_delete,
-                deleted_state2: None,
-            },
-        )
-        .map_err(|e| ReceiveError::StorageError(e))?;
+            CompareAndSwap::new(
+                &new_ratchet_state,
+                ratchet_to_preserve,
+                true,
+                &state.ratchet_state1,
+                state.ratchet_state2.as_ref(),
+                ratchet_i == 2,
+                ratchet_i == 1,
+            ),
+        );
+        if !result.map_err(ReceiveError::StorageError)? {
+            return Err(fault!(OutOfSequence, true, session, true));
+        }
 
         let mut kek_recv = Zeroizing::new([0u8; HASHLEN]);
         let mut kek_send = Zeroizing::new([0u8; HASHLEN]);
@@ -738,7 +748,7 @@ pub(crate) fn received_x2_trans<C: CryptoLayer, App: ApplicationLayer<C>>(
                 a1
             } else {
                 // This return is unreachable.
-                return Err(fault!(FailedAuth, true, session));
+                return Err(fault!(FailedAuth, true, session, true));
             };
             state.beta = ZetaAutomata::A3(Box::new(StateA3 { identity: a1.identity.clone(), x3: x3.clone() }));
             resend_timer
@@ -860,7 +870,7 @@ pub(crate) fn received_x3_trans<C: CryptoLayer, App: ApplicationLayer<C>>(
                 let mut should_warn_missing_ratchet = false;
 
                 if (zeta.ratchet_state != state1) & (Some(&zeta.ratchet_state) != state2.as_ref()) {
-                    if !responder_disallows_downgrade && zeta.ratchet_state.fingerprint().is_none() {
+                    if !responder_disallows_downgrade && zeta.ratchet_state.is_empty() {
                         should_warn_missing_ratchet = true;
                     } else {
                         if !responder_silently_rejects {
@@ -879,18 +889,14 @@ pub(crate) fn received_x3_trans<C: CryptoLayer, App: ApplicationLayer<C>>(
                 noise.split(hmac, &mut nk_send, &mut nk_recv);
 
                 // We must make sure the ratchet key is saved before we transition.
-                app.save_ratchet_state(
+                let result = app.save_ratchet_state(
                     &s_remote,
                     &session_data,
-                    RatchetUpdate {
-                        state1: &new_ratchet_state,
-                        state2: None,
-                        state1_was_just_added: true,
-                        deleted_state1: Some(&state1),
-                        deleted_state2: state2.as_ref(),
-                    },
-                )
-                .map_err(|e| ReceiveError::StorageError(e))?;
+                    CompareAndSwap::new(&new_ratchet_state, None, true, &state1, state2.as_ref(), true, true),
+                );
+                if !result.map_err(ReceiveError::StorageError)? {
+                    return Err(fault!(OutOfSequence, true));
+                }
 
                 let (session, reduced_service_time) = {
                     let mut session_map = ctx.session_map.write().unwrap();
@@ -1006,18 +1012,25 @@ pub(crate) fn received_c1_trans<C: CryptoLayer, App: ApplicationLayer<C>>(
     if is_other {
         if let ZetaAutomata::A3 { .. } | ZetaAutomata::R2 { .. } = &state.beta {
             if state.ratchet_state2.is_some() {
-                app.save_ratchet_state(
+                let result = app.save_ratchet_state(
                     &session.s_remote,
                     &session.session_data,
-                    RatchetUpdate {
-                        state1: &state.ratchet_state1,
-                        state2: None,
-                        state1_was_just_added: false,
-                        deleted_state1: state.ratchet_state2.as_ref(),
-                        deleted_state2: None,
-                    },
-                )
-                .map_err(|e| ReceiveError::StorageError(e))?;
+                    CompareAndSwap::new(
+                        &state.ratchet_state1,
+                        None,
+                        false,
+                        &state.ratchet_state1,
+                        state.ratchet_state2.as_ref(),
+                        false,
+                        true,
+                    ),
+                );
+                if !result.map_err(ReceiveError::StorageError)? {
+                    drop(state);
+                    drop(kex_lock);
+                    session.expire();
+                    return Err(fault!(OutOfSequence, true, session, true));
+                }
             }
             drop(state);
             let timeout_timer = {
@@ -1417,18 +1430,22 @@ pub(crate) fn received_k1_trans<C: CryptoLayer, App: ApplicationLayer<C>>(
         k2.extend(tag);
 
         let new_ratchet_state = create_ratchet_state(hmac, &noise, state.ratchet_state1.chain_len);
-        app.save_ratchet_state(
+        let result = app.save_ratchet_state(
             &session.s_remote,
             &session.session_data,
-            RatchetUpdate {
-                state1: &new_ratchet_state,
-                state2: Some(&state.ratchet_state1),
-                state1_was_just_added: true,
-                deleted_state1: state.ratchet_state2.as_ref(),
-                deleted_state2: None,
-            },
-        )
-        .map_err(|e| ReceiveError::StorageError(e))?;
+            CompareAndSwap::new(
+                &new_ratchet_state,
+                Some(&state.ratchet_state1),
+                true,
+                &state.ratchet_state1,
+                state.ratchet_state2.as_ref(),
+                false,
+                true,
+            ),
+        );
+        if !result.map_err(ReceiveError::StorageError)? {
+            return Err(fault!(OutOfSequence, true, session, true));
+        }
 
         let mut kek_recv = Zeroizing::new([0u8; HASHLEN]);
         let mut kek_send = Zeroizing::new([0u8; HASHLEN]);
@@ -1536,18 +1553,22 @@ pub(crate) fn received_k2_trans<C: CryptoLayer, App: ApplicationLayer<C>>(
                 .ok_or_else(|| fault!(InvalidPacket, true, session, true))?;
 
             let new_ratchet_state = create_ratchet_state(hmac, &noise, state.ratchet_state1.chain_len);
-            app.save_ratchet_state(
+            let result = app.save_ratchet_state(
                 &session.s_remote,
                 &session.session_data,
-                RatchetUpdate {
-                    state1: &new_ratchet_state,
-                    state2: None,
-                    state1_was_just_added: true,
-                    deleted_state1: Some(&state.ratchet_state1),
-                    deleted_state2: state.ratchet_state2.as_ref(),
-                },
-            )
-            .map_err(|e| ReceiveError::StorageError(e))?;
+                CompareAndSwap::new(
+                    &new_ratchet_state,
+                    None,
+                    true,
+                    &state.ratchet_state1,
+                    state.ratchet_state2.as_ref(),
+                    true,
+                    true,
+                ),
+            );
+            if !result.map_err(ReceiveError::StorageError)? {
+                return Err(fault!(OutOfSequence, true, session, true));
+            }
 
             let mut kek_recv = Zeroizing::new([0u8; HASHLEN]);
             let mut kek_send = Zeroizing::new([0u8; HASHLEN]);
@@ -1630,15 +1651,6 @@ pub(crate) fn send_payload<C: CryptoLayer>(
     };
     let nonce = to_nonce(PACKET_TYPE_DATA, c);
 
-    let key = state.key_ref(false);
-    let kid_send = key.send.kid.ok_or(SessionNotEstablished)?.get().to_ne_bytes();
-    let mut cipher = key.nk.as_ref().ok_or(SessionNotEstablished)?.start_enc(&nonce);
-
-    debug_assert!(matches!(
-        &state.beta,
-        ZetaAutomata::S1 | ZetaAutomata::S2 | ZetaAutomata::R1 { .. } | ZetaAutomata::R2 { .. }
-    ));
-
     let payload_mtu = mtu - HEADER_SIZE;
     debug_assert!(payload_mtu >= 4);
     let tagged_payload_len = payload.len() + AES_GCM_TAG_SIZE;
@@ -1648,6 +1660,16 @@ pub(crate) fn send_payload<C: CryptoLayer>(
     if fragment_count > MAX_FRAGMENTS {
         return Err(DataTooLarge);
     }
+
+    debug_assert!(matches!(
+        &state.beta,
+        ZetaAutomata::S1 | ZetaAutomata::S2 | ZetaAutomata::R1 { .. } | ZetaAutomata::R2 { .. }
+    ));
+
+    let key = state.key_ref(false);
+    let kid_send = key.send.kid.ok_or(SessionNotEstablished)?.get().to_ne_bytes();
+    let cipher_pool = key.nk.as_ref().ok_or(SessionNotEstablished)?;
+    let mut cipher = cipher_pool.start_enc(&nonce);
 
     let mut header = [0u8; HEADER_SIZE];
     header[..KID_SIZE].copy_from_slice(&kid_send);
@@ -1662,12 +1684,15 @@ pub(crate) fn send_payload<C: CryptoLayer>(
         mtu_sized_buffer[..HEADER_SIZE].copy_from_slice(&header);
         mtu_sized_buffer[FRAGMENT_NO_IDX] = fragment_no as u8;
         let fragment_start = &mut mtu_sized_buffer[HEADER_SIZE..HEADER_SIZE + fragment_len];
-        cipher.encrypt(&payload[i..j], fragment_start);
+        cipher_pool.encrypt(&mut cipher, &payload[i..j], fragment_start);
 
         let header_auth = &mut mtu_sized_buffer[HEADER_AUTH_START..HEADER_AUTH_END];
         state.hk_send.encrypt_in_place(header_auth.try_into().unwrap());
 
         if !send.send_frag(&mut mtu_sized_buffer[..HEADER_SIZE + fragment_len]) {
+            // We need to give the cipher back to the pool instead of dropping it,
+            // so it can do memory cleanup.
+            cipher_pool.finish_enc(cipher);
             return Ok(false);
         }
         i = j;
@@ -1680,8 +1705,9 @@ pub(crate) fn send_payload<C: CryptoLayer>(
     mtu_sized_buffer[..HEADER_SIZE].copy_from_slice(&header);
     mtu_sized_buffer[FRAGMENT_NO_IDX] = fragment_no as u8;
     let fragment_start = &mut mtu_sized_buffer[HEADER_SIZE..HEADER_SIZE + payload_rem];
-    cipher.encrypt(&payload[i..], fragment_start);
-    mtu_sized_buffer[HEADER_SIZE + payload_rem..HEADER_SIZE + fragment_len].copy_from_slice(&cipher.finish());
+    cipher_pool.encrypt(&mut cipher, &payload[i..], fragment_start);
+    mtu_sized_buffer[HEADER_SIZE + payload_rem..HEADER_SIZE + fragment_len]
+        .copy_from_slice(&cipher_pool.finish_enc(cipher));
 
     let header_auth = &mut mtu_sized_buffer[HEADER_AUTH_START..HEADER_AUTH_END];
     state.hk_send.encrypt_in_place(header_auth.try_into().unwrap());
@@ -1728,9 +1754,8 @@ pub(crate) fn receive_payload_in_place<C: CryptoLayer>(
         return Err(fault!(UnknownLocalKeyId, true, session));
     };
 
-    let mut cipher = specified_key
-        .ok_or_else(|| fault!(OutOfSequence, true, session))?
-        .start_dec(nonce);
+    let cipher_pool = specified_key.ok_or_else(|| fault!(OutOfSequence, true, session))?;
+    let mut cipher = cipher_pool.start_dec(nonce);
     let (_, c) = from_nonce(nonce);
 
     // NOTE: This only works because we check the size of every received fragment in the receive
@@ -1738,14 +1763,14 @@ pub(crate) fn receive_payload_in_place<C: CryptoLayer>(
     for i in 0..fragments.len() - 1 {
         let fragment = &mut fragments[i].as_mut()[HEADER_SIZE..];
         debug_assert!(fragment.len() >= AES_GCM_TAG_SIZE);
-        cipher.decrypt_in_place(fragment);
+        cipher_pool.decrypt_in_place(&mut cipher, fragment);
     }
     let fragment = &mut fragments[fragments.len() - 1].as_mut()[HEADER_SIZE..];
     debug_assert!(fragment.len() >= AES_GCM_TAG_SIZE);
     let tag_idx = fragment.len() - AES_GCM_TAG_SIZE;
-    cipher.decrypt_in_place(&mut fragment[..tag_idx]);
+    cipher_pool.decrypt_in_place(&mut cipher, &mut fragment[..tag_idx]);
 
-    if !cipher.finish((&fragment[tag_idx..]).try_into().unwrap()) {
+    if !cipher_pool.finish_dec(cipher, (&fragment[tag_idx..]).try_into().unwrap()) {
         return Err(fault!(FailedAuth, true, session));
     }
 
