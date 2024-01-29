@@ -325,6 +325,76 @@ pub trait ApplicationLayer<C: CryptoLayer>: Sized {
     /// it should be assumed that they also have the same ratchet key.
     ///
     /// The implementations of `PartialEq` for `RatchetState` and `RatchetStates` do this by default.
+    ///
+    /// # Example
+    /// The following code is an example of how to implement this database operation with the
+    /// library `rustqlite`, an interface for SQLite in rust.
+    /// This code will not work out-of-the-box, it must be adapted based on how your application
+    /// structures its SQLite database.
+    /// Notably, this code lacks a means of securely indexing ratchet fingerprints.
+    /// The function `get_peer_primary_key` is a placeholder for however your application defines
+    /// the SQL primary key for a peer. The function `get_sql_conn` is a placeholder getter method
+    /// on `self` for retrieving the database connection object.
+    /// ```rs
+    /// fn to_err<E: std::error::Error + Send + Sync + 'static>(e: E) -> Error {
+    ///    Error::new(std::io::ErrorKind::Other, e)
+    /// }
+    ///
+    /// fn save_ratchet_state(
+    ///     &mut self,
+    ///     remote_static_key: &P384PublicKey,
+    ///     session_data: &Peer<T>,
+    ///     update_data: CompareAndSwap<'_>,
+    /// ) -> Result<bool, Error> {
+    ///     let peer = get_peer_primary_key(remote_static_key, session_data);
+    ///     let mut conn = get_sql_conn(self);
+    ///     // rustqlite will rollback this transaction if this struct is dropped.
+    ///     let trans = conn
+    ///         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+    ///         .map_err(to_err)?;
+    ///     {
+    ///         // Compare
+    ///         let mut stmt = trans
+    ///             .prepare_cached("SELECT ratchet_fp1, ratchet_fp2 FROM peers WHERE peer = ?1")
+    ///             .map_err(to_err)?;
+    ///         let mut rows = stmt.query([peer]).map_err(to_err)?;
+    ///         if let Some(row) = rows.next().map_err(to_err)? {
+    ///             let peer_fp1: &[u8] = row.get_ref(0).map_err(to_err)?.as_bytes().map_err(to_err)?;
+    ///             let peer_fp2: Option<&[u8]> = row.get_ref(1).map_err(to_err)?.as_bytes_or_null().map_err(to_err)?;
+    ///             let peer_fp2 = if let Some(fp2) = peer_fp2 {
+    ///                 Some(fp2.try_into().map_err(to_err)?)
+    ///             } else {
+    ///                 None
+    ///             };
+    ///             if !update_data.compare_fingerprints(peer_fp1.try_into().map_err(to_err)?, peer_fp2) {
+    ///                 return Ok(false);
+    ///             }
+    ///         } else {
+    ///             return Ok(false);
+    ///         }
+    ///     }
+    ///     {
+    ///         // Swap
+    ///         let ns1 = update_data.new_state1;
+    ///         let ns2 = update_data.new_state2;
+    ///         let mut stmt = trans.prepare_cached("UPDATE peers SET ratchet_fp1 = ?1, ratchet_key1 = ?2, chain_len1 = ?3, ratchet_fp2 = ?4, ratchet_key2 = ?5, chain_len2 = ?6 WHERE salted_addr = ?7").map_err(to_err)?;
+    ///         stmt.execute((
+    ///             ns1.fingerprint(),
+    ///             ns1.key(),
+    ///             ns1.chain_len(),
+    ///             ns2.map(RatchetState::fingerprint),
+    ///             ns2.map(RatchetState::key),
+    ///             ns2.map(RatchetState::chain_len),
+    ///             salted_addr,
+    ///         ))
+    ///         .map_err(to_err)?;
+    ///     }
+    ///     // SQLite does its best to make sure committed transactions are actually written
+    ///     // to disk: https://www.sqlite.org/howtocorrupt.html.
+    ///     trans.commit().map_err(to_err)?;
+    ///     Ok(true)
+    /// }
+    /// ```
     fn save_ratchet_state(
         &mut self,
         remote_static_key: &C::PublicKey,

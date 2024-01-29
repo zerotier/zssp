@@ -540,6 +540,8 @@ Given $(x, g^x)$ and $(y, g^y)$, two output keypairs from $\DHGEN()$, a \emph{ke
 	Let $(\KEMGEN, \KEMENC, \KEMDEC)$ be the Kyber1024 key encapsulation mechanism. $\KEMGEN()$ randomly generates a keypair, $(e_{priv}, e_{pub})$, where $e_{priv}$ is the private key and $e_{pub}$ is the public key. $\KEMENC(e_{pub})$ takes as input a Kyber1024 public key, and outputs the pair $(e_{key}, e_{kem})$, where $e_{key}$ is the symmetric key and $e_{kem}$ is the encapsulated ciphertext of $e_{key}$. $\KEMDEC(e_{priv}, e_{kem})$ takes as input a private key and an encapsulated ciphertext, and outputs $e_{key}$, the decryption of $e_{kem}$. Both \KEMENC and \KEMDEC can output $\bot$, the null value, which implies authentication failure due to invalid input keys.
 \end{definition}
 
+In addition, it is important to be familiar with common notation for cryptographic psuedocode. The symbol $\bot$ represents the null value. When a variable is set to $\bot$, it means whatever was previous stored within the variable is being permanently deleted from memory. All psuedocode variables are initialized to $\bot$ unless otherwise stated. The symbol $\varepsilon$ is the empty string, an array of zero length. Given some integer $n$, $0^n$ represents the bit-string of length $n$ that is all zeros. So $0^8 = ``00000000"$. The binary operator $||$ is string concatenation.
+
 \subsection{Transition Algorithms}\label{sec:trans_alg}
 
 With the necessary background established, we can now define the final component of the Zeta state machine, the state transition algorithms. Anyone looking to implement the Zeta state machine must read this section in its entireity. Many paragraphs contain rules not represented within the diagrams or algorithm psuedocode. Each rule qualified with \emph{must} must be implemented.
@@ -603,8 +605,6 @@ ZKE uses a 64-bit (8 byte) counter, but AES-GCM uses a 96-bit (12 byte) nonce/IV
 
 	If two peers are in persistent mode, and wish to connect for the first time, they may use a preshared one time password, $p$, to do so. $p$ \emph{must} be a random string with at least 256-bits of entropy. If a one time password is being used then $r\gets \KDF(p, \texttt{"ZSSP\_OTP\_TO\_RATCHET"}, \varepsilon, 2)$ \emph{must} be computed. Both peers then initialize $\texttt{rk}$ to $(r_1, \bot)$ and $\texttt{rf}$ to $(r_2, \bot)$. $p$ \emph{must} only be used once; A fresh instance of $p$ \emph{must} be generated for every new pair of peers who wish to connect.
 \end{definition}
-
-$\bot$ represents the ``null'' value. When a variable is set to $\bot$, it means whatever was previous stored within the variable is being permanently deleted from memory. All variables are initialized to $\bot$ unless otherwise stated. $\varepsilon$ is the empty string.
 
 It is assumed that prior to any usage of ZKE, Alice and Bob will generate their static keypairs with $\DHGEN()$. It is also assumed that Alice already knows Bob's public key, $g^v$, prior to any attempt to connect to Bob. Bob does not necessarily know Alice's public key.
 
@@ -682,9 +682,11 @@ Prior to the execution of any of the following algorithms, $\zeta$ will check if
 	\end{algorithmic}
 \end{algorithm}
 
-The ratchet fingerprint, \texttt{rf}, is a sacrificial ASK that does nothing more than uniquely identify the ratchet key it was derived with. This makes it possible for Bob to immediately identify Alice given just their Hello packet, if their Hello includes a ratchet fingerprint. Bob can configure ZKE to only reply to peers that have recognized ratchet fingerprints, thereby making ZKE entirely silent to everyone who does not have an authentic ratchet fingerprint. An attacker can record an authentic peer's Hello packet and replay it, but Bob will only reply to this replayed packet for a short period of time, until that ratchet fingerprint is replaced. This is superior to Noise XK's normal Hello packet security properties, which have no authentication and are vulnerable to replay.
+The ratchet fingerprint, \texttt{rf}, is an ASK that does nothing more than uniquely identify the ratchet key it was derived with. This makes it possible for Bob to immediately identify Alice given just their Hello packet, if their Hello includes a ratchet fingerprint. Bob can configure ZKE to only reply to peers that have recognized ratchet fingerprints, thereby making ZKE entirely silent to everyone who does not have an authentic ratchet fingerprint. An attacker can record an authentic peer's Hello packet and replay it, but Bob will only reply to this replayed packet for a short period of time, until that ratchet fingerprint is replaced. This is superior to Noise XK's normal Hello packet security properties, which do not authenticate the sender and can be replayed.
 
 Including the ratchet fingerprint in the Hello packet does not compromise identity hiding, because the ratchet fingerprint is replaced with every single handshake. In the event that Bob's private keys are compromised, and all ratchet fingerprints used in Hello packets to Bob can be decrypted, all an attacker would see are several indistinguishable 256-bit strings. The one exception is if a peer reuses the same ratchet fingerprint. This would allow an attacker who has compromised Bob's static private key to learn that two Hello packets come from the same peer, but this does not given any information about that peer's static keys or identity. Ratchet fingerprints in normal operation are never reused, this can only happen if the initial Noise XK handshake is aborted before completion, preventing one or more of the participating peers from confirming a new ratchet fingerprint.
+
+A rathet fingerprint, being an independently derived ASK, leaks no information about its associated ratchet key. In the event the value of a ratchet fingerprint is leaked to an attacker, it can only temporarily be used to violate the ``Silence is Golden'' property.
 
 \begin{algorithm}[H]
 	\caption{Transition $\delta(\bot, X_1)=B_2$ -- Bob has received Alice's Hello packet and replies with the second message of Noise XK, \figureref{packet:handshake_response}. Input $\pi_1$ is a security flag, a bit set by the upper protocol. Bob will only allow Alice to connect with zero persistent state if $\pi_1=0$. If Alice sent an unrecognized ratchet fingerprint and $\pi_1=0$, instead of rejecting Alice's session, Bob will ask Alice if they would like to connect with zero persistent state. ZKE has superior security properties when $\pi_1=1$, but usability suffers.}\label{alg:recv_x1}
@@ -796,8 +798,6 @@ Similarly, the new ratchet key and fingerprint will not have been derived by the
 		\EndIf
 	\end{algorithmic}
 \end{algorithm}
-
-If, when function $\algn{Accept}$ is called, any other instance of $\zeta$ exists with the same remote peer, then $\algn{Accept}$ \emph{must} be implemented to do one of the following: Either the other instance of $\zeta$ is deleted, or $\algn{Accept}$ returns $\pi_3=\bot$ to reject the new session. Instances of $\zeta$ in state $B_2$ \emph{must} be ignored in regards to the prior rule, since the identity of the remote peer will not have been confirmed and might not be known. Keep in mind that this rule implies that if Alice attempts to open multiple sessions with Bob at once, only one of them will be accepted.
 
 When packet $X_3$ is received, Bob might refuse to start a session with Alice based on their static key and identity. The preferred way for Bob to do this is to simply do nothing, and ignore Alice's packets. This would follow the ``Silence is Golden" principle of security. However there are some applications where, usually for UX reasons, Alice needs to be able tell apart having a bad connection with Bob from Bob rejecting Alice's identity. If Bob always goes silent, Alice has no reliable way to tell these two situations apart. This is the reason why packet $D$ is created and sent at the bottom of \algorithmref{alg:recv_x3}. Receipt of packet $D$ implies Bob has explicitly rejected a session with Alice.
 
@@ -1047,7 +1047,7 @@ After all fragments are constructed, AES-256 \cite{fips_aes} is used to directly
 
 Bytes 4 through 20 of a fragment include the fragment number, fragment count, packet nonce, and the first 4 byte of the payload. The packet nonce, in combination with the fragment number, guarantees each block fed into AES will be strictly unique, thereby guaranteeing every header will have a unique encryption. We allow the first 4 bytes of the payload to be included in the block because it is simpler to implement, and it could help in the event a packet nonce is reused due to implementation error.
 
-We prove in \theoremref{theorem:frag_proof} that, under the assumption AES-256 is a pseudo-random permutation, and the header key is indistinguishable from random, that the ZSSP header authentication algorithm is existentially unforgeable under an adaptive chosen message attack. We also demonstrate that the probability an attacker is able to forge a valid header is bound above by the probability that the upper protocol considers a uniform random packet nonce to be valid. For ZSSP, this implies that the probability an attacker forges a valid header is bound above by $\algn{negl}(n) + 2^{-45}$, where $\algn{negl}(n)$ is the probability that an attacker is able to break AES-256.
+We prove in \theoremref{theorem:frag_proof} that, under the assumption AES-256 is a pseudo-random permutation, and the header key is indistinguishable from random, that the ZFP header authentication algorithm is existentially unforgeable under an adaptive chosen message attack. We also demonstrate that the probability an attacker is able to forge a valid header is bound above by the probability that the upper protocol considers a uniform random packet nonce to be valid. For ZSSP, this implies that the probability an attacker forges a valid header is bound above by $\algn{negl}(n) + 2^{-45}$, where $\algn{negl}(n)$ is the probability that an attacker is able to break AES-256.
 
 While this probability is not low enough to be considered cryptographically secure, it is more than plenty for making a defragmentation DOS attack more expensive than a volumetric DDOS attack. It should be emphasized that this authentication mechanism is only sufficient for defending against DOS attacks, ZSSP does not rely on it for anything more than that.
 
@@ -1064,7 +1064,7 @@ The Noise XK handshake packets, as specified by Noise, do not use a unique count
 
 \subsection{Mathematical Background}
 
-We are going to prove that the ZSSP header authentication algorithm is existentially unforgeable under an adaptive chosen message attack. However our algorithm does not fit the standard syntax of message authentication codes. This means we must prove security under a different security experiment than the standard message authentication code experiment. We choose to use the syntax of a message transmission scheme \cite{modern_crypto}, and prove authenticated communication under the secure message transmission experiment, \algorithmref{alg:header_auth}.
+We are going to prove that the ZFP header authentication algorithm is existentially unforgeable under an adaptive chosen message attack. However our algorithm does not fit the standard syntax of message authentication codes. This means we must prove security under a different security experiment than the standard message authentication code experiment. We choose to use the syntax of a message transmission scheme \cite{modern_crypto}, and prove authenticated communication under the secure message transmission experiment, \algorithmref{alg:header_auth}.
 
 \begin{definition}[H][Message Transmission Scheme \cite{modern_crypto}]\label{def:mts}
 	A message transmission scheme is a tuple of algorithms $\Pi = (\algn{Gen}, \algn{EncMac}, \algn{Dec})$. \algn{Gen} is the key generation algorithm, \algn{EncMac} is the authenticated encryption algorithm, and \algn{Dec} is the decryption and verification algorithm.
@@ -1101,10 +1101,10 @@ We are going to prove that the ZSSP header authentication algorithm is existenti
 
 \subsection{Proof of Security}
 
-Algorithms \algorithmref{alg:header_gen}, \algorithmref{alg:header_encmac}, and \algorithmref{alg:header_dec} define the ZSSP header authentication algorithm using the syntax of a Message Transmission Scheme, \definitionref{def:mts}. These definitions are then used in \theoremref{theorem:frag_proof} to reduce the security of the ZSSP header authentication algorithm to the security of AES-256.
+Algorithms \algorithmref{alg:header_gen}, \algorithmref{alg:header_encmac}, and \algorithmref{alg:header_dec} define the ZFP header authentication algorithm using the syntax of a Message Transmission Scheme, \definitionref{def:mts}. These definitions are then used in \theoremref{theorem:frag_proof} to reduce the security of the ZFP header authentication algorithm to the security of AES-256.
 
 \begin{algorithm}[H]
-	\caption{$\algn{Gen}(1^n)$ of the ZSSP header authentication algorithm -- We are implicitly assuming here that the header key is truly random, or at least computationally indistinguishable from random.}\label{alg:header_gen}
+	\caption{$\algn{Gen}(1^n)$ of the ZFP header authentication algorithm -- We are implicitly assuming here that the header key is truly random, or at least computationally indistinguishable from random.}\label{alg:header_gen}
 	\begin{algorithmic}
 		\Require $1^n$
 		\State $\texttt{hk} \gets\$\, \{0,1\}^{2n}$
@@ -1113,7 +1113,7 @@ Algorithms \algorithmref{alg:header_gen}, \algorithmref{alg:header_encmac}, and 
 \end{algorithm}
 
 \begin{algorithm}[H]
-	\caption{$\algn{EncMac}_k(m)$ of the ZSSP header authentication algorithm -- Input $m$ is bytes 4 to 20 of a fragment, which is the portion of the fragment that ZFP encrypts. Function $F$ is AES-256. For the sake of the security proof we will assume that the input block size of AES-256 is not constant, but instead is equal to $n$. For this reason we also assume $m$ is able to grow to be of size $n$.}\label{alg:header_encmac}
+	\caption{$\algn{EncMac}_k(m)$ of the ZFP header authentication algorithm -- Input $m$ is bytes 4 to 20 of a fragment, which is the portion of the fragment that ZFP encrypts. Function $F$ is AES-256. For the sake of the security proof we will assume that the input block size of AES-256 is not constant, but instead is equal to $n$. For this reason we also assume $m$ is able to grow to be of size $n$.}\label{alg:header_encmac}
 	\begin{algorithmic}
 		\Require $m$
 		\Ensure $F_k(m)$
@@ -1121,7 +1121,7 @@ Algorithms \algorithmref{alg:header_gen}, \algorithmref{alg:header_encmac}, and 
 \end{algorithm}
 
 \begin{algorithm}[H]
-	\caption{$\algn{Dec}_k(c)$ of the ZSSP header authentication algorithm -- Function $F^{-1}$ is inverse of AES-256. Function $\algn{Vrfy}$ is some algorithm provided by the upper protocol for verifying that the packet nonce is valid. For the sake of the security proof we assume that the the packet nonce $N$ is able to grow in size proportional to $n$. The version of $\algn{Vrfy}$ used by ZSSP is described by \algorithmref{alg:header_vrfy}.}\label{alg:header_dec}
+	\caption{$\algn{Dec}_k(c)$ of the ZFP header authentication algorithm -- Function $F^{-1}$ is inverse of AES-256. Function $\algn{Vrfy}$ is some algorithm provided by the upper protocol for verifying that the packet nonce is valid. For the sake of the security proof we assume that the the packet nonce $N$ is able to grow in size proportional to $n$. The version of $\algn{Vrfy}$ used by ZFP is described by \algorithmref{alg:header_vrfy}.}\label{alg:header_dec}
 	\begin{algorithmic}
 		\Require $c$
 		\State $m \gets F_k^{-1}(c)$
@@ -1203,8 +1203,8 @@ Algorithms \algorithmref{alg:header_gen}, \algorithmref{alg:header_encmac}, and 
 	\end{algorithmic}
 \end{algorithm}
 
-\algorithmref{alg:header_vrfy} shows how ZSSP validates packet nonces. Notice that $p$ must be in range 1 through 8 to be considered valid. Also notice that, regardless of the value of $p$, $c$ must fall into some range of integers that is at most $2^{24}$ in size. If we assume the adversary makes no oracle queries, this implies that the advantage against ZSSP header authentication is bound above by
-\begin{flalign*}[H]
+\algorithmref{alg:header_vrfy} shows how ZSSP validates packet nonces. Notice that $p$ must be in range 1 through 8 to be considered valid. Also notice that, regardless of the value of $p$, $c$ must fall into some range of integers that is at most $2^{24}$ in size. If we assume the adversary makes no oracle queries, this implies that the advantage against ZSSP's header authentication is bound above by
+\begin{flalign*}
 	\prob[\algn{Auth}_{\mathcal{A},\, \Pi}(n) = 1] &\leq \mathbf{Adv}^\text{ind-prp}_{D,\,F}(n) + \prob[\algn{Vrfy}(N) = 1] \\
 	&\leq \algn{negl}(n) + \frac{8}{2^8}\cdot\frac{2^{24}}{2^{64}} \\
 	&= \algn{negl}(n) + 2^{-5}\cdot 2^{-40} \\
@@ -1212,7 +1212,7 @@ Algorithms \algorithmref{alg:header_gen}, \algorithmref{alg:header_encmac}, and 
 \end{flalign*}
 If we assume the adversary does make oracle queries, then their advantage bound is only negligibly larger than the advantage above.
 
-The range $2^{24}$ was chosen because changing its value makes the protocol worse. One byte less of range, $2^{16}$, makes it possible for one peer to have $2^{16}$ of their packets dropped. This would put their counter out of the allowed range, and cause all future packets to be dropped. One byte more of range, $2^{32}$, makes it easier than it need to be for an attacker to forge a valid header.
+The range $2^{24}$ was chosen because it appears to be optimal for this application. One byte less of range, $2^{16}$, makes it barely feasible for an attacker to drop $2^{16}$ of a peer's packets in a row. This would put the counter of future packets outside of the allowed range, and cause all future packets to be dropped. One byte more of range, $2^{32}$, would make it easier than necessary for an attacker to forge a valid header.
 
 The security experiment we have used does not consider replay protection, however it should be clear that \algorithmref{alg:header_vrfy} does indeed provide replay protection. Once any packet is fully authenticated by ZSSP, and its counter is added to array $D$, it is the case that its packet nonce will no longer be valid according to \algorithmref{alg:header_vrfy}. If a packet is dropped or corrupted, its fragments could only be replayed until some other received packet updated the relevant index of $D$. This prevents a type of DOS attack where the attacker simply replays valid fragments to keep the defragmentation buffer full.
 
