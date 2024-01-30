@@ -98,7 +98,7 @@ To motivate the need for ASKs further, consider that many authenticated key exch
 
 The maintainers of the Noise protocol are aware of the need for ASKs, and are in the process of extending the protocol with an ASK mechanism \cite{noise_ask}. However, at this point in time this mechanism is still unofficial and may be replaced. It also uses specific capabilities of \text{HKDF} that \text{KBKDF} does not have. For that reason we have created our own ASK extension to the Noise protocol, based on the unofficial mechanism.
 
-We add a function, $\text{GetAsk}(\texttt{label})$, to the Noise protocol that takes as input a static label, and produces as output two 256-bit keys. This function is implemented as a component of the Noise handshake state machine, and so it has access to the most recent values of the Noise handshake hash, \texttt{h}, and the Noise chaining key, \texttt{ck}. To preserve consistency with `MixKey' and `Split', we will produce two 512-bit hashes, and then truncate each to 256-bits to produce two keys.
+We add a function, $\text{GetAsk}(\texttt{label})$, to the Noise protocol that takes as input a static string, and produces as output two 256-bit keys. This function is implemented as a component of the Noise handshake state machine, and so it has access to the most recent values of the Noise handshake hash, \texttt{h}, and the Noise chaining key, \texttt{ck}. To preserve consistency with `MixKey' and `Split', we will produce two 512-bit hashes, and then truncate each to 256-bits to produce two keys.
 
 $$\text{GetAsk}(\texttt{label}) := \text{KBKDF}(\texttt{h}, \texttt{label}, \texttt{ck}, 1024).$$
 
@@ -519,15 +519,15 @@ The following are the 4 cryptographic primitives ZKE is based upon. We will be a
 \end{definition}
 
 \begin{definition}[H][KBKDF \cite{fips_kbkdf}]
-	Let $\KDF(\textit{K}_{\textit{IN}}, \textit{Label}, \textit{Context}, N)$ be the KBKDF key derivation algorithm, instantiated in HMAC-Counter mode using SHA-512. Variable $\textit{K}_{\textit{IN}}$ is the input key material, $\textit{Label}$ is some static label, $\textit{Context}$ is additional input key material, and $N$ is the number of 512-bit outputs to be produced. $\KDF(\textit{K}_{\textit{IN}}, \textit{Label}, \textit{Context}, N)$ produces as output $(x_1,\ldots,x_N)$, a tuple of $N$ 512-bit outputs.
+	Let $\KDF(\textit{K}_{\textit{IN}}, \textit{Label}, \textit{Context}, N)$ be the KBKDF key derivation algorithm, instantiated in HMAC-Counter mode using SHA-512. Variable $\textit{K}_{\textit{IN}}$ is the input key material, $\textit{Label}$ is some static string, $\textit{Context}$ is additional input key material, and $N$ is the number of 512-bit outputs to be produced. $\KDF(\textit{K}_{\textit{IN}}, \textit{Label}, \textit{Context}, N)$ produces as output $(x_1,\ldots,x_N)$, a tuple of $N$ 512-bit outputs.
 
-	Given $i\in \{1,\ldots,N\}$, we will use the notation $\KDF(\textit{K}_{\textit{IN}}, \textit{Label}, \textit{Context}, N)_i$ to refer to the $i$th output of $\KDF$. When assigning a single 512-bit output to a variable or field that is 256-bits in size, it is assumed that the output is being truncated to just the first 256-bits.
+	Given $i\in \{1,\ldots,N\}$, we will use the notation $\KDF(\textit{K}_{\textit{IN}}, \textit{Label}, \textit{Context}, N)_i$ to refer to the $i$th output of $\KDF$. When assigning a 512-bit output to a variable or field that is 256-bits in size, it is assumed that the output is being truncated to just the first 256-bits.
 
 	So $k\gets \KDF(x, l, y, 3)_2$ represents computing KBKDF on inputs $\textit{K}_{\textit{IN}}= x,\, \textit{Label}=l,\, \textit{Context}=y$ and $L=3\cdot 512$, and setting variable $k$ equal to bits $512$ to $1023$ of the output. If $k$ is a variable of size 256-bits, then $k$ is set equal to bits $512$ to $767$ of the output.
 \end{definition}
 
 \begin{definition}[H][AES-GCM \cite{fips_aesgcm}]
-	Let $\AEAD(K, N, H, M)$ be the AES-GCM Authenticated Encryption with Additional Data algorithm, where $K$ is the encryption key, $N$ is the nonce or IV, $H$ is the additional authentication data, and $M$ is the plaintext message to be encrypted. $\AEAD(K, N, H, M)$ produces as output $c||t$, a ciphertext, $c$, concatenated with its 128-bit (16 byte) authentication tag, $t$.
+	Let $\AEAD(K, N, H, M)$ be the AES-GCM Authenticated Encryption with Additional Data algorithm, where $K$ is the encryption key, $N$ is the AEAD nonce, $H$ is the additional authentication data, and $M$ is the plaintext message to be encrypted. $\AEAD(K, N, H, M)$ produces as output $c||t$, a ciphertext, $c$, concatenated with its 128-bit (16 byte) authentication tag, $t$.
 \end{definition}
 
 \begin{definition}[H][P384 \cite{fips_p384}]

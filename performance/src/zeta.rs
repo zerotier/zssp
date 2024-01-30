@@ -870,7 +870,7 @@ pub(crate) fn received_x3_trans<C: CryptoLayer, App: ApplicationLayer<C>>(
                 let mut should_warn_missing_ratchet = false;
 
                 if (zeta.ratchet_state != state1) & (Some(&zeta.ratchet_state) != state2.as_ref()) {
-                    if !responder_disallows_downgrade && zeta.ratchet_state.is_empty() {
+                    if !responder_disallows_downgrade && zeta.ratchet_state.is_zero() {
                         should_warn_missing_ratchet = true;
                     } else {
                         if !responder_silently_rejects {

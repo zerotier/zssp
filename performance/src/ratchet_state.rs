@@ -43,11 +43,11 @@ impl RatchetState {
             chain_len,
         }
     }
-    /// Creates a new "empty" ratchet state, where the ratchet fingerprint is the
-    /// empty string, the ratchet key is all zeros, and the chain length is 0.
+    /// Creates a new "zero" ratchet state, where the ratchet fingerprint is all zeros,
+    /// the ratchet key is all zeros, and the chain length is 0.
     ///
     /// This value is the default value of `RatchetState`.
-    pub fn empty() -> Self {
+    pub fn zero() -> Self {
         RatchetState {
             key: Zeroizing::new([0u8; RATCHET_SIZE]),
             fingerprint: Zeroizing::new([0u8; RATCHET_SIZE]),
@@ -85,9 +85,7 @@ impl RatchetState {
         &self.key
     }
     /// The ratchet fingerprint for this ratchet state.
-    ///
-    /// If this returns `None` then the ratchet fingerprint is the empty string.
-    /// This is the "empty" ratchet state and the key will be all zeros.
+    /// It could be all zeros if this is the "zero" ratchet state.
     ///
     /// The ratchet fingerprint value is sensitive and should be hidden,
     /// but the security of ZSSP can survive having this value leaked.
@@ -104,13 +102,13 @@ impl RatchetState {
     pub fn chain_len(&self) -> u64 {
         self.chain_len
     }
-    /// Returns true if this is the "empty" ratchet state, where the ratchet fingerprint is the
-    /// empty string, the ratchet key is all zeros, and the chain length is 0.
-    pub fn is_empty(&self) -> bool {
+    /// Returns true if this is the "zero" ratchet state, where the ratchet fingerprint is all zeros,
+    /// the ratchet key is all zeros, and the chain length is 0.
+    pub fn is_zero(&self) -> bool {
         secure_eq(self.fingerprint(), &[0u8; RATCHET_SIZE])
     }
     /// Checks if the fingerprint of this ratchet state equals the
-    ///  fingerprint contained in argument `rf`.
+    /// fingerprint contained in argument `rf`.
     ///
     /// Uses constant time equality.
     pub fn fingerprint_eq(&self, rf: &[u8; RATCHET_SIZE]) -> bool {
@@ -134,7 +132,7 @@ impl RatchetState {
 }
 impl Default for RatchetState {
     fn default() -> Self {
-        Self::empty()
+        Self::zero()
     }
 }
 
@@ -162,7 +160,7 @@ impl RatchetStates {
     ///
     /// This value is the default value of `RatchetStates`.
     pub fn new_initial_states() -> Self {
-        Self { state1: RatchetState::empty(), state2: None }
+        Self { state1: RatchetState::zero(), state2: None }
     }
     /// Creates a new initial pair of ratchet states from a one-time password.
     /// The first ratchet state will be derived from this password, while the second will be `None`.
@@ -274,7 +272,7 @@ impl<'a> CompareAndSwap<'a> {
     /// There may be a second ratchet fingerprint to be deleted, which function
     /// `deleted_fingerprint2` will return.
     pub fn deleted_fingerprint1(&self) -> Option<&[u8; RATCHET_SIZE]> {
-        if self.cur_state1_was_just_deleted && !self.cur_state1.is_empty() {
+        if self.cur_state1_was_just_deleted && !self.cur_state1.is_zero() {
             return Some(self.cur_state1.fingerprint());
         }
         None
@@ -290,7 +288,7 @@ impl<'a> CompareAndSwap<'a> {
     pub fn deleted_fingerprint2(&self) -> Option<&[u8; RATCHET_SIZE]> {
         if self.cur_state2_was_just_deleted {
             if let Some(rf) = self.cur_state2 {
-                if !rf.is_empty() {
+                if !rf.is_zero() {
                     return Some(rf.fingerprint());
                 }
             }
@@ -305,7 +303,7 @@ impl<'a> CompareAndSwap<'a> {
     /// then the peer should be added to storage with the new ratchet states specified by this
     /// `CompareAndSwap` struct.
     pub fn cur_is_initial_states(&self) -> bool {
-        self.cur_state1.is_empty() && self.cur_state2.is_none()
+        self.cur_state1.is_zero() && self.cur_state2.is_none()
     }
     /// Compares the ratchet fingerprints of `cur_state1` and `cur_state2` with `rf1` and `rf2`.
     /// If they are equal this function will return `true`.

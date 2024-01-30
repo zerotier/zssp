@@ -155,6 +155,9 @@ pub trait ApplicationLayer<C: CryptoLayer>: Sized {
     /// If this function is configured to always return true, it means peers will not be able to
     /// connect to us unless they had a prior-established ratchet key with us. This is the best way
     /// for the paranoid to enforce a manual allow-list.
+    ///
+    /// Corresponds to the "Hello Requires Recognized Ratchet, π_1" security flag of Transition
+    /// Algorithm 2 within the ZSSP whitepaper.
     fn hello_requires_recognized_ratchet(&mut self) -> bool;
     /// This function is called if we, as Alice, attempted to open a session with Bob using a
     /// non-empty ratchet key, but Bob does not have this ratchet key and wants to downgrade
@@ -171,13 +174,23 @@ pub trait ApplicationLayer<C: CryptoLayer>: Sized {
     /// least one party is misconfigured and got their ratchet keys corrupted or lost, or Bob has
     /// been compromised and is being impersonated. An attacker must at least have Bob's private
     /// static key to be able to ask Alice to downgrade.
+    ///
+    /// Corresponds to the "Initiator Disallows Downgrade, π_2" security flag of Transition
+    /// Algorithm 3 within the ZSSP whitepaper.
     fn initiator_disallows_downgrade(&mut self, session: &Arc<Session<C>>) -> bool;
     /// Function to accept sessions after final negotiation.
-    /// The second argument is the identity that the remote peer sent us. The application
-    /// must verify this identity is associated with the remote peer's static key.
+    ///
+    /// The implementor must verify that `remote_static_key` and `identity` all belong to the same
+    /// remote peer, using whatever definition
+    /// of "same remote peer" that the upper protocol chooses.
+    /// `fingerprint_data` is an opaque type that is only `Some` if Alice sent us a ratchet
+    /// fingerprint that was successfully restored by `restore_by_fingerprint`.
+    ///
     /// To prevent desync, if this function specifies that we should connect, no other open session
     /// with the same remote peer must exist. Drop or call expire on any pre-existing sessions
     /// before returning.
+    ///
+    /// Corresponds to the **Accept** call of Transition Algorithm 4 within the ZSSP whitepaper.
     fn check_accept_session(
         &mut self,
         remote_static_key: &<C as CryptoLayer>::PublicKey,
@@ -190,6 +203,20 @@ pub trait ApplicationLayer<C: CryptoLayer>: Sized {
     ///
     /// If a ratchet state with a matching fingerprint could not be found, this function should
     /// return `Ok(None)`.
+    ///
+    /// This function can also return an opaque `FingerprintData` object. If Alice continues to connect
+    /// with us, then this object will be passed to `check_accept_session` and `restore_by_identity`.
+    /// This is useful if the ratchet fingerprint was derived from a one-time password, in which
+    /// case `FingerprintData` can contain metadata regarding the one-time password. This can be
+    /// used by `check_accept_session` and `restore_by_identity` to perform additional
+    /// authentication checks, such as validating the one-time password as an invitation code.
+    ///
+    /// `FingerprintData` can also be used with extreme caution to cache database resources that can
+    /// speed up the expected future calls to `check_accept_session` and `restore_by_identity`.
+    /// If this is done, the implementor is required in `check_accept_session` to verify that the
+    /// cached resources in `FingerprintData` indeed belong to the specified remote peer.
+    ///
+    /// Corresponds to the **Restore** call of Transition Algorithm 2 within the ZSSP whitepaper.
     fn restore_by_fingerprint(
         &mut self,
         ratchet_fingerprint: &[u8; RATCHET_SIZE],
@@ -198,8 +225,9 @@ pub trait ApplicationLayer<C: CryptoLayer>: Sized {
     /// This function will be called whenever Alice attempts to open a session, or Bob attempts
     /// to verify Alice's identity.
     ///
-    /// If the peer's ratchet states could not be could, this function should return
-    /// `RatchetState::new_initial_states()`.
+    /// If the peer's ratchet states could not be found, this function should return `None`.
+    /// A return value of `None` is equivalent to a return value of
+    /// `Some(RatchetState::new_initial_states())`.
     ///
     /// If a one-time-password has been pre-shared with this peer, `RatchetState::new_otp_states(...)`
     /// should be pre-saved to the storage backend as if it is a normal ratchet state.
@@ -208,6 +236,8 @@ pub trait ApplicationLayer<C: CryptoLayer>: Sized {
     /// This function is not responsible for deciding whether or not to connect to this remote peer.
     /// Filtering peers should be done by the caller to `Context::open` as well as by the
     /// function `ApplicationLayer::check_accept_session`.
+    ///
+    /// Corresponds to the **Restore** call of Transition Algorithm 1 and 4 within the ZSSP whitepaper.
     fn restore_by_identity(
         &mut self,
         remote_static_key: &<C as CryptoLayer>::PublicKey,
@@ -242,6 +272,81 @@ pub trait ApplicationLayer<C: CryptoLayer>: Sized {
     /// it should be assumed that they also have the same ratchet key.
     ///
     /// The implementations of `PartialEq` for `RatchetState` and `RatchetStates` do this by default.
+    ///
+    /// # Example
+    /// The following code is an example of how to implement this database operation with the
+    /// library `rustqlite`, an interface for SQLite in rust.
+    /// This code will not work out-of-the-box, it must be adapted based on how your application
+    /// structures its SQLite database.
+    /// Notably, this code lacks a means of securely indexing ratchet fingerprints.
+    /// The function `get_peer_primary_key` is a placeholder for however your application defines
+    /// the SQL primary key for a peer. The function `get_sql_conn` is a placeholder getter method
+    /// on `self` for retrieving the database connection object.
+    /// ```rs
+    /// fn to_err<E: std::error::Error + Send + Sync + 'static>(e: E) -> Error {
+    ///    Error::new(std::io::ErrorKind::Other, e)
+    /// }
+    ///
+    /// fn save_ratchet_state(
+    ///     &mut self,
+    ///     remote_static_key: &P384PublicKey,
+    ///     session_data: &Peer<T>,
+    ///     update_data: CompareAndSwap<'_>,
+    /// ) -> Result<bool, Error> {
+    ///     let peer = get_peer_primary_key(remote_static_key, session_data);
+    ///     let mut conn = get_sql_conn(self);
+    ///     // rustqlite will rollback this transaction if this struct is dropped.
+    ///     let trans = conn
+    ///         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+    ///         .map_err(to_err)?;
+    ///     {
+    ///         // Compare
+    ///         let mut stmt = trans
+    ///             .prepare_cached("SELECT ratchet_fp1, ratchet_fp2 FROM peers WHERE peer = ?1")
+    ///             .map_err(to_err)?;
+    ///         let mut rows = stmt.query([peer]).map_err(to_err)?;
+    ///         if let Some(row) = rows.next().map_err(to_err)? {
+    ///             let peer_fp1 = row.get_ref(0).map_err(to_err)?.as_bytes_or_null().map_err(to_err)?;
+    ///             let peer_fp2 = row.get_ref(1).map_err(to_err)?.as_bytes_or_null().map_err(to_err)?;
+    ///             let peer_fp1 = if let Some(fp1) = peer_fp1 {
+    ///                 fp1.try_into().map_err(to_err)?
+    ///             } else {
+    ///                 &[0u8; RATCHET_SIZE]
+    ///             };
+    ///             let peer_fp2 = if let Some(fp2) = peer_fp2 {
+    ///                 Some(fp2.try_into().map_err(to_err)?)
+    ///             } else {
+    ///                 None
+    ///             };
+    ///             if !update_data.compare_fingerprints(peer_fp1, peer_fp2) {
+    ///                 return Ok(false);
+    ///             }
+    ///         } else {
+    ///             return Ok(false);
+    ///         }
+    ///     }
+    ///     {
+    ///         // Swap
+    ///         let ns1 = update_data.new_state1;
+    ///         let ns2 = update_data.new_state2;
+    ///         let mut stmt = trans.prepare_cached("UPDATE peers SET ratchet_fp1 = ?1, ratchet_key1 = ?2, chain_len1 = ?3, ratchet_fp2 = ?4, ratchet_key2 = ?5, chain_len2 = ?6 WHERE salted_addr = ?7").map_err(to_err)?;
+    ///         stmt.execute((
+    ///             ns1.fingerprint(),
+    ///             ns1.key(),
+    ///             ns1.chain_len(),
+    ///             ns2.map(RatchetState::fingerprint),
+    ///             ns2.map(RatchetState::key),
+    ///             ns2.map(RatchetState::chain_len),
+    ///             salted_addr,
+    ///         ))
+    ///         .map_err(to_err)?;
+    ///     }
+    ///     // SQLite does its best to make sure committed transactions are actually written
+    ///     // to disk: https://www.sqlite.org/howtocorrupt.html.
+    ///     trans.commit().map_err(to_err)?;
+    ///     Ok(true)
+    /// }
+    /// ```
     fn save_ratchet_state(
         &mut self,
         remote_static_key: &<C as CryptoLayer>::PublicKey,

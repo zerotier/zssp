@@ -231,7 +231,7 @@ pub trait ApplicationLayer<C: CryptoLayer>: Sized {
     fn initiator_disallows_downgrade(&mut self, session: &Arc<Session<C>>) -> bool;
     /// Function to accept sessions after final negotiation.
     ///
-    /// The implementor must verify that three arguments, `remote_static_key`, `identity` and
+    /// The implementor must verify that the three arguments, `remote_static_key`, `identity` and
     /// optionally `fingerprint_data` all belong to the same remote peer, using whatever definition
     /// of "same remote peer" that the upper protocol chooses.
     /// `fingerprint_data` is an opaque type that is only `Some` if Alice sent us a ratchet
@@ -359,14 +359,19 @@ pub trait ApplicationLayer<C: CryptoLayer>: Sized {
     ///             .map_err(to_err)?;
     ///         let mut rows = stmt.query([peer]).map_err(to_err)?;
     ///         if let Some(row) = rows.next().map_err(to_err)? {
-    ///             let peer_fp1: &[u8] = row.get_ref(0).map_err(to_err)?.as_bytes().map_err(to_err)?;
-    ///             let peer_fp2: Option<&[u8]> = row.get_ref(1).map_err(to_err)?.as_bytes_or_null().map_err(to_err)?;
+    ///             let peer_fp1 = row.get_ref(0).map_err(to_err)?.as_bytes_or_null().map_err(to_err)?;
+    ///             let peer_fp2 = row.get_ref(1).map_err(to_err)?.as_bytes_or_null().map_err(to_err)?;
+    ///             let peer_fp1 = if let Some(fp1) = peer_fp1 {
+    ///                 fp1.try_into().map_err(to_err)?
+    ///             } else {
+    ///                 &[0u8; RATCHET_SIZE]
+    ///             };
     ///             let peer_fp2 = if let Some(fp2) = peer_fp2 {
     ///                 Some(fp2.try_into().map_err(to_err)?)
     ///             } else {
     ///                 None
     ///             };
-    ///             if !update_data.compare_fingerprints(peer_fp1.try_into().map_err(to_err)?, peer_fp2) {
+    ///             if !update_data.compare_fingerprints(peer_fp1, peer_fp2) {
     ///                 return Ok(false);
     ///             }
     ///         } else {
