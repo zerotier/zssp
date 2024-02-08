@@ -1,5 +1,6 @@
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc};
+use parking_lot::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -25,14 +26,14 @@ struct TestApplication {
 struct PooledVec(Vec<u8>);
 static POOL: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
 fn alloc(b: &[u8]) -> PooledVec {
-    let mut p = POOL.lock().unwrap();
+    let mut p = POOL.lock();
     let mut v = p.pop().unwrap_or_default();
     v.extend(b);
     PooledVec(v)
 }
 impl Drop for PooledVec {
     fn drop(&mut self) {
-        let mut p = POOL.lock().unwrap();
+        let mut p = POOL.lock();
         let mut v = Vec::new();
         std::mem::swap(&mut self.0, &mut v);
         v.clear();

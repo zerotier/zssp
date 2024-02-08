@@ -3,7 +3,8 @@ use std::collections::HashMap;
 use std::iter::ExactSizeIterator;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc};
+use parking_lot::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -97,7 +98,7 @@ impl ApplicationLayer<TestApplication> for &TestApplication {
         &mut self,
         ratchet_fingerprint: &[u8; RATCHET_SIZE],
     ) -> Result<Option<(RatchetState, ())>, std::io::Error> {
-        let ratchets = self.ratchets.lock().unwrap();
+        let ratchets = self.ratchets.lock();
         Ok(ratchets.rf_map.get(ratchet_fingerprint).cloned().map(|r| (r, ())))
     }
 
@@ -107,7 +108,7 @@ impl ApplicationLayer<TestApplication> for &TestApplication {
         session_data: &u128,
         _: Option<&()>,
     ) -> Result<Option<RatchetStates>, std::io::Error> {
-        let ratchets = self.ratchets.lock().unwrap();
+        let ratchets = self.ratchets.lock();
         Ok(ratchets.peer_map.get(session_data).cloned())
     }
 
@@ -117,7 +118,7 @@ impl ApplicationLayer<TestApplication> for &TestApplication {
         session_data: &u128,
         update_data: CompareAndSwap<'_>,
     ) -> Result<bool, std::io::Error> {
-        let mut ratchets = self.ratchets.lock().unwrap();
+        let mut ratchets = self.ratchets.lock();
         match ratchets.peer_map.entry(*session_data) {
             Entry::Occupied(mut entry) => {
                 if update_data.compare(&entry.get()) {
