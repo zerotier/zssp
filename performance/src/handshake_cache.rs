@@ -1,6 +1,7 @@
 use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+use parking_lot::RwLock;
 
 use crate::zeta::StateB2;
 use crate::{application::CryptoLayer, proto::MAX_UNASSOCIATED_HANDSHAKE_STATES};
@@ -31,7 +32,7 @@ impl<Application: CryptoLayer> UnassociatedHandshakeCache<Application> {
         }
     }
     pub(crate) fn get(&self, local_id: NonZeroU32) -> Option<Arc<StateB2<Application>>> {
-        let cache = self.cache.read().unwrap();
+        let cache = self.cache.read();
         for (i, id) in cache.local_ids.iter().enumerate() {
             if *id == Some(local_id) {
                 return cache.handshakes[i].clone();
@@ -46,7 +47,7 @@ impl<Application: CryptoLayer> UnassociatedHandshakeCache<Application> {
         state: Arc<StateB2<Application>>,
         current_time: i64,
     ) -> Option<i64> {
-        let mut cache = self.cache.write().unwrap();
+        let mut cache = self.cache.write();
         let mut idx = 0;
         for i in 0..cache.local_ids.len() {
             if cache.local_ids[i].is_none() || cache.expiries[i] <= current_time {
@@ -64,7 +65,7 @@ impl<Application: CryptoLayer> UnassociatedHandshakeCache<Application> {
         Some(expiry)
     }
     pub(crate) fn remove(&self, local_id: NonZeroU32) -> bool {
-        let mut cache = self.cache.write().unwrap();
+        let mut cache = self.cache.write();
         for (i, id) in cache.local_ids.iter().enumerate() {
             if *id == Some(local_id) {
                 cache.local_ids[i] = None;
@@ -82,7 +83,7 @@ impl<Application: CryptoLayer> UnassociatedHandshakeCache<Application> {
         let mut next_service_time = i64::MAX;
         if self.has_pending.swap(false, Ordering::Acquire) {
             // Check for packet expiration
-            let mut cache = self.cache.write().unwrap();
+            let mut cache = self.cache.write();
             for i in 0..cache.local_ids.len() {
                 if cache.local_ids[i].is_some() {
                     let expiry = cache.expiries[i];

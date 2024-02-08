@@ -4,7 +4,8 @@ use std::hash::Hash;
 use std::io::Write;
 use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Mutex, RwLock, Weak};
+use std::sync::{Arc, Weak};
+use parking_lot::{Mutex, RwLock};
 
 use arrayvec::ArrayVec;
 use rand_core::RngCore;
@@ -280,9 +281,9 @@ impl<C: CryptoLayer> Context<C> {
 
         let kid_recv = incoming_fragment[0..KID_SIZE].try_into().unwrap();
         if let Some(kid_recv) = NonZeroU32::new(u32::from_ne_bytes(kid_recv)) {
-            let session = ctx.session_map.read().unwrap().get(&kid_recv).map(|r| r.upgrade());
+            let session = ctx.session_map.read().get(&kid_recv).map(|r| r.upgrade());
             if let Some(Some(session)) = session {
-                let state = session.state.read().unwrap();
+                let state = session.state.read();
                 let header_auth = &mut incoming_fragment[HEADER_AUTH_START..HEADER_AUTH_END];
                 state.hk_recv.decrypt_in_place(header_auth.try_into().unwrap());
 
@@ -333,7 +334,7 @@ impl<C: CryptoLayer> Context<C> {
                 let ret = if packet_type == PACKET_TYPE_DATA {
                     let fragments = if fragment_count > 1 {
                         let idx = incoming_counter as usize % session.defrag.len();
-                        session.defrag[idx].lock().unwrap().assemble(
+                        session.defrag[idx].lock().assemble(
                             incoming_counter,
                             incoming_fragment_buf,
                             fragment_no,
@@ -360,7 +361,7 @@ impl<C: CryptoLayer> Context<C> {
                     let mut buffer = ArrayVec::<u8, HANDSHAKE_RESPONSE_SIZE>::new();
                     let assembled_packet = if fragment_count > 1 {
                         let idx = incoming_counter as usize % session.defrag.len();
-                        session.defrag[idx].lock().unwrap().assemble(
+                        session.defrag[idx].lock().assemble(
                             incoming_counter,
                             incoming_fragment_buf,
                             fragment_no,
@@ -495,7 +496,7 @@ impl<C: CryptoLayer> Context<C> {
 
                     let mut buffer = ArrayVec::<u8, HANDSHAKE_COMPLETION_MAX_SIZE>::new();
                     let assembled_packet = if fragment_count > 1 {
-                        zeta.defrag.lock().unwrap().assemble(
+                        zeta.defrag.lock().assemble(
                             incoming_counter,
                             incoming_fragment_buf,
                             fragment_no,
@@ -557,7 +558,7 @@ impl<C: CryptoLayer> Context<C> {
 
             let mut buffer = ArrayVec::<u8, HANDSHAKE_HELLO_CHALLENGE_SIZE>::new();
             let assembled_packet = if fragment_count > 1 {
-                let mut next_service_time = self.0.unassociated_defrag_cache.lock().unwrap().assemble(
+                let mut next_service_time = self.0.unassociated_defrag_cache.lock().assemble(
                     &nonce,
                     remote_address,
                     incoming_fragment.len() - HEADER_SIZE,
@@ -609,7 +610,7 @@ impl<C: CryptoLayer> Context<C> {
                                 .try_extend_from_slice(&assembled_packet[..KID_SIZE])
                                 .unwrap();
                             challenge_packet.extend(challenge);
-                            let nonce = to_nonce(PACKET_TYPE_CHALLENGE, ctx.rng.lock().unwrap().next_u64());
+                            let nonce = to_nonce(PACKET_TYPE_CHALLENGE, ctx.rng.lock().next_u64());
                             challenge_packet[FRAGMENT_COUNT_IDX] = 1;
                             challenge_packet[PACKET_NONCE_START..HEADER_SIZE]
                                 .copy_from_slice(&nonce[..PACKET_NONCE_SIZE]);
@@ -648,7 +649,7 @@ impl<C: CryptoLayer> Context<C> {
                 if let Some(kid_recv) =
                     NonZeroU32::new(u32::from_ne_bytes(assembled_packet[..KID_SIZE].try_into().unwrap()))
                 {
-                    if let Some(Some(session)) = ctx.session_map.read().unwrap().get(&kid_recv).map(|r| r.upgrade()) {
+                    if let Some(Some(session)) = ctx.session_map.read().get(&kid_recv).map(|r| r.upgrade()) {
                         respond_to_challenge(ctx, &session, &assembled_packet[KID_SIZE..].try_into().unwrap());
                         log!(app, ChallengeIsAuth(&session));
                         return Ok((ReceiveOk::Unassociated, None));
@@ -739,7 +740,7 @@ impl<C: CryptoLayer> Context<C> {
         current_time: i64,
     ) -> Result<i64, (ExpiredError<C>, F)> {
         let ctx = &self.0;
-        let mut session_queue = ctx.session_queue.lock().unwrap();
+        let mut session_queue = ctx.session_queue.lock();
         let mut queue_service_time = i64::MAX;
         // This update system takes advantage of the fact that sessions only need to be updated
         // either roughly every second or roughly every hour. That big gap allows for minor optimizations.
@@ -781,7 +782,6 @@ impl<C: CryptoLayer> Context<C> {
             .0
             .unassociated_defrag_cache
             .lock()
-            .unwrap()
             .check_for_expiry(current_time);
         let handshake_service_time = self.0.unassociated_handshake_states.service(current_time);
 

@@ -231,10 +231,10 @@ impl<C: CryptoLayer> Drop for UnassociatedFragCache<C> {
 
 #[test]
 fn test_cache() {
-    use std::sync::Mutex;
+    use parking_lot::Mutex;
     fn xorshift64_random() -> u64 {
         static XORSHIFT64_STATE: Mutex<u64> = Mutex::new(12);
-        let mut x = XORSHIFT64_STATE.lock().unwrap();
+        let mut x = XORSHIFT64_STATE.lock();
         *x ^= x.wrapping_shr(12);
         *x ^= x.wrapping_shl(25);
         *x ^= x.wrapping_shr(27);

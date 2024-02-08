@@ -4,7 +4,8 @@ use std::io::Write;
 use std::num::NonZeroU32;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, Weak};
+use std::sync::{Arc, Weak};
+use parking_lot::{Mutex, MutexGuard, RwLock, RwLockReadGuard};
 
 use arrayvec::ArrayVec;
 use rand_core::RngCore;
@@ -161,7 +162,7 @@ impl<C: CryptoLayer> SymmetricState<C> {
         rng: &Mutex<C::Rng>,
         packet: &mut ArrayVec<u8, CAP>,
     ) -> C::KeyPair {
-        let e_secret = C::KeyPair::generate(rng.lock().unwrap().deref_mut());
+        let e_secret = C::KeyPair::generate(rng.lock().deref_mut());
         let pub_key = e_secret.public_key_bytes();
         packet.extend(pub_key);
         self.mix_hash(hash, &pub_key);
@@ -255,13 +256,13 @@ fn gen_kid<T>(session_map: &HashMap<NonZeroU32, T>, rng: &mut impl RngCore) -> N
     }
 }
 fn remap<C: CryptoLayer>(ctx: &Arc<ContextInner<C>>, session: &Arc<Session<C>>, state: &MutableState<C>) -> NonZeroU32 {
-    let mut session_map = ctx.session_map.write().unwrap();
+    let mut session_map = ctx.session_map.write();
     let weak = if let Some(Some(weak)) = state.key_ref(true).recv.kid.as_ref().map(|kid| session_map.remove(kid)) {
         weak
     } else {
         Arc::downgrade(session)
     };
-    let new_kid_recv = gen_kid(session_map.deref(), ctx.rng.lock().unwrap().deref_mut());
+    let new_kid_recv = gen_kid(session_map.deref(), ctx.rng.lock().deref_mut());
     session_map.insert(new_kid_recv, weak);
     new_kid_recv
 }
@@ -293,7 +294,7 @@ fn create_a1_state<C: CryptoLayer>(
     noise.mix_dh(hmac, &e_secret, s_remote);
     // Process message pattern 1 e1 token.
     let i = x1.len();
-    let (e1_secret, e1_public) = C::Kem::generate(rng.lock().unwrap().deref_mut());
+    let (e1_secret, e1_public) = C::Kem::generate(rng.lock().deref_mut());
     x1.extend(e1_public);
     let tag = noise.encrypt_and_hash_in_place(hash, to_nonce(PACKET_TYPE_HANDSHAKE_HELLO, 0), &mut x1[i..]);
     x1.extend(tag);
@@ -308,7 +309,7 @@ fn create_a1_state<C: CryptoLayer>(
     let c = u64::from_be_bytes(x1[x1.len() - 8..].try_into().unwrap());
 
     // Process challenge
-    x1.extend(gen_null_response(rng.lock().unwrap().deref_mut()));
+    x1.extend(gen_null_response(rng.lock().deref_mut()));
 
     set_header(&mut x1, 0, &to_nonce(PACKET_TYPE_HANDSHAKE_HELLO, c));
 
@@ -327,9 +328,9 @@ pub(crate) fn trans_to_a1<C: CryptoLayer, App: ApplicationLayer<C>>(
 ) -> Result<(Arc<Session<C>>, Option<i64>), OpenError> {
     let RatchetStates { state1, state2 } = ratchet_states;
 
-    let mut session_queue = ctx.session_queue.lock().unwrap();
-    let mut session_map = ctx.session_map.write().unwrap();
-    let kid_recv = gen_kid(session_map.deref(), ctx.rng.lock().unwrap().deref_mut());
+    let mut session_queue = ctx.session_queue.lock();
+    let mut session_map = ctx.session_map.write();
+    let kid_recv = gen_kid(session_map.deref(), ctx.rng.lock().deref_mut());
 
     let hash = &mut C::Hash::new();
     let hmac = &mut C::Hmac::new();
@@ -381,7 +382,7 @@ pub(crate) fn trans_to_a1<C: CryptoLayer, App: ApplicationLayer<C>>(
         defrag: std::array::from_fn(|_| Mutex::new(Fragged::new())),
     });
     {
-        let mut state = session.state.write().unwrap();
+        let mut state = session.state.write();
         state.key_mut(true).recv.kid = Some(kid_recv);
     }
 
@@ -401,10 +402,10 @@ pub(crate) fn respond_to_challenge<C: CryptoLayer>(
     session: &Session<C>,
     challenge: &[u8; CHALLENGE_SIZE],
 ) {
-    let mut state = session.state.write().unwrap();
+    let mut state = session.state.write();
     if let ZetaAutomata::A1(a1) = &mut state.beta {
         let response_start = a1.x1.len() - CHALLENGE_SIZE;
-        let mut rng = ctx.rng.lock().unwrap();
+        let mut rng = ctx.rng.lock();
         let response = (&mut a1.x1[response_start..]).try_into().unwrap();
         respond_to_challenge_in_place(rng.deref_mut(), &mut C::Hash::new(), challenge, response);
     }
@@ -513,7 +514,7 @@ pub(crate) fn received_x1_trans<C: CryptoLayer, App: ApplicationLayer<C>>(
         let i = x2.len();
         let mut ekem1_secret = Zeroizing::new([0u8; KYBER_PLAINTEXT_SIZE]);
         let ekem1 = C::Kem::encapsulate(
-            ctx.rng.lock().unwrap().deref_mut(),
+            ctx.rng.lock().deref_mut(),
             (&x1[e1_start..e1_end]).try_into().unwrap(),
             &mut ekem1_secret,
         )
@@ -527,8 +528,8 @@ pub(crate) fn received_x1_trans<C: CryptoLayer, App: ApplicationLayer<C>>(
     noise.mix_key_and_hash(hash, hmac, ratchet_state.key.as_ref());
     // Process message pattern 2 payload.
     let kid_recv = gen_kid(
-        ctx.session_map.read().unwrap().deref(),
-        ctx.rng.lock().unwrap().deref_mut(),
+        ctx.session_map.read().deref(),
+        ctx.rng.lock().deref_mut(),
     );
 
     let i = x2.len();
@@ -588,8 +589,8 @@ pub(crate) fn received_x2_trans<C: CryptoLayer, App: ApplicationLayer<C>>(
         return Err(fault!(InvalidPacket, true, session));
     }
 
-    let kex_lock = session.state_machine_lock.lock().unwrap();
-    let state = session.state.read().unwrap();
+    let kex_lock = session.state_machine_lock.lock();
+    let state = session.state.read();
     let hash = &mut C::Hash::new();
     let hmac = &mut C::Hmac::new();
 
@@ -732,7 +733,7 @@ pub(crate) fn received_x2_trans<C: CryptoLayer, App: ApplicationLayer<C>>(
 
         drop(state);
         let resend_timer = {
-            let mut state = session.state.write().unwrap();
+            let mut state = session.state.write();
             state.key_mut(true).send.kid = Some(kid_send);
             state.key_mut(true).send.replace_kek(&kek_send);
             state.key_mut(true).recv.replace_kek(&kek_recv);
@@ -756,7 +757,6 @@ pub(crate) fn received_x2_trans<C: CryptoLayer, App: ApplicationLayer<C>>(
         drop(kex_lock);
         ctx.session_queue
             .lock()
-            .unwrap()
             .change_priority(session.queue_idx, Reverse(resend_timer));
         let reduced = ctx.reduce_next_service_time(resend_timer);
 
@@ -765,13 +765,13 @@ pub(crate) fn received_x2_trans<C: CryptoLayer, App: ApplicationLayer<C>>(
 
     match &mut result {
         Err(ReceiveError::ByzantineFault(_)) => {
-            let kex_lock = session.state_machine_lock.lock().unwrap();
-            let state = session.state.read().unwrap();
+            let kex_lock = session.state_machine_lock.lock();
+            let state = session.state.read();
             let current_time = app.time();
             // We can only reach this point if we are in state A1, and state A1 cannot expire.
             debug_assert!(timeout_trans(app, ctx, session, kex_lock, state, current_time, send).is_ok());
         }
-        Ok((packet, _)) => send(packet, Some(&session.state.read().unwrap().hk_send)),
+        Ok((packet, _)) => send(packet, Some(&session.state.read().hk_send)),
         _ => {}
     }
     result.map(|(_, reduced_service_time)| (should_warn_missing_ratchet, reduced_service_time))
@@ -899,7 +899,7 @@ pub(crate) fn received_x3_trans<C: CryptoLayer, App: ApplicationLayer<C>>(
                 }
 
                 let (session, reduced_service_time) = {
-                    let mut session_map = ctx.session_map.write().unwrap();
+                    let mut session_map = ctx.session_map.write();
                     use std::collections::hash_map::Entry::*;
                     let entry = match session_map.entry(zeta.kid_recv) {
                         // We could have issued the kid that we initially offered Alice to someone else
@@ -907,7 +907,7 @@ pub(crate) fn received_x3_trans<C: CryptoLayer, App: ApplicationLayer<C>>(
                         Occupied(_) => return Err(fault!(OutOfSequence, false)),
                         Vacant(entry) => entry,
                     };
-                    let mut session_queue = ctx.session_queue.lock().unwrap();
+                    let mut session_queue = ctx.session_queue.lock();
                     let queue_idx = session_queue.reserve_index();
                     let current_time = app.time();
                     let resend_timer = current_time + C::SETTINGS.resend_time as i64;
@@ -936,7 +936,7 @@ pub(crate) fn received_x3_trans<C: CryptoLayer, App: ApplicationLayer<C>>(
                         defrag: std::array::from_fn(|_| Mutex::new(Fragged::new())),
                     });
                     {
-                        let mut state = session.state.write().unwrap();
+                        let mut state = session.state.write();
                         state.key_mut(false).replace_nk(&nk_send, &nk_recv);
                         state.key_mut(false).recv.kid = Some(zeta.kid_recv);
                         state.key_mut(false).recv.replace_kek(&kek_recv);
@@ -949,7 +949,7 @@ pub(crate) fn received_x3_trans<C: CryptoLayer, App: ApplicationLayer<C>>(
 
                     (session, ctx.reduce_next_service_time(resend_timer))
                 };
-                let state = session.state.read().unwrap();
+                let state = session.state.read();
                 let mut c1 = ArrayVec::<u8, HEADERED_KEY_CONFIRMATION_SIZE>::new();
                 c1.extend([0u8; HEADER_SIZE]);
                 // This session is new so the result is overwhelmingly likely to be `Ok(())`.
@@ -983,8 +983,8 @@ pub(crate) fn received_c1_trans<C: CryptoLayer, App: ApplicationLayer<C>>(
         return Err(fault!(InvalidPacket, true, session));
     }
 
-    let kex_lock = session.state_machine_lock.lock().unwrap();
-    let mut state = session.state.read().unwrap();
+    let kex_lock = session.state_machine_lock.lock();
+    let mut state = session.state.read();
 
     let is_other = if Some(kid) == state.key_ref(true).recv.kid {
         true
@@ -1034,10 +1034,10 @@ pub(crate) fn received_c1_trans<C: CryptoLayer, App: ApplicationLayer<C>>(
             }
             drop(state);
             let timeout_timer = {
-                let mut state = session.state.write().unwrap();
+                let mut state = session.state.write();
                 state.ratchet_state2 = None;
                 state.key_index ^= true;
-                let jitter = ctx.rng.lock().unwrap().next_u64() % C::SETTINGS.rekey_time_max_jitter;
+                let jitter = ctx.rng.lock().next_u64() % C::SETTINGS.rekey_time_max_jitter;
                 state.timeout_timer = app.time() + C::SETTINGS.rekey_after_time.saturating_sub(jitter) as i64;
                 state.resend_timer = AtomicI64::new(i64::MAX);
                 state.beta = ZetaAutomata::S2;
@@ -1046,10 +1046,9 @@ pub(crate) fn received_c1_trans<C: CryptoLayer, App: ApplicationLayer<C>>(
             drop(kex_lock);
             ctx.session_queue
                 .lock()
-                .unwrap()
                 .change_priority(session.queue_idx, Reverse(timeout_timer));
             reduced_service_time = ctx.reduce_next_service_time(timeout_timer);
-            state = session.state.read().unwrap();
+            state = session.state.read();
         } else {
             drop(kex_lock);
         }
@@ -1085,8 +1084,8 @@ pub(crate) fn received_c2_trans<C: CryptoLayer, App: ApplicationLayer<C>>(
         return Err(fault!(InvalidPacket, true, session));
     }
 
-    let kex_lock = session.state_machine_lock.lock().unwrap();
-    let state = session.state.read().unwrap();
+    let kex_lock = session.state_machine_lock.lock();
+    let state = session.state.read();
 
     if Some(kid) != state.key_ref(false).recv.kid {
         // Some acknowledgement may have arrived extremely delayed.
@@ -1107,8 +1106,8 @@ pub(crate) fn received_c2_trans<C: CryptoLayer, App: ApplicationLayer<C>>(
     }
     drop(state);
     let timeout_timer = {
-        let mut state = session.state.write().unwrap();
-        let jitter = ctx.rng.lock().unwrap().next_u64() % C::SETTINGS.rekey_time_max_jitter;
+        let mut state = session.state.write();
+        let jitter = ctx.rng.lock().next_u64() % C::SETTINGS.rekey_time_max_jitter;
         state.timeout_timer = app.time() + C::SETTINGS.rekey_after_time.saturating_sub(jitter) as i64;
         state.resend_timer = AtomicI64::new(i64::MAX);
         state.beta = ZetaAutomata::S2;
@@ -1117,7 +1116,6 @@ pub(crate) fn received_c2_trans<C: CryptoLayer, App: ApplicationLayer<C>>(
     drop(kex_lock);
     ctx.session_queue
         .lock()
-        .unwrap()
         .change_priority(session.queue_idx, Reverse(timeout_timer));
 
     Ok(ctx.reduce_next_service_time(timeout_timer))
@@ -1136,8 +1134,8 @@ pub(crate) fn received_d_trans<C: CryptoLayer>(
         return Err(fault!(InvalidPacket, true, session));
     }
 
-    let kex_lock = session.state_machine_lock.lock().unwrap();
-    let state = session.state.read().unwrap();
+    let kex_lock = session.state_machine_lock.lock();
+    let state = session.state.read();
 
     if Some(kid) != state.key_ref(true).recv.kid || !matches!(&state.beta, ZetaAutomata::A3 { .. }) {
         return Err(fault!(OutOfSequence, true, session));
@@ -1202,7 +1200,7 @@ fn timeout_trans<C: CryptoLayer, App: ApplicationLayer<C>>(
 
             drop(state);
             let resend_timer = {
-                let mut state = session.state.write().unwrap();
+                let mut state = session.state.write();
                 state.hk_recv.reset((&hk_recv[..AES_256_KEY_SIZE]).try_into().unwrap());
                 state.hk_send.reset((&hk_send[..AES_256_KEY_SIZE]).try_into().unwrap());
                 *state.key_mut(true) = DuplexKey::default();
@@ -1250,7 +1248,7 @@ fn timeout_trans<C: CryptoLayer, App: ApplicationLayer<C>>(
 
             drop(state);
             let resend_timer = {
-                let mut state = session.state.write().unwrap();
+                let mut state = session.state.write();
                 state.key_mut(true).recv.kid = Some(new_kid_recv);
                 state.timeout_timer = current_time + C::SETTINGS.rekey_timeout as i64;
                 let resend_timer = current_time + C::SETTINGS.resend_time as i64;
@@ -1259,7 +1257,7 @@ fn timeout_trans<C: CryptoLayer, App: ApplicationLayer<C>>(
                 resend_timer
             };
             drop(kex_lock);
-            let state = session.state.read().unwrap();
+            let state = session.state.read();
 
             match send_control(session, &state, PACKET_TYPE_REKEY_INIT, k1, send) {
                 Err(true) => Err(()),
@@ -1289,8 +1287,8 @@ pub(crate) fn process_timers<C: CryptoLayer, App: ApplicationLayer<C>>(
     current_time: i64,
     send: impl FnOnce(&mut [u8], Option<&C::PrpEnc>),
 ) -> Result<i64, ()> {
-    let kex_lock = session.state_machine_lock.lock().unwrap();
-    let state = session.state.read().unwrap();
+    let kex_lock = session.state_machine_lock.lock();
+    let state = session.state.read();
     if state.timeout_timer <= current_time {
         // Corresponds to the timeout timer Transition Algorithm described in Section 4.1 - Definition 3.
         timeout_trans(app, ctx, session, kex_lock, state, current_time, send)
@@ -1358,8 +1356,8 @@ pub(crate) fn received_k1_trans<C: CryptoLayer, App: ApplicationLayer<C>>(
         return Err(fault!(InvalidPacket, true, session));
     }
 
-    let kex_lock = session.state_machine_lock.lock().unwrap();
-    let state = session.state.read().unwrap();
+    let kex_lock = session.state_machine_lock.lock();
+    let state = session.state.read();
 
     if Some(kid) != state.key_ref(false).recv.kid {
         // Some rekey packet may have arrived extremely delayed.
@@ -1456,7 +1454,7 @@ pub(crate) fn received_k1_trans<C: CryptoLayer, App: ApplicationLayer<C>>(
 
         drop(state);
         let resend_timer = {
-            let mut state = session.state.write().unwrap();
+            let mut state = session.state.write();
             state.key_mut(true).replace_nk(&nk_send, &nk_recv);
             state.key_mut(true).send.kid = Some(kid_send);
             state.key_mut(true).send.replace_kek(&kek_send);
@@ -1475,10 +1473,9 @@ pub(crate) fn received_k1_trans<C: CryptoLayer, App: ApplicationLayer<C>>(
         drop(kex_lock);
         ctx.session_queue
             .lock()
-            .unwrap()
             .change_priority(session.queue_idx, Reverse(resend_timer));
         let reduced_service_time = ctx.reduce_next_service_time(resend_timer);
-        let state = session.state.read().unwrap();
+        let state = session.state.read();
         match send_control(session, &state, PACKET_TYPE_REKEY_COMPLETE, k2, send) {
             Ok(()) => Ok(reduced_service_time),
             Err(false) => Err(fault!(OutOfSequence, true, session)),
@@ -1510,8 +1507,8 @@ pub(crate) fn received_k2_trans<C: CryptoLayer, App: ApplicationLayer<C>>(
         return Err(fault!(InvalidPacket, true, session));
     }
 
-    let kex_lock = session.state_machine_lock.lock().unwrap();
-    let state = session.state.read().unwrap();
+    let kex_lock = session.state_machine_lock.lock();
+    let state = session.state.read();
 
     if Some(kid) != state.key_ref(false).recv.kid {
         // Some rekey packet may have arrived extremely delayed.
@@ -1579,7 +1576,7 @@ pub(crate) fn received_k2_trans<C: CryptoLayer, App: ApplicationLayer<C>>(
 
             drop(state);
             let resend_timer = {
-                let mut state = session.state.write().unwrap();
+                let mut state = session.state.write();
                 state.key_mut(true).replace_nk(&nk_send, &nk_recv);
                 state.key_mut(true).send.kid = Some(kid_send);
                 state.key_mut(true).send.replace_kek(&kek_send);
@@ -1597,10 +1594,9 @@ pub(crate) fn received_k2_trans<C: CryptoLayer, App: ApplicationLayer<C>>(
             drop(kex_lock);
             ctx.session_queue
                 .lock()
-                .unwrap()
                 .change_priority(session.queue_idx, Reverse(resend_timer));
             let reduced_service_time = ctx.reduce_next_service_time(resend_timer);
-            let state = session.state.read().unwrap();
+            let state = session.state.read();
 
             let mut c1 = ArrayVec::<u8, HEADERED_KEY_CONFIRMATION_SIZE>::new();
             c1.extend([0u8; HEADER_SIZE]);
@@ -1637,7 +1633,7 @@ pub(crate) fn send_payload<C: CryptoLayer>(
         return Err(MtuTooSmall);
     }
 
-    let state = session.state.read().unwrap();
+    let state = session.state.read();
     if matches!(&state.beta, ZetaAutomata::Null) {
         return Err(SessionExpired);
     }
@@ -1720,12 +1716,11 @@ pub(crate) fn send_payload<C: CryptoLayer>(
     drop(state);
 
     if should_rekey {
-        let mut state = session.state.write().unwrap();
+        let mut state = session.state.write();
         state.timeout_timer = i64::MIN;
         drop(state);
         ctx.session_queue
             .lock()
-            .unwrap()
             .change_priority(session.queue_idx, Reverse(i64::MIN));
         ctx.reduce_next_service_time(i64::MIN);
         Ok(true)
@@ -1806,15 +1801,15 @@ impl<C: CryptoLayer> Session<C> {
     /// instead, but this can provide some reassurance in complex shared ownership situations.
     pub fn expire(&self) {
         if let Some(ctx) = self.ctx.upgrade() {
-            self.expire_inner(Some(&ctx), Some(&mut ctx.session_queue.lock().unwrap()));
+            self.expire_inner(Some(&ctx), Some(&mut ctx.session_queue.lock()));
         } else {
             self.expire_inner(None, None);
         }
     }
     /// Allows us to expire sessions with the correct locking order, preventing deadlock.
     pub(crate) fn expire_inner(&self, ctx: Option<&Arc<ContextInner<C>>>, session_queue: Option<&mut SessionQueue<C>>) {
-        let _kex_lock = self.state_machine_lock.lock().unwrap();
-        let mut state = self.state.write().unwrap();
+        let _kex_lock = self.state_machine_lock.lock();
+        let mut state = self.state.write();
         if !matches!(&state.beta, ZetaAutomata::Null) {
             state.beta = ZetaAutomata::Null;
 
@@ -1827,7 +1822,7 @@ impl<C: CryptoLayer> Session<C> {
                 session_queue.remove(self.queue_idx);
             }
             if let Some(ctx) = ctx {
-                let mut session_map = ctx.session_map.write().unwrap();
+                let mut session_map = ctx.session_map.write();
                 for kid_recv in kids_to_remove.iter().flatten() {
                     session_map.remove(kid_recv);
                 }
@@ -1837,19 +1832,19 @@ impl<C: CryptoLayer> Session<C> {
     /// The current ratchet state of this session.
     /// The returned values are sensitive and should be securely erased before being dropped.
     pub fn ratchet_states(&self) -> RatchetStates {
-        let state = self.state.read().unwrap();
+        let state = self.state.read();
         RatchetStates::new(state.ratchet_state1.clone(), state.ratchet_state2.clone())
     }
     /// The current ratchet count of this session.
     pub fn ratchet_count(&self) -> u64 {
-        self.state.read().unwrap().ratchet_state1.chain_len
+        self.state.read().ratchet_state1.chain_len
     }
     /// Check whether this session is established and can send data.
     ///
     /// Expired sessions will return false.
     pub fn established(&self) -> bool {
         !matches!(
-            &self.state.read().unwrap().beta,
+            &self.state.read().beta,
             ZetaAutomata::A1(_) | ZetaAutomata::A3 { .. } | ZetaAutomata::Null
         )
     }
@@ -1859,13 +1854,13 @@ impl<C: CryptoLayer> Session<C> {
     /// Expired sessions will return false.
     pub fn establishing(&self) -> bool {
         matches!(
-            &self.state.read().unwrap().beta,
+            &self.state.read().beta,
             ZetaAutomata::A1(_) | ZetaAutomata::A3 { .. }
         )
     }
     /// Check whether this session is expired and can no longer be used.
     pub fn is_expired(&self) -> bool {
-        matches!(&self.state.read().unwrap().beta, ZetaAutomata::Null)
+        matches!(&self.state.read().beta, ZetaAutomata::Null)
     }
     /// The static public key of the remote peer.
     pub fn remote_static_key(&self) -> &C::PublicKey {
@@ -1881,7 +1876,7 @@ where
         f.debug_struct("Session")
             .field("session_data", &self.session_data)
             .field("was_bob", &self.was_bob)
-            .field("state", &self.state.read().unwrap().beta)
+            .field("state", &self.state.read().beta)
             .finish()
     }
 }

@@ -1,5 +1,5 @@
 use std::ptr::{self, NonNull};
-use std::sync::Mutex;
+use parking_lot::Mutex;
 
 use arrayvec::ArrayVec;
 use openssl_sys::*;
@@ -130,7 +130,7 @@ impl Aes256Enc for OpenSSLAes256Enc {
     }
 
     fn reset(&mut self, key: &[u8; AES_256_KEY_SIZE]) {
-        let ctx = self.0.lock().unwrap();
+        let ctx = self.0.lock();
         unsafe {
             let t = openssl_sys::EVP_aes_256_ecb();
             assert!(ctx.cipher_init::<true>(t, key.as_ptr(), ptr::null()));
@@ -140,7 +140,7 @@ impl Aes256Enc for OpenSSLAes256Enc {
 
     fn encrypt_in_place(&self, block: &mut [u8; AES_256_BLOCK_SIZE]) {
         let ptr = block.as_mut_ptr();
-        let ctx = self.0.lock().unwrap();
+        let ctx = self.0.lock();
         unsafe { assert!(ctx.update::<true>(block, ptr)) }
     }
 }
@@ -162,7 +162,7 @@ impl Aes256Dec for OpenSSLAes256Dec {
     }
 
     fn reset(&mut self, key: &[u8; AES_256_KEY_SIZE]) {
-        let ctx = self.0.lock().unwrap();
+        let ctx = self.0.lock();
         unsafe {
             let t = openssl_sys::EVP_aes_256_ecb();
             assert!(ctx.cipher_init::<false>(t, key.as_ptr(), ptr::null()));
@@ -172,7 +172,7 @@ impl Aes256Dec for OpenSSLAes256Dec {
 
     fn decrypt_in_place(&self, block: &mut [u8; AES_256_BLOCK_SIZE]) {
         let ptr = block.as_mut_ptr();
-        let ctx = self.0.lock().unwrap();
+        let ctx = self.0.lock();
         unsafe { assert!(ctx.update::<false>(block, ptr)) }
     }
 }
@@ -202,7 +202,7 @@ impl HighThroughputAesGcmPool for OpenSSLAesGcmPool {
     }
 
     fn start_enc(&self, nonce: &[u8; AES_GCM_NONCE_SIZE]) -> OpenSSLCtx {
-        let ctx = self.enc.lock().unwrap().pop();
+        let ctx = self.enc.lock().pop();
         unsafe {
             if let Some(ctx) = ctx {
                 assert!(ctx.cipher_init::<true>(ptr::null(), ptr::null(), nonce.as_ptr()));
@@ -217,7 +217,7 @@ impl HighThroughputAesGcmPool for OpenSSLAesGcmPool {
         }
     }
     fn start_dec(&self, nonce: &[u8; AES_GCM_NONCE_SIZE]) -> OpenSSLCtx {
-        let ctx = self.dec.lock().unwrap().pop();
+        let ctx = self.dec.lock().pop();
         unsafe {
             if let Some(ctx) = ctx {
                 assert!(ctx.cipher_init::<false>(ptr::null(), ptr::null(), nonce.as_ptr()));
@@ -246,12 +246,12 @@ impl HighThroughputAesGcmPool for OpenSSLAesGcmPool {
             assert!(ctx.finalize::<true>());
             assert!(ctx.get_tag(&mut output));
         }
-        let _ = self.enc.lock().unwrap().try_push(ctx);
+        let _ = self.enc.lock().try_push(ctx);
         output
     }
     fn finish_dec(&self, ctx: OpenSSLCtx, tag: &[u8; AES_GCM_TAG_SIZE]) -> bool {
         let output = unsafe { ctx.set_tag(tag) && ctx.finalize::<false>() };
-        let _ = self.dec.lock().unwrap().try_push(ctx);
+        let _ = self.dec.lock().try_push(ctx);
         output
     }
 }
