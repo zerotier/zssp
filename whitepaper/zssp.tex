@@ -104,7 +104,7 @@ $$\text{GetAsk}(\texttt{label}) := \text{KBKDF}(\texttt{h}, \texttt{label}, \tex
 
 Due to the nature of \text{KBKDF} as a key derivation algorithm, we expect every symmetric key produced by $\text{GetAsk}(\texttt{label})$ with a unique label to have the following security properties:
 \begin{itemize}
-	\item Security equivalence to transport keys: If an ASK was produced at the end of a Noise handshake, right before `$\text{Split}()$' is called, then the ASK has equivalent or stronger indistinguishability properties to those of the transport keys.
+	\item Security equivalence to transport keys: If an ASK was produced at the end of a Noise handshake, right before `$\text{Split}()$' is called, then the ASK has equivalent or stronger `indistinguishable from random' properties to those of the transport keys.
 	\item Transcript authentication: Message authentication codes (MACs) produced using an ASK authenticate the entire Noise handshake transcript up to the point that the ASK was created.
 	\item Independence from the Noise chaining key: It is infeasible to recover any knowledge about the Noise chaining key from any number of ASKs.
 	\item Independence from all other ASKs: It is infeasible to recover any knowledge about one ASK from any number of other ASKs.
