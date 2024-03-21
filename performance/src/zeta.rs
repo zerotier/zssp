@@ -1692,7 +1692,7 @@ pub(crate) fn send_payload<C: CryptoLayer>(
         if !send.send_frag(&mut mtu_sized_buffer[..HEADER_SIZE + fragment_len]) {
             // We need to give the cipher back to the pool instead of dropping it,
             // so it can do memory cleanup.
-            cipher_pool.finish_enc(cipher);
+            cipher_pool.cancel_enc(cipher);
             return Ok(false);
         }
         i = j;

@@ -120,6 +120,15 @@ pub trait HighThroughputAesGcmPool: Send + Sync {
     /// Be sure to perform your own benchmark.
     #[must_use]
     fn finish_dec<'a>(&'a self, dec: Self::DecContext<'a>, tag: &[u8; AES_GCM_TAG_SIZE]) -> bool;
+
+    /// Cancel encryption with `enc` without creating an authentication tag.
+    /// This is near identical in behavior to `finish_enc`, and is implemented by `finish_enc`
+    /// by default.
+    /// It is somewhat more secure to replace this default implementation with a version that does
+    /// not produce a valid authentication tag on an invalid payload.
+    fn cancel_enc<'a>(&'a self, enc: Self::EncContext<'a>) {
+        self.finish_enc(enc);
+    }
 }
 
 /// A trait for implementing AES-GCM-256 to handle the more varied, but much lower throughput
